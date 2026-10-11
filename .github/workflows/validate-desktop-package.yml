@@ -1,0 +1,59 @@
+name: Validate desktop package
+
+on:
+  push:
+    branches: [chore/desktop-package-validation]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      DESKTOP_UPDATE_URL: ${{ vars.DESKTOP_UPDATE_URL }}
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - name: Run desktop regression tests on Windows
+        run: bun run test test/daemon-process.test.ts test/desktop-close.test.ts test/desktop-save.test.ts test/desktop-updater-close.test.ts test/desktop-updater.test.ts test/async-task-pool.test.ts test/playable-codebase.test.ts test/playable-thumbnail-capture.test.tsx test/node-thumbnail-page.test.tsx --testTimeout=60000
+      - run: bun run prepare:desktop-runtime win32-x64
+        env:
+          PUBLISH_API_URL: ${{ vars.PUBLISH_API_URL }}
+          SENTRY_DSN: ${{ vars.SENTRY_DSN }}
+      - run: bun run prepare:examples --require
+      - run: bun run build:desktop-app
+        env:
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
+          VITE_POSTHOG_KEY: ${{ vars.VITE_POSTHOG_KEY }}
+          VITE_POSTHOG_HOST: ${{ vars.VITE_POSTHOG_HOST }}
+      - name: Build Windows installer and validate packaged daemon
+        run: bun --bun node_modules/electron-builder/cli.js --win nsis --x64 --publish never
+      - name: Install and run the packaged application
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem release/*.exe | Select-Object -First 1
+          $destination = Join-Path $env:RUNNER_TEMP "ohmygame-package-installed"
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList @("/S", "/D=$destination") -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Installer failed: $($process.ExitCode)" }
+          $executable = Join-Path $destination "OhMyGame.exe"
+          if (-not (Test-Path $executable)) { throw "Installed executable is missing" }
+          node scripts/smoke-packaged-desktop.mjs $executable
+          if ($LASTEXITCODE -ne 0) { throw "Packaged application smoke test failed" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: OhMyGame-PR182-Windows-x64
+          retention-days: 7
+          if-no-files-found: warn
+          path: release/*.exe
