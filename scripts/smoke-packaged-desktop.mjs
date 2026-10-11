@@ -66,7 +66,7 @@ try {
     if (response.exceptionDetails) throw new Error(response.exceptionDetails.exception?.description ?? response.exceptionDetails.text);
     return response.result.value;
   }
-  const result = await evaluate("(" + exerciseDesktop.toString() + ")()");
+  const result = await evaluate("(" + exerciseDesktop.toString() + ")(" + JSON.stringify(process.argv.includes("--canvas") ? "canvas" : "playable") + ")");
   // Releasing the inspector before quit avoids Node's debugger-disconnect wait.
   await evaluate("setTimeout(() => globalThis.__packageSmokeApp.quit(), 100); true");
   socket.close();
@@ -77,9 +77,13 @@ try {
   let daemonStopped = false;
   try { await fetch(result.daemonUrl + "/health", { signal: AbortSignal.timeout(1000) }); } catch { daemonStopped = true; }
   assert(daemonStopped, "Daemon must stop before desktop exit");
-  const layout = JSON.parse(await readFile(path.join(result.workspace, "editor", "layout.json"), "utf8"));
+  const layout = JSON.parse(await readFile(path.join(result.workspace, ...(result.boardId ? ["canvas", "editor", result.boardId + ".json"] : ["editor", "layout.json"])), "utf8"));
   assert(Math.abs(layout.viewport.zoom - result.zoom) < 0.001, "Pending canvas viewport must be saved before quit: " + JSON.stringify({ expected: result.zoom, saved: layout.viewport.zoom }));
-  console.log(JSON.stringify({ platform: process.platform, packaged: result.packaged, cancelled: 3, thumbnails: 2, savedZoom: layout.viewport.zoom, gracefulExit: true }));
+  if (result.boardId) {
+    const board = JSON.parse(await readFile(path.join(result.workspace, "canvas", "boards", result.boardId + ".json"), "utf8"));
+    assert.equal(board.nodes[0].data.text, "Saved immediately before close");
+  }
+  console.log(JSON.stringify({ platform: process.platform, packaged: result.packaged, mode: result.boardId ? "canvas" : "playable", savedZoom: layout.viewport.zoom, gracefulExit: true }));
 } catch (error) {
   failure = error;
   console.error(output);
@@ -108,7 +112,7 @@ async function waitFor(check, milliseconds) {
 }
 
 // Runs in the packaged Electron main process, through its local Node inspector.
-async function exerciseDesktop() {
+async function exerciseDesktop(mode) {
   const require = process.getBuiltinModule("module").createRequire(process.resourcesPath + "/app.asar/package.json");
   const { app, BrowserWindow, ipcMain } = require("electron");
   const assert = require("node:assert/strict");
@@ -133,6 +137,32 @@ async function exerciseDesktop() {
     });
     assert(response.ok, method + " " + route + " failed: " + response.status);
     return response.json();
+  }
+  ipcMain.on("ohmygame:ready-to-close", (_event, _id, error) => {
+    console.log(error ? "[package-smoke] renderer-save-error" : "[package-smoke] renderer-save-acknowledged");
+  });
+  globalThis.__packageSmokeApp = app;
+  if (mode === "canvas") {
+    const project = await request("/projects", "POST", { name: "Canvas packaged close check", type: "asset-canvas" });
+    const workspace = await request("/projects/" + project.id + "/canvas/workspace");
+    const boardId = workspace.boards[0].id;
+    const detail = await request("/projects/" + project.id + "/canvas/boards/" + boardId);
+    detail.board.nodes = [{ id: "smoke-text", type: "text", position: { x: 96, y: 96 }, data: { text: "Before close", instruction: "" } }];
+    detail.board.editorLayout.nodes = { "smoke-text": { x: 96, y: 96 } };
+    await request("/projects/" + project.id + "/canvas/boards/" + boardId, "PUT", detail);
+    await renderer("window.location.hash = " + JSON.stringify("#/projects/" + project.id));
+    await until(() => renderer(`Boolean(document.querySelector('textarea[aria-label="Text output"]'))`), "Canvas text did not mount");
+    await pause(500);
+    await renderer(`document.querySelector('.react-flow__node[data-id="smoke-text"]').click()`);
+    await until(() => renderer(`!document.querySelector('textarea[aria-label="Text output"]').readOnly`), "Text node was not selected");
+    await renderer(`(() => {
+      const text = document.querySelector('textarea[aria-label="Text output"]');
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set.call(text, "Saved immediately before close");
+      text.dispatchEvent(new Event("input", { bubbles: true }));
+      document.querySelector('.story-canvas-zoom button[aria-label="Zoom in"]').click();
+    })()`);
+    const zoom = await renderer('new DOMMatrixReadOnly(getComputedStyle(document.querySelector(".react-flow__viewport")).transform).a');
+    return { packaged: app.isPackaged, workspace: project.workspacePath, zoom, daemonUrl: runtime.daemonUrl, boardId };
   }
   const project = await request("/projects", "POST", { name: "Packaged desktop check", type: "interactive-story" });
   for (const [id, preset] of [["menu", "main-menu"], ["hotspot", "hotspot"], ["blank", "blank"]]) {
@@ -164,9 +194,5 @@ async function exerciseDesktop() {
   await renderer('document.querySelector(\'.story-canvas-zoom button[aria-label="Zoom in"]\').click()');
   await until(async () => (await renderer('document.querySelector(".story-canvas-zoom-value").textContent')) !== before, "Canvas zoom did not change");
   const zoom = await renderer('new DOMMatrixReadOnly(getComputedStyle(document.querySelector(".react-flow__viewport")).transform).a');
-  ipcMain.on("ohmygame:ready-to-close", (_event, _id, error) => {
-    console.log(error ? "[package-smoke] renderer-save-error" : "[package-smoke] renderer-save-acknowledged");
-  });
-  globalThis.__packageSmokeApp = app;
   return { packaged: app.isPackaged, workspace: project.workspacePath, zoom, daemonUrl: runtime.daemonUrl };
 }
