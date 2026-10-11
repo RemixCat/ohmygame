@@ -25,7 +25,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - name: Run desktop regression tests on Windows
-        run: bun run test test/daemon-process.test.ts test/desktop-close.test.ts test/desktop-save.test.ts test/desktop-updater-close.test.ts test/desktop-updater.test.ts test/async-task-pool.test.ts test/playable-codebase.test.ts test/playable-thumbnail-capture.test.tsx test/node-thumbnail-page.test.tsx --testTimeout=60000
+        run: bun run test test/daemon-process.test.ts test/desktop-close.test.ts test/desktop-save.test.ts test/desktop-updater-close.test.ts test/desktop-updater.test.ts test/async-task-pool.test.ts test/playable-codebase.test.ts test/playable-close-save.test.tsx test/playable-thumbnail-capture.test.tsx test/node-thumbnail-page.test.tsx --testTimeout=60000
       - run: bun run prepare:desktop-runtime win32-x64
         env:
           PUBLISH_API_URL: ${{ vars.PUBLISH_API_URL }}
