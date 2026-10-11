@@ -78,7 +78,7 @@ try {
   try { await fetch(result.daemonUrl + "/health", { signal: AbortSignal.timeout(1000) }); } catch { daemonStopped = true; }
   assert(daemonStopped, "Daemon must stop before desktop exit");
   const layout = JSON.parse(await readFile(path.join(result.workspace, "editor", "layout.json"), "utf8"));
-  assert(Math.abs(layout.viewport.zoom - result.zoom) < 0.001, "Pending canvas viewport must be saved before quit");
+  assert(Math.abs(layout.viewport.zoom - result.zoom) < 0.001, "Pending canvas viewport must be saved before quit: " + JSON.stringify({ expected: result.zoom, saved: layout.viewport.zoom }));
   console.log(JSON.stringify({ platform: process.platform, packaged: result.packaged, cancelled: 3, thumbnails: 2, savedZoom: layout.viewport.zoom, gracefulExit: true }));
 } catch (error) {
   failure = error;
@@ -89,7 +89,8 @@ try {
     await signalProcessTree(child.pid, true);
     await Promise.race([exited, timeout(5000, "Could not stop package smoke test")]);
   }
-  await rm(directory, { recursive: true, force: true });
+  if (!failure) await rm(directory, { recursive: true, force: true });
+  else console.error("Smoke workspace retained:", directory);
 }
 if (failure) throw failure;
 
@@ -152,7 +153,10 @@ async function exerciseDesktop() {
   for (const id of ["menu", "hotspot"]) {
     const routeLiteral = JSON.stringify("/projects/" + project.id + "/playable/thumbnails/" + id);
     const image = await renderer('(async () => { const runtime = window.ohMyGameDesktop.runtime; const response = await fetch(runtime.daemonUrl + ' + routeLiteral + ', { headers: { authorization: "Bearer " + runtime.token } }); const blob = await response.blob(); const image = await createImageBitmap(blob); const result = { width: image.width, height: image.height, size: blob.size }; image.close(); return result; })()');
-    assert.equal(image.width, 1280); assert.equal(image.height, 720); assert(image.size > 1000);
+    // Windows can constrain hidden windows to its screen; capture preserves aspect and caps width.
+    assert(image.width >= 240 && image.width <= 1280, "Thumbnail width: " + image.width);
+    assert(Math.abs(image.width / image.height - 1280 / 720) < 0.01, "Thumbnail aspect: " + JSON.stringify(image));
+    assert(image.size > 1000);
   }
   await renderer("window.location.hash = " + JSON.stringify("#/projects/" + project.id));
   await until(() => renderer('Boolean(document.querySelector(".playable-editor-workspace .story-canvas-zoom-value"))'), "Playable canvas did not mount");
