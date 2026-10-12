@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, readdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { activePiToolNames, createAgentTools, planningPiToolNames, projectPiToolNames } from "../src/daemon/agent-tools.js";
 import { AssetLibrary } from "../src/daemon/asset-library.js";
 import type { ImageGenerator } from "../src/daemon/openai-image.js";
@@ -137,7 +137,8 @@ describe("agent tools", () => {
     const project = await projects.create("Game");
     const controller = new AbortController();
     const imageGenerator: ImageGenerator = {
-      generate: async (_input, signal) => {
+      generate: async (input, signal) => {
+        expect(input).toEqual({ prompt: "A forest", size: "1536x1024" });
         expect(signal).toBe(controller.signal);
         return { bytes: Buffer.from("generated image"), mediaType: "image/webp" };
       },
@@ -156,6 +157,67 @@ describe("agent tools", () => {
     expect(result.details).toEqual({ artifact: { type: "image", path: relativePath, mediaType: "image/webp" } });
     expect(await readFile(path.join(project.workspacePath, relativePath), "utf8")).toBe("generated image");
     expect(await readdir(path.join(dataDirectory, "tools", "runs"))).toEqual([]);
+  });
+
+  it("forwards project reference images through ToolRunner and saves its output", async () => {
+    const dataDirectory = await mkdtemp(path.join(tmpdir(), "ohmygame-agent-references-"));
+    const projects = new ProjectManager(dataDirectory);
+    await projects.load();
+    const project = await projects.create("Terrain");
+    const images = ["png", "jpg", "webp"];
+    for (const extension of images) await projects.addGeneratedAsset(project.id, `reference.${extension}`, Buffer.from(extension));
+    const generate = vi.fn(async () => ({ bytes: Buffer.from("terrain"), mediaType: "image/png" as const }));
+    const runner = new ToolRunner(dataDirectory, { generate });
+    await runner.load();
+    const run = vi.spyOn(runner, "run");
+    const tool = createAgentTools(project, runner, projects).find(({ name }) => name === "generate_image")!;
+    const controller = new AbortController();
+    const expected = {
+      prompt: "Top-down terrain", resolution: "2K", aspectRatio: "3:2",
+      images: images.map((extension) => ({ mediaType: `image/${extension === "jpg" ? "jpeg" : extension}`, data: Buffer.from(extension).toString("base64") })),
+    };
+    const result = await tool.execute("terrain", {
+      prompt: expected.prompt, resolution: "2K", aspectRatio: "3:2",
+      referenceImagePaths: images.map((extension) => `assets/generated/reference.${extension}`),
+    }, controller.signal, undefined, {} as never);
+    expect(run).toHaveBeenCalledWith("generate-image", expected, controller.signal);
+    expect(generate).toHaveBeenCalledWith(expected, controller.signal);
+    expect(result.details).toMatchObject({ artifact: { type: "image", mediaType: "image/png" } });
+    expect(await readdir(path.join(dataDirectory, "tools", "runs"))).toEqual([]);
+    await tool.execute("configured", { prompt: "No references", resolution: "1K", aspectRatio: "1:1" }, undefined, undefined, {} as never);
+    expect(generate).toHaveBeenLastCalledWith({ prompt: "No references", resolution: "1K", aspectRatio: "1:1" }, undefined);
+  });
+
+  it("rejects unsupported references, workspace escapes, and incompatible image options before generation", async () => {
+    const dataDirectory = await mkdtemp(path.join(tmpdir(), "ohmygame-agent-references-"));
+    const projects = new ProjectManager(dataDirectory);
+    await projects.load();
+    const project = await projects.create("Terrain");
+    await projects.addGeneratedAsset(project.id, "reference.png", Buffer.from("png"));
+    await writeFile(path.join(project.workspacePath, "unsupported.gif"), "gif");
+    const outside = path.join(dataDirectory, "outside.png");
+    await writeFile(outside, "outside");
+    await symlink(dataDirectory, path.join(project.workspacePath, "outside-link"), "junction");
+    const generate = vi.fn(async () => ({ bytes: Buffer.from("terrain"), mediaType: "image/png" as const }));
+    const runner = new ToolRunner(dataDirectory, { generate });
+    await runner.load();
+    const tool = createAgentTools(project, runner, projects).find(({ name }) => name === "generate_image")!;
+    for (const reference of ["unsupported.gif", "../outside.png", outside, "outside-link/outside.png", "missing.png"]) {
+      await expect(tool.execute("invalid", { prompt: "Terrain", resolution: "1K", aspectRatio: "1:1", referenceImagePaths: [reference] }, undefined, undefined, {} as never)).rejects.toThrow();
+    }
+    const referenceImagePaths = ["assets/generated/reference.png"];
+    for (const options of [
+      { referenceImagePaths },
+      { resolution: "1K" },
+      { aspectRatio: "1:1" },
+      { size: "1024x1024", resolution: "1K", aspectRatio: "1:1", referenceImagePaths },
+      { resolution: "1K", aspectRatio: "1:1", referenceImagePaths: Array(15).fill(referenceImagePaths[0]) },
+      { resolution: "invalid", aspectRatio: "1:1" },
+      { resolution: "1K", aspectRatio: "invalid" },
+    ]) {
+      await expect(tool.execute("invalid", { prompt: "Terrain", ...options }, undefined, undefined, {} as never)).rejects.toThrow();
+    }
+    expect(generate).not.toHaveBeenCalled();
   });
 
   it("publishes a validated structured plan", async () => {

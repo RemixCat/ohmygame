@@ -2,6 +2,15 @@
 
 Use the [worked example](expansion-example.txt) as a benchmark for detail density, chapter development, and relationships between elements. Transfer its progression from layout through structures and lived-in detail to materials, atmosphere, and composition. Match the depth of resolved design decisions, not its theme, objects, place names, or chapter count. Follow the sequence below before writing scene code.
 
+## Two passes, one design
+
+For a new outdoor terrain world, write the same `.world/expanded-prompt.md` in two passes:
+
+1. **Intent before the terrain image:** separate explicit requirements from inferred decisions; establish scale, north/entry direction, regions, routes, desired ridges/peaks/valleys/terraces/cliffs/water, preliminary Meshy subjects, tree responsibilities, presentation, and information sources across visible areas. Resolve appearance and purpose, but leave precise coordinates and terrain-dependent attachments pending.
+2. **Spatial refinement after observation:** follow [terrain-workflow.md](terrain-workflow.md) and the direct-Astra handoff to select/view references, generate/view the terrain semantic image, and record the observed spatial relationships, world frame, road-terrain decisions, watercourse-terrain decisions, and project handoff information. Update this same design with landform positions, river main stems, tributaries, lakes, beds, banks, shorelines, building groups, roads, bridge crossings, core-tree prototypes, instancing areas, and overview/route/low-angle views. Finish all terrain-dependent relationships and run the complete check below.
+
+The direct-Astra record supports this document; it does not become a second world specification. Actual terrain, roads, and water-system relationships are built and inspected after this refinement and before mass asset placement. Local revisions update only affected decisions and do not restart the pipeline.
+
 ## 1. Inventory the world
 
 State the user's required theme, places, functions, style, and exclusions. Distinguish these from your own choices of time, culture or fictional setting, mood, and visual identity.
@@ -10,7 +19,7 @@ List the major regions, main routes, and hero subjects first. Identify which reg
 
 ## 2. Develop every major region and hero subject
 
-Organize the expansion into chapters suited to the inventory. Develop every major region and its core subjects individually; a region overview does not replace the design of its buildings, structures, or other defining subjects. Let depth follow complexity and expected viewing distance, preserving intentional negative space and simpler distant areas. Resolve the dimensions below for these major items, applying support requirements where relevant; minor props do not need separate specifications:
+Organize the expansion into chapters suited to the inventory. Develop every major region and its core subjects individually; a region overview does not replace the design of its buildings, structures, or other defining subjects. Let depth follow complexity and expected viewing distance, designing open surfaces and distant regions with readable terrain, material, ecological, structural, or activity information. Resolve the dimensions below for these major items, applying support requirements where relevant; minor props do not need separate specifications:
 
 - **Placement:** location, orientation, approximate scale, and spatial relationships to neighboring regions, routes, and subjects.
 - **Form and structure:** distinctive silhouette, proportions, construction or anatomy, component parts, and how those parts connect or support one another.
@@ -32,25 +41,29 @@ This demonstrates resolved relationships, not a required theme, building, or mat
 
 ### Choose how to model core subjects
 
-For a new world, when the user has authorized modeling and OhMyGame's Meshy tools and API configuration are available, actual Meshy use is required. Select the required subjects from the world design before checking their number:
+For a new world, an actual build request authorizes generation when OhMyGame's tools and credentials are available; do not require another written authorization. Actual Meshy use is required. Select the required subjects from the world design before checking their number:
 
 1. Include the main visual buildings, key landmarks, and major objects forming the core visual focal points.
 2. Cover every major region with representative Meshy subjects. Include all subjects needed to express each region and focal point, even when a region needs more than one.
-3. Check that the set contains at least six distinct major subjects. If fewer are selected, add suitable major subjects from the design, never accessory parts, unrelated additions, or artificial subdivisions. Complete the entire required set even when it exceeds six; six is a floor, not a cap or a measure of visual quality.
+3. Check that the set contains at least 15 independent major subjects across at least three significant object categories. If fewer are selected, add suitable major subjects from the design, never accessory parts, unrelated additions, or artificial subdivisions. Complete the entire required set even when it exceeds 15; 15 is a floor, not a cap or a measure of visual quality. Prioritize buildings and major structures in settlements; different building styles alone do not establish three object categories.
 
 Landmark trees, giant rock arches, major rock formations or landscape rock groups, and animals expressing the world's theme or activity can qualify. Judge importance through role, placement, scale, silhouette, and visibility in overview, regional, and planned route views. Ordinary decorative trees, small corner rocks, or barely visible animals do not qualify by category alone. Few buildings do not justify a general exemption from the minimum. If the design and minimum cannot both be satisfied, record the unmet requirement without silently relaxing it or changing the user's theme.
+
+Plan distinct core/near-view Meshy trees where they serve significant visual roles. Use one or two suitable Meshy prototypes to instance ordinary background groves, without generating every tree or counting instances as independent subjects. For a settlement, a useful starting mix is 7–9 buildings/major structures, 2–4 core trees/rocks/environmental subjects, and 2–3 bridges/towers/animals/vehicles/theme subjects, then enough other required subjects to reach at least 15. These are suggestions, not fixed category quotas; count each subject once.
 
 In the existing key visible features table, mark required Meshy subjects and explain their visual role, selection reason, and Meshy or procedural scope. Meshy must provide the main visible form of each required subject. Consider viewing distance, form and material detail, entering or passing through, opening parts, and accurate joins to roads, foundations, and neighboring structures. A complete building model with local procedural additions can preserve these connections. Generate separate parts only when the subject needs them; parts of one subject and repeated instances do not increase the count. Follow the [world contract](world-contract.md) for full counting and completion rules.
 
 Terrain, roads, ordinary wall segments, continuous steps, precise connectors, and necessary interaction parts usually remain procedural. Do not submit door handles, ordinary signs, connectors, or other accessory details as standalone Meshy tasks; use procedural geometry, textures, or rendered text. Important procedural buildings outside the required Meshy set still need the designed appearance and close detail.
 
-New scenes can load the selected models directly without a complete procedural first pass. Existing-scene revisions affect only requested subjects and necessary connections; they do not require six new models for each local change. Follow the [world contract](world-contract.md) for reference images, platform generation, and integration. Discussion, prompt-only, and plan-only tasks do not trigger paid generation; tool or resource blockers must remain explicit in `.world/validation-report.md`.
+New scenes can load the selected models directly without a complete procedural first pass. Existing-scene revisions affect only requested subjects and necessary connections; they do not require 15 new models for each local change. Follow the [world contract](world-contract.md) for reference images, platform generation, and integration. Discussion, prompt-only, and plan-only tasks do not trigger paid generation; tool or resource blockers must remain explicit in `.world/validation-report.md`.
 
 ## 3. Connect the scales and the journey
 
 Resolve the world boundary, terrain, entrances, regional connections, and navigable routes. Describe what is seen on arrival and what is discovered along each main route, including grounded movement and obstacles relevant to the requested experience. Connect world-scale composition to mid-scale buildings or subjects and then to close-range materials and traces of life.
 
-Explain foreground, midground, background, occlusion, focal points, and intentional negative space. Concentrate detail around activities and hero subjects, with quieter distant areas; avoid uniform scattering or tidy repetition. Coordinate palette, light direction, shadow color, sky, fog, and motion so the regions belong to one world and the focal hierarchy stays legible. Include requested interactions without adding unrelated game systems.
+Explain foreground, midground, background, occlusion, focal points, and information across open surfaces. Organize detail around activities, terrain edges, and ecological transitions; avoid uniform scattering or tidy repetition. Coordinate palette, light direction, shadow color, sky, fog, and motion so the regions belong to one world and the focal hierarchy stays legible. Include requested interactions without adding unrelated game systems.
+
+Apply [the world contract's open-surface information rule](world-contract.md#open-surfaces-and-information-density) to core regions, connecting areas, and distant regions. State the specific information sources for each; an adjective such as "quiet" is not a surface design.
 
 ## 4. Design the presentation
 
@@ -70,7 +83,7 @@ Include a concise **key visible features** table in `.world/expanded-prompt.md`,
 - Location, scale, orientation, foundations, entrances, route connections, and necessary interaction relationships.
 - Overview or regional observation positions, subject close-ups, and applicable contact or support views.
 
-Cover every major region, explicit user requirement, and defining feature; do not select only easy features. The table indexes the prose and does not cancel other commitments in it. Keep it in the existing design document without a new ID scheme, asset list, or separate specification. When the new-world Meshy requirement applies, verify at least six distinct major subjects, coverage of all major regions and core visual focal points, and inspectable planned views for every required subject. Repeated instances and split parts cannot fill missing slots.
+Cover every major region, explicit user requirement, and defining feature; do not select only easy features. The table indexes the prose and does not cancel other commitments in it. Keep it in the existing design document without a new ID scheme, asset list, or separate specification. When the new-world Meshy requirement applies, verify at least 15 independent major subjects across at least three significant categories, coverage of all major regions and core visual focal points, and inspectable planned views for every required subject. Repeated instances and split parts cannot fill missing slots. For new outdoor terrain worlds, verify the observed terrain semantic image and direct-Astra record have informed the second pass; resolve core trees, background instancing, open surfaces, roads and bridges against that record.
 
 Review the inventory against the expanded chapters, feature table, and acceptance views. Each core subject should answer: what form does it have, how do its parts connect, where are its details, and from where can they be seen? If implementation would still require inventing the spatial layout, key appearance, support relationships, materials, key routes, or presentation hierarchy, return to the relevant chapter and resolve those decisions first. Ordinary modeling parameters and implementation techniques can be chosen while coding.
 
@@ -89,6 +102,7 @@ Save the design in a `.world/` directory at the workspace root. Hidden directori
 - `.world/request.md`: the user's original request, verbatim, with later revision requests appended.
 - `.world/expanded-prompt.md`: the self-contained design, including the key visible features table, and the source of truth for the scene. Open with a short note separating what came from the user and what you inferred. If implementation forces a substantive design change, retain the original requirement and record the replacement, reason, and impact rather than silently dropping it. Follow [the world contract](world-contract.md) when carrying these decisions into implementation.
 - `.world/scene-summary.json`: a short index of the design.
+- `.world/terrain-direct-astra.md`: for outdoor terrain worlds, the observed references/image, spatial prompt, world frame, road-terrain decisions, actual modified files, initialization entry, and deterministic parameters described in [terrain-direct-astra.md](terrain-direct-astra.md).
 
 ```json
 {

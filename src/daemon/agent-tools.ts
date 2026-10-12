@@ -2,7 +2,7 @@ import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { defineTool, type ToolDefinition as PiToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { type Model3DAnimationAction, type PlanMode, type PlanState, type ProjectState, type QuestionnaireResult, type RunVideoToolRequest, type ToolId } from "../shared/contracts.js";
+import { IMAGE_ASPECT_RATIOS, IMAGE_RESOLUTIONS, type Model3DAnimationAction, type PlanMode, type PlanState, type ProjectState, type PromptImage, type QuestionnaireResult, type RunVideoToolRequest, type ToolId } from "../shared/contracts.js";
 import { DEFAULT_ANIMATION_ACTION_IDS, DEFAULT_CHARACTER_HEIGHT_METERS, MAX_ANIMATION_ACTIONS } from "../shared/generation-config.js";
 import type { PluginDetail } from "../shared/plugins.js";
 import type { ProjectManager } from "./projects.js";
@@ -185,11 +185,28 @@ export function createAgentTools(
         Type.Literal("1024x1024"),
         Type.Literal("1536x1024"),
         Type.Literal("1024x1536"),
-      ], { description: "Output size" })),
+      ], { description: "Legacy output size; cannot be combined with resolution, aspectRatio, or referenceImagePaths" })),
+      referenceImagePaths: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 14, description: "Project-relative PNG/JPEG/WebP paths. Requires resolution and aspectRatio; omit size." })),
+      resolution: Type.Optional(Type.Union(IMAGE_RESOLUTIONS.map((value) => Type.Literal(value)), { description: "Configured resolution; requires aspectRatio" })),
+      aspectRatio: Type.Optional(Type.Union(IMAGE_ASPECT_RATIOS.map((value) => Type.Literal(value)), { description: "Configured aspect ratio; requires resolution" })),
     }),
     execute: async (_toolCallId, input, signal) => {
       signal?.throwIfAborted();
-      const run = await tools.run("generate-image", input, signal);
+      const { referenceImagePaths, ...imageInput } = input;
+      let images: PromptImage[] | undefined;
+      if (referenceImagePaths !== undefined) {
+        if (referenceImagePaths.length > 14) throw new Error("Up to 14 reference images are supported");
+        images = [];
+        for (const referencePath of referenceImagePaths) {
+          signal?.throwIfAborted();
+          const source = await getWorkspaceMedia(project.workspacePath, referencePath);
+          if (source.contentType !== "image/png" && source.contentType !== "image/jpeg" && source.contentType !== "image/webp") {
+            throw new Error("Reference images must be PNG, JPEG, or WebP");
+          }
+          images.push({ mediaType: source.contentType, data: (await readFile(source.absolutePath)).toString("base64") });
+        }
+      }
+      const run = await tools.run("generate-image", { ...imageInput, ...(images !== undefined ? { images } : {}) }, signal);
       try {
         const output = run.files[0];
         if (!output) throw new Error("Image generator returned no output");

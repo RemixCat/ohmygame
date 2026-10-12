@@ -402,3 +402,11 @@
 ### 二十、完整风格关键词
 
 Japanese suburban railway station, anime style, toon shading, cel shading, 3D anime environment, sakura season, cherry blossom station, Japanese small town, spring afternoon, nostalgic railway, quiet shopping street, residential houses, local train, railway crossing, vending machines, utility poles, overhead wires, station platform, ticket gate, tactile paving, bicycles, convenience store, Japanese café, wagashi shop, flower shop, falling cherry blossom petals, soft sunlight, pastel colors, clean blue sky, hand-painted textures, cinematic composition, Makoto Shinkai inspired atmosphere, detailed environmental storytelling, stylized architecture, low-rise Japanese buildings, warm and peaceful daily life, high-detail Three.js scene, immersive walkable environment, layered depth, soft anime shadows, subtle outlines, gentle spring breeze.
+
+### 补充：从地形意图到空间实现
+
+第一轮扩写先确定北侧低山、中央车站缓台地、东侧河谷与跨河连接、西侧住宅坡地的关系，不提前编造精确坐标。从图库选择并实际查看 1～3 张相关图片，记录借鉴的谷地与台地组织，以及不照搬的轮廓和题材，再通过平台生成并查看正俯视地形语义图。将完整语义图、参考图、空间方向、世界尺度、车站、街区、河桥、道路与观察视角直接交给 Astra，让它自行决定 Three.js 地形、道路、河流、材质和环境资产的实现方式。地形、道路与水系应共同确定；河流主干、支流、湖泊、河床、河岸和岸线参与谷地及局部地形塑形，道路坡度、路基、桥梁和跨河关系也可以参与局部地形塑形。先完成支撑水面的河床、河岸和岸线，再创建可见水面。完成地形—道路—水系系统后，从俯视、全景和低角度检查，再安排依赖支撑面的主体资产。
+
+这个案例可选择 15 个独立 Meshy 主体：车站主体、便利店、咖啡店、和菓子店、花店、书店、自行车店、两栋轮廓不同的住宅，共 9 个建筑；河桥 1 个；两种近景樱花树 2 个；电车、巴士、送货面包车 3 个。建筑、桥梁、树木和载具形成多类覆盖，分别服务站前、商业街、住宅坡地和河岸。主体数按独立源资产计算，背景树使用少量原型实例化，复制和换色不增加计数，小摆件不凑数。若最终设计还要求其他主要主体，仍需全部完成。
+
+河岸用浅滩、砾石、护岸和芦苇衔接桥头；住宅坡地用台阶、裸土、草簇和排水沟连接街道；远山用山脊轮廓、林带和材质分带保持信息。开放区域可以少放对象，但不能留下未设计的大块空面。建筑基础、树木底部和道路沿实际三角网格查询高度，桥面另用其支撑面；在实际 Three.js 画面检查接触关系，不设置固定坡度或材质权重合格阈值。

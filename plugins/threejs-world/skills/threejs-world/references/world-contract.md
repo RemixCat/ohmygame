@@ -14,12 +14,12 @@ Deliver an editable web project that realizes the expanded design. High-detail, 
 
 ## Visual completion
 
-Follow [the expansion guide](world-expansion.md) to select the required Meshy subjects. For an authorized new world with OhMyGame's Meshy tools and API configuration available, complete at least six distinct major subjects covering every major region and core visual focus, and complete the entire required set even when it is larger. Meshy must supply their main visible forms; evaluating it and choosing procedural modeling for all subjects does not meet this requirement. Three.js still owns scene organization, layout, rendering, and interaction. Prepare shipped GLB or glTF assets with `web-3d-asset-pipeline` when the world uses them.
+Follow [the expansion guide](world-expansion.md) to select the required Meshy subjects. For an actual new-world build with OhMyGame's Meshy tools and credentials available, complete at least 15 independent major subjects across at least three significant object categories, covering every major region and core visual focus, and complete the entire required set even when it is larger. Prioritize buildings and major structures in settlements. Meshy must supply their main visible forms; evaluating it and choosing procedural modeling for all subjects does not meet this requirement. Three.js still owns scene organization, layout, rendering, and interaction. Prepare shipped GLB or glTF assets with `web-3d-asset-pipeline` when the world uses them.
 
-- **World scale:** make boundaries, region relationships, entrances, routes, and overall composition readable. Organize foreground, midground, and background with spatial depth and intentional negative space.
+- **World scale:** make boundaries, region relationships, entrances, routes, and overall composition readable. Organize foreground, midground, and background with spatial depth and fully designed open surfaces.
 - **Middle scale:** give buildings, landmarks, environmental structures, and hero subjects recognizable silhouettes, proportions, construction or anatomy, and connected parts.
 - **Close range:** show material differences, surface variation, seams, wear appropriate to the setting, local components, and traces of activity. These must hold up in the intended close-up views, not only as distant silhouettes.
-- **Detail distribution:** connect props and surface changes to their activity or environment. Concentrate richness near occupied areas and heroes while keeping quieter distant areas; uniform scattering and neatly cloned detail do not establish richness.
+- **Detail distribution:** connect props and surface changes to their activity or environment. Give core areas, connections, distant regions, and open surfaces appropriate visual information; uniform scattering and neatly cloned detail do not establish richness.
 - **Visual unity:** coordinate lighting, materials, shadows, fog, color, and motion to express the theme, reveal volume, and direct attention. Preserve plausible grounding and spatial relationships.
 
 Implement by region or core subject. Before treating one as complete, return to `.world/expanded-prompt.md` and its key visible features table to check the silhouette, important parts, material variation, and near-view details. Record the relevant code locations for those features in the existing [validation report](validation.md). Code presence is implementation evidence; runtime views must still show the promised result. If the feature cannot be seen, fix it or record the shortcoming rather than marking it visually complete.
@@ -28,9 +28,20 @@ A generic box, cylinder, or smooth tube carrying a subject's name does not reali
 
 When implementation requires a design change, retain the original requirement and record the replacement, reason, and impact in the design, with the remaining deviation in the validation report. A different technical method is acceptable if it preserves the intended visible result and the required Meshy contribution. Disclosing a missing or substituted feature does not make that requirement pass; do not erase a promise to claim agreement between design and implementation.
 
+### Open surfaces and information density
+
+Allow low object density, never unresolved low information density across major visible areas. Design open surfaces according to their function and viewing distance, without fixed objects-per-square-meter rules or uniform random scatter:
+
+- Rivers: shaped banks, bed depth and shallows, rocks, reeds, water variation, bridge piers and reflections where appropriate.
+- Fields: crop rows, field ridges, irrigation, track marks, fences and occasional trees.
+- Grass slopes: microterrain, clustered vegetation, exposed soil, rocks, paths and shadow variation.
+- Distant regions: readable silhouettes, material bands, vegetation belts and atmospheric depth.
+
+Maintain continuity from core areas through connections to the distance. Use `InstancedMesh` and a few suitable Meshy tree prototypes for ordinary groves; select distinct Meshy core trees for significant near-view roles. Build clusters around terrain edges, roads, building groups and ecological transitions. Do not preemptively remove promised information for presumed performance reasons.
+
 ### Count completed Meshy subjects
 
-- Count distinct major subjects, not scene nodes, GLB files, downloads, or API calls. Repeated placements, scale or color variants of the same model, and regenerated candidates do not add subjects. A subject split into several generated parts for production or interaction still counts as one.
+- Count independent major source subjects, not scene nodes, GLB files, downloads, or API calls. Repeated placements, rotations, scale or color variants, LODs of the same model, and regenerated candidates do not add subjects. A subject split into several generated parts for production or interaction still counts as one. Significant core trees can qualify; background instances do not add subjects.
 - Meshy must realize the subject's main visible form. A generated ornament attached to a procedural building does not make that building a Meshy subject. Do not generate door handles, ordinary signs, connectors, or other accessory details as standalone Meshy tasks. Those details may occur naturally within a complete generated subject.
 - Generation or copying a file into the project is insufficient. Count a subject as complete only after integration into the final scene, confirmed model and texture loading from the final static output, and the relevant visual and spatial checks. Temporary blockouts and unverified subjects do not count as completed.
 - Suitable existing Meshy models may be reused with their actual provenance recorded. Do not label an ordinary GLB of unknown or other origin as a Meshy result.
@@ -38,7 +49,7 @@ When implementation requires a design change, retain the original requirement an
 
 ## Meshy reference images and generation
 
-Use OhMyGame's existing `generate_image` and `generate_3d_asset` tools for the required subjects, or reuse suitable existing reference images or models under the counting rules above. Follow the current user authorization and platform rules for generation; discussion, prompt-only, and plan-only tasks do not authorize paid generation.
+Use only OhMyGame's existing `generate_image` and `generate_3d_asset` tools for generation, or reuse suitable existing reference images or models under the counting rules above. An actual build request suffices when tools and platform credentials are available, without another written authorization. Discussion, prompt-only, plan-only, and explicit no-generation tasks do not authorize generation. Missing credentials are configured by the user in `Providers & Models`; never read, store, pass, or request a plaintext API key, add a credential `.env`, or implement direct provider HTTP calls. Three.js plus Meshy remains the pipeline; do not introduce Blender, `bpy`, or `.blend` files.
 
 Prepare and inspect a reference image before submitting it:
 
@@ -68,6 +79,14 @@ For new scenes, load selected models directly. Use temporary blockouts only when
 
 Record the existing subject name, reference image and model paths, final scene reference location, and asset provenance in `.world/validation-report.md`, using the design's key visible features table as the required subject list. For reused models, record the available source and any unavailable reference-image history honestly. Do not add a database or separate manifest protocol. Generation success alone does not establish visual completion; follow the [validation guide](validation.md).
 
+## Terrain, roads, water, and asset placement
+
+For a new outdoor terrain world, execute [terrain-workflow.md](terrain-workflow.md) and the [direct-Astra handoff](terrain-direct-astra.md): actually view the selected references and generated top-down semantic image, pass the complete image and spatial brief directly to Astra, and let Astra modify the real Three.js project. The image is a macro design input, not a pixel mask or fixed shape vocabulary. Inspect macro landforms and the integrated road and water system from above, in panorama, and at a low angle before mass asset placement. Local revisions do not require a fresh image pipeline or 15 new subjects.
+
+Terrain, roads, and the water system are one spatial system even when represented by separate meshes. Determine road alignments, grading, bridge approaches, crossings, and tunnel openings as well as river main stems, tributaries, lakes, riverbeds, banks, and shorelines together with the terrain, and finalize their supporting geometry during scene initialization. Roads and watercourses may participate in local terrain shaping; roads must not be added later as floating planes, and visible water must not be added without finalized beds, banks, and shores.
+
+Use the same final terrain-road-water supporting geometry for rendering and support queries. Keep mesh positions, normals, triangle data, grading edits, riverbeds, banks, and shorelines synchronized. Buildings, roads, trees, animals, and interactions use the rendered ground or their designed bearing surface. Bridge decks, roofs, water, platforms, and caves require their actual support surfaces separately; a visible water surface is not a substitute for a ground-bearing surface. Keep all support queries in the same coordinate frame or transform explicitly. Do not impose pixel matching, fixed RGB masks, or strict height, slope, material-weight, or regional-variation acceptance thresholds.
+
 ## Ground contact and connected support
 
 Make contact and support credible at the intended observation scale. Distinguish a foundation that fails to meet its bearing surface from an object whose supporting structure is missing; they need different corrections.
@@ -85,6 +104,28 @@ Use the actual visible terrain or bearing surface. A continuous height function 
 Match repairs to the construction. Lowering a whole object can bury entrances or steps; moving a flat base to the highest ground point can enlarge downhill gaps. Neither is a universal fix. Preserve nearby routes and interactions, and recheck them after placement changes.
 
 Intentional flight, magical suspension, water flotation, and supported overhangs are valid when their mechanism and spatial relationships fit the design. Do not demand ground contact from every underside. Do not hide unintended gaps with extra shadows, decorative occluders, or inaccessible review angles.
+
+### Example: a hillside cabin on a supported platform
+
+This example applies only when the design calls for a vertically oriented cabin on a level platform carried by separate posts. It is a concrete placement pattern, not a universal placement algorithm for every GLB.
+
+- **Resolve the structure first.** Record the cabin's intended scale, orientation, entrance direction, platform footprint, platform thickness, post locations, and the model's actual bottom/contact points. Do not treat the lowest point of an arbitrary bounding box as the contact point for every part.
+- **Transform before querying.** Finish the model's scale and rotation, update its world transform, and transform each platform corner, any required intermediate footprint point, and each post foot into the same coordinate frame used by the project's support-surface query. Do not mix model-local coordinates with terrain-world coordinates.
+- **Sample multiple points.** Query the platform boundary and each post foot. Choose the platform elevation and construction response from those samples and the design: adjust the site, use a stepped or graded base, or keep the platform level and vary post lengths. If the terrain would cut through the platform, change the site, elevation, or local grading; do not simply push the whole cabin downward.
+- **Size each post independently.** Once the platform underside is fixed, calculate each post from its own terrain sample:
+
+  ```text
+  support      = querySupportSurface(postX, postZ, intendedBearingSurface)
+  postBottomY  = support?.height
+  postTopY     = platformBottomY
+  postLength   = postTopY - postBottomY
+  postCenterY  = (postTopY + postBottomY) / 2
+  ```
+
+  `querySupportSurface` is descriptive pseudocode, not a required import or fixed API. The project may use triangle sampling, raycasting, a spatial index, or another implementation that queries the same finalized visible support geometry. A missing or invalid query result, or a non-positive length, must trigger an explicit placement decision such as moving the site, changing the platform elevation, or recording a blocker. Do not silently substitute zero. Place the cabin against the platform top, not directly against the raw terrain.
+- **Connect and inspect the route.** Connect the entrance to the road with designed steps or a ramp. Use side and low-angle views to inspect the platform underside, both post ends, and the post feet; walk the route to the entrance and check for gaps, intersections, and blocked passage.
+
+Stone foundations, bridges, rocks, animals, and other structures require their own support treatment. Reuse the same principles of explicit contact points and relevant bearing surfaces without copying this platform-and-post calculation.
 
 ## Presentation and review views
 
