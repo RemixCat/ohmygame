@@ -8571,6 +8571,33 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
+.story-canvas-out-of-view {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 8px 10px 8px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface-raised) 96%, transparent);
+  box-shadow: 0 8px 24px color-mix(in srgb, #000 18%, transparent);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.story-canvas-out-of-view button {
+  padding: 5px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--surface-hover);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.story-canvas-out-of-view button:hover {
+  border-color: var(--text-muted);
+}
+
 .story-canvas-toolbar {
   display: flex;
   height: 44px;

@@ -50,6 +50,7 @@ const SELECTED_EDGE_OPTIONS = {
   markerEnd: { ...EDGE_OPTIONS.markerEnd, color: SELECTED_EDGE_COLOR },
 };
 const SNAP_GRID: [number, number] = [CANVAS_GRID_SIZE, CANVAS_GRID_SIZE];
+const MIN_FIT_ZOOM = 0.1;
 
 type EditorCanvasProps<N extends Node> = Omit<ReactFlowProps<N, Edge>, "onPaneContextMenu" | "onNodeDrag"> & {
   nodes: N[];
@@ -58,6 +59,8 @@ type EditorCanvasProps<N extends Node> = Omit<ReactFlowProps<N, Edge>, "onPaneCo
   onOpenMenu: (menu: CanvasContextMenuState) => void;
   /** Open the menu as "add" on a double-click on empty canvas in pointer mode. */
   addOnDoubleClick?: boolean;
+  /** Offer a recovery action when every node has been panned outside the viewport. */
+  recoverOutOfView?: boolean;
   fitViewOnLoad?: boolean;
   onInitialFit?: (viewport: { x: number; y: number; zoom: number }) => void;
 };
@@ -77,6 +80,7 @@ export function EditorCanvas<N extends Node>({
   onNodeDragStart,
   onNodeDragStop,
   onNodeContextMenu,
+  recoverOutOfView = false,
   fitViewOnLoad = false,
   onInitialFit,
   children,
@@ -135,6 +139,7 @@ export function EditorCanvas<N extends Node>({
       <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="var(--interactive-story-grid)" />
       <AlignmentGuides guides={guides} />
       <ZoomControls />
+      {recoverOutOfView && !fitViewOnLoad ? <CanvasViewportRecovery nodes={nodes} /> : null}
       {fitViewOnLoad ? <InitialCanvasView onReady={onInitialFit} /> : null}
       <Panel className="story-canvas-toolbar" position="bottom-center">
         {addControl}
@@ -162,7 +167,7 @@ function InitialCanvasView({ onReady }: {
   useEffect(() => {
     if (!initialized || width <= 0 || height <= 0) return;
     let disposed = false;
-    void fitView({ padding: 0.2, maxZoom: 1 }).then((fitted) => {
+    void fitView({ padding: 0.2, minZoom: MIN_FIT_ZOOM, maxZoom: 1 }).then((fitted) => {
       if (fitted && !disposed) onReady?.(getViewport());
     });
     return () => { disposed = true; };
@@ -261,6 +266,37 @@ function FitViewButton() {
     await fitView({ padding: 0.2, duration: 200 });
   }
   return <button type="button" title="Fit view" aria-label="Fit view" onClick={() => void fitCanvas()}><Maximize size={18} /></button>;
+}
+
+/** Keep an accidentally panned canvas recoverable without forcing the camera back automatically. */
+function CanvasViewportRecovery<N extends Node>({ nodes }: { nodes: N[] }) {
+  const initialized = useNodesInitialized();
+  const width = useStore((state) => state.width);
+  const height = useStore((state) => state.height);
+  const viewport = useViewport();
+  const { fitView, getNodesBounds } = useReactFlow<N, Edge>();
+  if (!initialized || !nodes.length || width <= 0 || height <= 0) return null;
+  const contentVisible = nodes.some((node) => canvasBoundsVisible(getNodesBounds([node]), viewport, width, height));
+  if (contentVisible) return null;
+  return (
+    <Panel className="story-canvas-out-of-view" position="top-center" role="status">
+      <span>Canvas content is outside the current view.</span>
+      <button type="button" onClick={() => void fitView({ padding: 0.2, minZoom: MIN_FIT_ZOOM, duration: 200 })}>Show content</button>
+    </Panel>
+  );
+}
+
+export function canvasBoundsVisible(
+  bounds: { x: number; y: number; width: number; height: number },
+  viewport: { x: number; y: number; zoom: number },
+  width: number,
+  height: number,
+): boolean {
+  const left = bounds.x * viewport.zoom + viewport.x;
+  const top = bounds.y * viewport.zoom + viewport.y;
+  const right = left + bounds.width * viewport.zoom;
+  const bottom = top + bounds.height * viewport.zoom;
+  return right >= 0 && bottom >= 0 && left <= width && top <= height;
 }
 
 function AlignmentGuides({ guides }: { guides?: CanvasAlignmentGuides }) {

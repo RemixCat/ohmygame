@@ -1592,6 +1592,8 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
                 return Boolean(source && target && connectionRelation(source, target, connection.sourceHandle, nodes, libraryAssets, imageModels, model3DModels));
               }}
               defaultViewport={editorLayout.viewport}
+              minZoom={0.1}
+              recoverOutOfView
               fitViewOnLoad={editorLayout.fitView === true}
               onInitialFit={finishInitialFit}
             />

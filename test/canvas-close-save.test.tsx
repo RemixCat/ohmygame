@@ -10,9 +10,11 @@ import type { CanvasBoardStorage } from "../src/renderer/canvas-board-storage.js
 import type { CanvasDocuments } from "../src/renderer/canvas-document-node.js";
 
 let viewport = { x: 12, y: 24, zoom: 1.2 };
+let canvasProps: { minZoom?: number; recoverOutOfView?: boolean } = {};
 vi.doMock(path.resolve("src/renderer/editor-canvas.tsx"), async original => ({
   ...(await original<typeof import("../src/renderer/editor-canvas.js")>()),
-  EditorCanvas: (props: { onInit: (instance: ReactFlowInstance) => void }) => {
+  EditorCanvas: (props: { onInit: (instance: ReactFlowInstance) => void; minZoom?: number; recoverOutOfView?: boolean }) => {
+    canvasProps = props;
     useEffect(() => { props.onInit({ getViewport: () => viewport } as ReactFlowInstance); }, []);
     return <div />;
   },
@@ -40,6 +42,7 @@ let root: ReturnType<typeof createRoot>, container: HTMLDivElement;
 beforeEach(async () => {
   vi.useFakeTimers(); vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   viewport = { x: 12, y: 24, zoom: 1.2 };
+  canvasProps = {};
   save.mockReset().mockImplementation(async value => value);
   const storage: CanvasBoardStorage = {
     key: "p:b", boardId: "b", load: async () => createAssetCanvasDocument(), save,
@@ -58,6 +61,11 @@ beforeEach(async () => {
 afterEach(async () => {
   await act(async () => root.unmount()); container.remove();
   vi.useRealTimers(); vi.unstubAllGlobals();
+});
+
+it("scopes viewport recovery to asset and design canvases", () => {
+  expect(canvasProps.minZoom).toBe(0.1);
+  expect(canvasProps.recoverOutOfView).toBe(true);
 });
 
 it("flushes the displayed canvas viewport before the delayed move-end event and waits for disk", async () => {
