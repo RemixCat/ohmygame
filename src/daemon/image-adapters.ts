@@ -1,15 +1,19 @@
-import type { ImageProtocol } from "../shared/contracts.js";
+import type { ImageModel, ImageProtocol } from "../shared/contracts.js";
 import { withOpenRouterAttribution } from "./openrouter-attribution.js";
 import { ImageGenerationError, OpenAIImageGenerator, type GeneratedImage, type GeneratedImageMediaType, type ImageGenerationInput } from "./openai-image.js";
+import { seedreamModel } from "./seedream-models.js";
+import { SeedreamProvider } from "./seedream-provider.js";
 
 export interface ImageSource {
   baseUrl: string;
   apiKey: string;
   headers?: Record<string, string>;
+  authentication?: "api_key" | "none";
+  apiKeyHeader?: "authorization" | "x-goog-api-key";
 }
 
 export interface ImageProtocolAdapter {
-  generate(source: ImageSource, model: string, input: ImageGenerationInput, signal?: AbortSignal): Promise<GeneratedImage>;
+  generate(source: ImageSource, model: string, input: ImageGenerationInput, signal?: AbortSignal, definition?: ImageModel): Promise<GeneratedImage>;
 }
 
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -17,13 +21,20 @@ type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Resp
 export function createImageProtocolAdapters(request: Fetch = fetch): Record<ImageProtocol, ImageProtocolAdapter> {
   return {
     "openai-images": {
-      generate: (source, model, input, signal) => new OpenAIImageGenerator(source.apiKey, source.baseUrl, request).generate({ ...input, model }, signal),
+      generate: (source, model, input, signal) => new OpenAIImageGenerator(source.apiKey, source.baseUrl, request, source.headers, source.authentication).generate({ ...input, model }, signal),
     },
     "gemini-generate-content": {
       generate: (source, model, input, signal) => generateGemini(source, model, input, signal, request),
     },
     "openrouter-images": {
       generate: (source, model, input, signal) => generateOpenRouter(source, model, input, signal, request),
+    },
+    "volcengine-images": {
+      generate: (source, model, input, signal, configured) => {
+        const definition = configured ?? seedreamModel(model);
+        if (!definition) throw new ImageGenerationError("The selected Seedream model is not available", 503);
+        return new SeedreamProvider(() => source.apiKey, request, source.baseUrl, source.headers, source.authentication).generate(definition, input, signal);
+      },
     },
   };
 }
@@ -34,7 +45,7 @@ async function generateOpenRouter(source: ImageSource, model: string, input: Ima
   try {
     response = await request(`${source.baseUrl.replace(/\/$/, "")}/images`, {
       method: "POST",
-      headers: { ...withOpenRouterAttribution(source.headers ?? {}), authorization: `Bearer ${source.apiKey}`, "content-type": "application/json" },
+      headers: { ...withOpenRouterAttribution(sourceHeaders(source)), "content-type": "application/json" },
       body: JSON.stringify({
         model,
         prompt: input.prompt,
@@ -81,7 +92,7 @@ async function generateGemini(source: ImageSource, model: string, input: ImageGe
   try {
     response = await request(endpoint, {
       method: "POST",
-      headers: { authorization: `Bearer ${source.apiKey}`, "content-type": "application/json" },
+      headers: { ...sourceHeaders(source), "content-type": "application/json" },
       body: JSON.stringify({
         contents: [{ role: "user", parts: [
           { text: input.prompt },
@@ -109,6 +120,11 @@ async function generateGemini(source: ImageSource, model: string, input: ImageGe
   const mediaType = imageMediaType(inlineData.mimeType);
   if (!mediaType) throw new ImageGenerationError("Gemini returned an unsupported image format");
   return { bytes: Buffer.from(inlineData.data, "base64"), mediaType, requestId: body.responseId ?? response.headers.get("x-request-id") ?? undefined };
+}
+
+function sourceHeaders(source: ImageSource): Record<string, string> {
+  return { ...source.headers, ...(source.authentication === "none" ? {} : source.apiKeyHeader === "x-goog-api-key"
+    ? { "x-goog-api-key": source.apiKey } : { authorization: `Bearer ${source.apiKey}` }) };
 }
 
 interface GeminiResponse {

@@ -24,6 +24,14 @@ import {
   type PlayableStateService,
 } from "./playable-nodes.js";
 import {
+  emptyPlayableSeen,
+  layoutPlayableStory,
+  parsePlayableSeen,
+  playableStoryMap,
+  type PlayableSeen,
+  type PlayableStoryLayout,
+} from "./playable-story-map.js";
+import {
   cloneJsonObject,
   createPlayableState,
   isJsonObject,
@@ -45,6 +53,12 @@ export interface PlayableSave {
 export interface PlayableSaveStore {
   load(): Promise<unknown | undefined>;
   save(save: PlayableSave): Promise<void>;
+}
+
+/** Where the Runtime keeps what the player has seen; apart from the save slot. */
+export interface PlayableSeenStore {
+  load(): Promise<unknown | undefined>;
+  save(seen: PlayableSeen): Promise<void>;
 }
 
 export interface PlayableMountedSurface {
@@ -72,6 +86,8 @@ export interface NodeRuntimeOptions {
   graphSignature: string;
   surfaceHost: PlayableSurfaceHost;
   saveStore: PlayableSaveStore;
+  /** Defaults to memory, so nothing seen outlasts the session. */
+  seenStore?: PlayableSeenStore;
   assetUrls: Readonly<Record<string, string>>;
   policy?: NodeRuntimePolicy;
   /** Node to enter instead of `entryNodeId`. */
@@ -187,6 +203,7 @@ export class NodeRuntime {
   readonly #graphSignature: string;
   readonly #surfaceHost: PlayableSurfaceHost;
   readonly #saveStore: PlayableSaveStore;
+  readonly #seenStore: PlayableSeenStore;
   #incompatibleSave = false;
   readonly #assetUrls: Readonly<Record<string, string>>;
   readonly #now: () => Date;
@@ -204,6 +221,11 @@ export class NodeRuntime {
   #errors: NodeRuntimeErrorRecord[] = [];
   #cachedSave?: PlayableSave;
   #activeNode?: ActiveSurface;
+  /**
+   * Back stack depth at which the player left the story by a navigation
+   * Signal. While set, the save keeps where they left it.
+   */
+  #leftStoryAt?: number;
   #started = false;
   #starting = false;
   #disposed = false;
@@ -212,6 +234,10 @@ export class NodeRuntime {
   #activeOperation?: Promise<void>;
   #disposePromise?: Promise<void>;
   #saveQueue: Promise<void> = Promise.resolve();
+  #seen: PlayableSeen = emptyPlayableSeen();
+  #seenQueue: Promise<void> = Promise.resolve();
+  #seenSaveFailed = false;
+  #storyLayout?: PlayableStoryLayout;
 
   constructor(options: NodeRuntimeOptions) {
     this.#graph = options.graph;
@@ -219,6 +245,7 @@ export class NodeRuntime {
     this.#graphSignature = options.graphSignature;
     this.#surfaceHost = options.surfaceHost;
     this.#saveStore = options.saveStore;
+    this.#seenStore = options.seenStore ?? new MemoryPlayableSeenStore();
     this.#assetUrls = options.assetUrls;
     this.#now = options.now ?? (() => new Date());
     this.#onError = options.onError ?? (() => undefined);
@@ -272,11 +299,14 @@ export class NodeRuntime {
       const stored = await this.#saveStore.load();
       this.#cachedSave = this.#parseSave(stored);
       this.#incompatibleSave = stored !== undefined && stored !== null && !this.#cachedSave;
+      // What the player has seen only feeds the Story Map; losing it never stops the game.
+      this.#seen = parsePlayableSeen(await this.#seenStore.load().catch((cause: unknown) => this.#reportError(cause)));
       this.#assertNotDisposed();
       this.#started = true;
       this.#activeNode = await this.#mountNode(this.#navigation.currentNodeId);
       this.#assertNotDisposed();
       this.#activeNode.token.navigationReady = true;
+      this.#see("nodes", this.#navigation.currentNodeId);
     } catch (cause) {
       if (!this.#disposed) this.#failed = true;
       await this.#disposeActiveSurface(this.#activeNode);
@@ -347,6 +377,7 @@ export class NodeRuntime {
     } catch {
       // The state or navigation caller receives the storage error.
     }
+    await this.#seenQueue;
     await this.#disposeActiveSurface(this.#activeNode);
     this.#activeNode = undefined;
     this.#stateListeners.clear();
@@ -356,7 +387,8 @@ export class NodeRuntime {
     this.#assertNavigationReady(token);
     const nodeId = this.#navigation.currentNodeId;
     const node = playableNodeById(this.#graph, nodeId);
-    if (!node?.signals.some((candidate) => candidate.id === signal)) {
+    const declared = node?.signals.find((candidate) => candidate.id === signal);
+    if (!declared) {
       throw new PlayableNavigationError(
         "unknown-signal",
         `Node "${nodeId}" did not declare Signal "${signal}".`,
@@ -386,8 +418,16 @@ export class NodeRuntime {
       return;
     }
     this.#changed();
-    await this.#navigate(() =>
-      navigatePlayableSignal(this.#graph, this.#navigation, signal),
+    if (edge) this.#see("edges", edge.id);
+    // A navigation Signal leads around the game, not on through the story.
+    const leftStoryAt =
+      declared.role === "navigation"
+        ? (this.#leftStoryAt ?? this.#navigation.backStack.length)
+        : undefined;
+    await this.#navigate(
+      () => navigatePlayableSignal(this.#graph, this.#navigation, signal),
+      undefined,
+      leftStoryAt,
     );
   }
 
@@ -403,7 +443,17 @@ export class NodeRuntime {
       });
       return;
     }
-    await this.#navigate(() => navigatePlayableBack(this.#navigation));
+    // Back as far as where the player left the story is still around the game.
+    const leftStoryAt =
+      this.#leftStoryAt !== undefined &&
+      this.#navigation.backStack.length > this.#leftStoryAt
+        ? this.#leftStoryAt
+        : undefined;
+    await this.#navigate(
+      () => navigatePlayableBack(this.#navigation),
+      undefined,
+      leftStoryAt,
+    );
   }
 
   #report(report: NodeRuntimeNavigationReport): void {
@@ -414,6 +464,7 @@ export class NodeRuntime {
   async #navigate(
     resolve: () => PlayableNavigationState,
     prepare?: () => void,
+    leftStoryAt?: number,
   ): Promise<void> {
     this.#assertStarted();
     if (this.#transitioning)
@@ -424,7 +475,7 @@ export class NodeRuntime {
     const next = resolve();
     this.#transitioning = true;
     this.#changed();
-    const operation = this.#performNavigation(next, prepare);
+    const operation = this.#performNavigation(next, prepare, leftStoryAt);
     this.#activeOperation = operation;
     try {
       await operation;
@@ -439,6 +490,7 @@ export class NodeRuntime {
   async #performNavigation(
     next: PlayableNavigationState,
     prepare: (() => void) | undefined,
+    leftStoryAt: number | undefined,
   ): Promise<void> {
     try {
       prepare?.();
@@ -449,12 +501,15 @@ export class NodeRuntime {
       this.#activeNode = await this.#mountNode(next.currentNodeId);
       this.#assertNotDisposed();
       this.#activeNode.token.navigationReady = true;
+      this.#see("nodes", next.currentNodeId);
     } catch (cause) {
       this.#recordError(cause, next.currentNodeId);
       if (!this.#disposed) await this.#failRuntime();
       throw cause;
     }
-    await this.#checkpoint();
+    // A way around the game does not move the save from the story.
+    if (leftStoryAt === undefined) await this.#checkpoint();
+    else this.#leftStoryAt = leftStoryAt;
   }
 
   async #failRuntime(): Promise<void> {
@@ -491,6 +546,11 @@ export class NodeRuntime {
           this.#emit(token, signal),
         ),
         back: this.#guardAsync(token, () => this.#back(token)),
+        connected: this.#guard(token, (signal: string) => {
+          this.#assertSurfaceActive(token);
+          return node.signals.some((candidate) => candidate.id === signal)
+            && playableEdgeForSignal(this.#graph, nodeId, signal) !== undefined;
+        }),
       },
     };
     try {
@@ -541,6 +601,14 @@ export class NodeRuntime {
         continue: this.#guardAsync(token, () => this.#continue(token)),
         save: this.#guardAsync(token, () => this.#save(token)),
         restart: this.#guardAsync(token, () => this.#restart(token)),
+      },
+      story: {
+        map: this.#guard(token, () => {
+          this.#assertSurfaceActive(token);
+          this.#storyLayout ??= layoutPlayableStory(this.#graph);
+          // A preview shows the author the whole map, not one player's progress.
+          return playableStoryMap(this.#storyLayout, this.#policy === "report" ? "all" : this.#seen);
+        }),
       },
       lifecycle: { signal: abortController.signal },
     };
@@ -763,6 +831,7 @@ export class NodeRuntime {
   }
 
   async #checkpoint(): Promise<void> {
+    this.#leftStoryAt = undefined;
     const save: PlayableSave = {
       version: 1,
       graphVersion: this.#graph.version,
@@ -780,6 +849,25 @@ export class NodeRuntime {
     };
     this.#saveQueue = this.#saveQueue.then(write, write);
     await this.#saveQueue;
+  }
+
+  /**
+   * Records the first time the player enters a Node or takes an edge. Only
+   * play counts: the `report` policy previews a Node without the player.
+   * A failed write does not stop the game; the first one is reported, and
+   * later writes still try.
+   */
+  #see(kind: "nodes" | "edges", id: string): void {
+    if (this.#policy === "report" || Object.hasOwn(this.#seen[kind], id)) return;
+    this.#seen = { ...this.#seen, [kind]: { ...this.#seen[kind], [id]: this.#now().toISOString() } };
+    const seen = this.#seen;
+    this.#seenQueue = this.#seenQueue
+      .then(() => this.#seenStore.save(seen))
+      .catch((cause: unknown) => {
+        if (this.#seenSaveFailed) return;
+        this.#seenSaveFailed = true;
+        this.#reportError(cause);
+      });
   }
 
   #parseSave(value: unknown): PlayableSave | undefined {
@@ -918,6 +1006,22 @@ export class MemoryPlayableSaveStore implements PlayableSaveStore {
 
   async save(save: PlayableSave): Promise<void> {
     this.#value = structuredClone(save);
+  }
+}
+
+export class MemoryPlayableSeenStore implements PlayableSeenStore {
+  #value: PlayableSeen | undefined;
+
+  constructor(initial?: PlayableSeen) {
+    this.#value = initial ? structuredClone(initial) : undefined;
+  }
+
+  async load(): Promise<unknown | undefined> {
+    return this.#value ? structuredClone(this.#value) : undefined;
+  }
+
+  async save(seen: PlayableSeen): Promise<void> {
+    this.#value = structuredClone(seen);
   }
 }
 

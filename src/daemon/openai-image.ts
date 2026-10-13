@@ -34,6 +34,8 @@ export class OpenAIImageGenerator implements ImageGenerator {
     private readonly apiKey: string | undefined,
     private readonly baseUrl = "https://api.openai.com/v1",
     private readonly request: Fetch = fetch,
+    private readonly headers: Record<string, string> = {},
+    private readonly authentication: "api_key" | "none" = "api_key",
   ) {}
 
   async generate(input: ImageGenerationInput & { model?: string }, signal?: AbortSignal): Promise<GeneratedImage> {
@@ -58,7 +60,8 @@ export class OpenAIImageGenerator implements ImageGenerator {
       response = await this.request(endpoint, {
         method: "POST",
         headers: {
-          authorization: `Bearer ${this.apiKey}`,
+          ...this.headers,
+          ...(this.authentication === "none" ? {} : { authorization: `Bearer ${this.apiKey}` }),
           ...(!images.length ? { "content-type": "application/json" } : {}),
         },
         body,
@@ -163,7 +166,7 @@ const OPENAI_IMAGE_SIZES: Record<Exclude<ImageResolution, "512">, Record<ImageAs
   },
 };
 
-function openAIImageSize(input: ImageGenerationInput): string {
+export function openAIImageSize(input: ImageGenerationInput): string {
   if (input.size) return input.size;
   if (!input.resolution || input.resolution === "512" || !input.aspectRatio) {
     throw new ImageGenerationError("Image resolution and aspect ratio are not supported by the selected model", 400);

@@ -3,9 +3,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/daemon/app.js";
-import { createNodeCodebase, createPlayableStarterCodebase } from "../src/daemon/playable-codebase.js";
+import { createNodeCodebase } from "../src/daemon/playable-codebase.js";
+import { createStarterCodebaseWithScene } from "./playable-fixture.js";
 import type { PreparedExampleCatalog } from "../src/shared/examples.js";
 import { isPreparedExampleCatalog } from "../src/shared/examples.js";
+import { createCanvasBoard } from "../src/shared/canvas-workspace.js";
 
 const apps: Array<ReturnType<typeof createApp>> = [];
 
@@ -40,7 +42,7 @@ async function writeExamples(): Promise<string> {
   // AGENTS.md, README.md and schemas when it copies the example.
   const story = path.join(directory, "train", "files");
   await mkdir(story, { recursive: true });
-  await createNodeCodebase(story, createPlayableStarterCodebase("Night Train", { width: 1280, height: 720 }));
+  await createNodeCodebase(story, createStarterCodebaseWithScene("Night Train", { width: 1280, height: 720 }));
   for (const owned of ["AGENTS.md", "README.md", "schemas"]) await rm(path.join(story, owned), { recursive: true });
   await writeFile(path.join(directory, "train", "cover.webp"), "RIFF-train");
   catalog.examples.push({
@@ -77,6 +79,77 @@ async function startApp(examplesDirectory?: string, interactiveStoryPlayerDirect
 }
 
 describe("examples", () => {
+  it("preserves remixed node positions and the original viewport until explicitly edited", async () => {
+    const directory = await writeExamples();
+    const canvas = path.join(directory, "pond/files/canvas");
+    for (const folder of ["boards", "editor"]) await mkdir(path.join(canvas, folder), { recursive: true });
+    await writeFile(path.join(canvas, "index.json"), JSON.stringify({ version: 1, boards: [{ id: "design", name: "Design" }, { id: "art", name: "Art" }], documents: [] }));
+    const layout = { version: 1, view: "canvas", nodes: { note: { x: 96, y: 576 } }, viewport: { x: -4805, y: 44, zoom: 1.14 } };
+    for (const id of ["design", "art"]) {
+      const { editorLayout: _editorLayout, ...board } = createCanvasBoard();
+      await writeFile(path.join(canvas, `boards/${id}.json`), JSON.stringify({ ...board, id, nodes: [{ id: "note", type: "text", data: { text: "Example", instruction: "" } }] }));
+      await writeFile(path.join(canvas, `editor/${id}.json`), JSON.stringify(layout));
+    }
+    const app = await startApp(directory);
+    const project = (await app.inject({ method: "POST", url: "/projects", payload: { type: "web-game", exampleId: "pond" } })).json();
+    for (const id of ["design", "art"]) {
+      const url = `/projects/${project.id}/canvas/boards/${id}`;
+      const detail = (await app.inject({ method: "GET", url })).json();
+      expect(detail.board.nodes[0].position).toEqual({ x: 96, y: 576 });
+      expect(detail.board.editorLayout).toEqual(layout);
+      expect(JSON.parse(await readFile(path.join(canvas, `editor/${id}.json`), "utf8"))).toEqual(layout);
+      detail.board.editorLayout.viewport = { x: 64, y: 32, zoom: 0.3 };
+      const saved = await app.inject({ method: "PUT", url, payload: detail });
+      expect(saved.statusCode).toBe(200);
+      const reopened = (await app.inject({ method: "GET", url })).json();
+      expect(reopened.board.editorLayout.fitView).toBeUndefined();
+      expect(reopened.board.editorLayout.viewport).toEqual({ x: 64, y: 32, zoom: 0.3 });
+      expect(reopened.board.nodes[0].position).toEqual({ x: 96, y: 576 });
+    }
+  });
+
+  it("preserves generation history and binds it to the remixed project", async () => {
+    const directory = await writeExamples();
+    const canvas = path.join(directory, "pond/files/canvas");
+    await mkdir(canvas, { recursive: true });
+    await writeFile(path.join(canvas, "index.json"), JSON.stringify({ version: 1, boards: [{ id: "design", name: "Design" }], documents: [] }));
+    const history = ["succeeded", "failed"].map((status, index) => ({
+      id: `historical-${index}`,
+      toolId: "generate-image",
+      createdAt: "2026-10-07T12:00:00.000Z",
+      status,
+      title: "Original concept",
+      context: { projectId: "original-project", boardId: "design", nodeId: "concept" },
+      input: {
+        prompt: "Original prompt", resolution: "2K", aspectRatio: "16:9",
+        images: status === "failed" ? [`data:image/png;base64,${"A".repeat(4 * 1024 * 1024)}`] : [],
+      },
+      ...(status === "succeeded" ? { run: { id: "original-run", assetIds: ["original-asset"] } } : { error: "Original error" }),
+    }));
+    await writeFile(path.join(canvas, "jobs.json"), JSON.stringify(history));
+    const app = await startApp(directory);
+    const created = await app.inject({ method: "POST", url: "/projects", payload: { type: "web-game", exampleId: "pond" } });
+    expect(created.statusCode).toBe(201);
+    const project = created.json();
+    const expected = history.map((job) => ({ ...job, context: { ...job.context, projectId: project.id } }));
+    expect(JSON.parse(await readFile(path.join(project.workspacePath, "canvas/jobs.json"), "utf8"))).toEqual(expected);
+    const response = await app.inject({ method: "GET", url: `/projects/${project.id}/canvas/jobs` });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(expected.map(({ input: _input, ...job }) => job));
+    expect(JSON.parse(await readFile(path.join(canvas, "jobs.json"), "utf8"))).toEqual(history);
+  });
+
+  it("rejects invalid generation history without leaving a partially copied project", async () => {
+    const directory = await writeExamples();
+    const canvas = path.join(directory, "pond/files/canvas");
+    await mkdir(canvas, { recursive: true });
+    await writeFile(path.join(canvas, "jobs.json"), JSON.stringify({ jobs: [] }));
+    const app = await startApp(directory);
+    const response = await app.inject({ method: "POST", url: "/projects", payload: { type: "web-game", exampleId: "pond" } });
+    expect(response.statusCode).toBe(400);
+    expect((await app.inject({ method: "GET", url: "/projects" })).json()).toEqual([]);
+  });
+
   it("lists packaged examples and serves their covers", async () => {
     const app = await startApp(await writeExamples());
 

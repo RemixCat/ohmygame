@@ -1,5 +1,6 @@
+import { useReadyRuntimeGeneration } from "./runtime-connection.js";
 import { Plus, RefreshCw } from "./icons.js";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PluginMention, ProjectState, ProjectType, PromptAttachment, PromptImage, PromptMode } from "../shared/contracts.js";
 import { deleteProject, duplicateProject, listProjects, renameProject, waitForRuntime } from "./api.js";
 import { ExampleShelf, useExamples } from "./examples.js";
@@ -9,35 +10,32 @@ import { ProjectCreateDialog } from "./project-create-dialog.js";
 import { ProjectRenameDialog } from "./project-rename-dialog.js";
 import { projectDeletionConfirmation } from "./project-deletion.js";
 import { ProjectPromptCreator } from "./project-prompt-creator.js";
-import { GAME_PROJECT_TYPES, ProjectTypeIcon } from "./project-types.js";
-import type { AppNavigationTarget, SidebarPage } from "./routes.js";
+import { GAME_PROJECT_TYPES } from "./project-types.js";
+import { createdProjectView, projectsHash, type AppNavigationTarget } from "./routes.js";
 import { WindowDragRegion } from "./window-drag-region.js";
+import { useProjectShelfLayout } from "./use-project-shelf-layout.js";
+import { useProjectActivity } from "./use-project-activity.js";
+import "./studios.css";
 
 interface HomeProps {
   onNavigate: (page: AppNavigationTarget) => void;
-  onCreate: (projectId: string, conversationId: string, prompt: string, mentions: PluginMention[], images: PromptImage[], mode: PromptMode, attachments?: PromptAttachment[]) => void;
-  onOpen: (projectId: string) => void;
+  onCreate: (project: ProjectState, conversationId: string, prompt: string, mentions: PluginMention[], images: PromptImage[], mode: PromptMode, attachments?: PromptAttachment[]) => void;
+  onOpen: (projectId: string, view?: "design") => void;
 }
 
-const RECENT_PROJECT_MAX_COLUMNS = 4;
-const WHATS_NEW_ITEM = {
-  title: "Interactive Story is here",
-  page: "interactive-story" as SidebarPage,
-};
-
 export function Home({ onNavigate, onCreate, onOpen }: HomeProps) {
+  const serviceGeneration = useReadyRuntimeGeneration();
   const [projects, setProjects] = useState<ProjectState[]>([]);
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
+  const activity = useProjectActivity(phase === "ready" && projects.length > 0);
   const [loadError, setLoadError] = useState<string>();
-  const [showAllProjects, setShowAllProjects] = useState(false);
-  const [recentProjectLimit, setRecentProjectLimit] = useState(RECENT_PROJECT_MAX_COLUMNS);
   const [projectActionError, setProjectActionError] = useState<string>();
   const [projectType, setProjectType] = useState<ProjectType>("web-game");
   const [createOpen, setCreateOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<ProjectState>();
   const renameTrigger = useRef<HTMLElement | null>(null);
   const { examples, covers: exampleCovers } = useExamples();
-  const recentProjectsSection = useRef<HTMLElement>(null);
+  const { sectionRef, columns, recentProjectLimit } = useProjectShelfLayout();
 
   async function loadProjects() {
     setPhase("loading");
@@ -52,24 +50,7 @@ export function Home({ onNavigate, onCreate, onOpen }: HomeProps) {
     }
   }
 
-  useEffect(() => { void loadProjects(); }, []);
-  useLayoutEffect(() => {
-    const section = recentProjectsSection.current;
-    if (!section) return;
-    const updateLimit = () => {
-      const styles = getComputedStyle(section);
-      const minWidth = Number.parseFloat(styles.getPropertyValue("--recent-project-min-width"));
-      const gap = Number.parseFloat(styles.getPropertyValue("--recent-project-gap"));
-      if (!minWidth || Number.isNaN(gap)) return;
-      const columns = Math.floor((section.clientWidth + gap) / (minWidth + gap));
-      setRecentProjectLimit(Math.max(1, Math.min(RECENT_PROJECT_MAX_COLUMNS, columns)));
-    };
-    updateLimit();
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(updateLimit);
-    observer.observe(section);
-    return () => observer.disconnect();
-  }, []);
+  useEffect(() => { void loadProjects(); }, [serviceGeneration]);
   async function rename(project: ProjectState, input: string) {
     const name = input.trim();
     if (!name || name === project.name) return;
@@ -95,11 +76,8 @@ export function Home({ onNavigate, onCreate, onOpen }: HomeProps) {
     }
   }
 
-  const visibleProjects = showAllProjects ? projects : projects.slice(0, recentProjectLimit);
-  // Explore shows every example, whatever type the prompt above is set to.
-  // Examples take the row first; the What's New card fills a spare column.
-  const visibleExamples = examples.slice(0, recentProjectLimit);
-  const showWhatsNew = visibleExamples.length < recentProjectLimit;
+  const visibleProjects = projects.slice(0, recentProjectLimit);
+  const visibleExamples = examples.slice(0, columns);
 
   return (
     <main className="home-shell">
@@ -109,20 +87,6 @@ export function Home({ onNavigate, onCreate, onOpen }: HomeProps) {
         <WindowDragRegion />
         <div className="home-start">
           <h1>What are we making today?</h1>
-          <div className="home-category-control" role="group" aria-label="Project examples">
-            {GAME_PROJECT_TYPES.map(({ label, value }) => (
-              <button
-                className={value === projectType ? "is-active" : ""}
-                type="button"
-                aria-pressed={value === projectType}
-                key={value}
-                onClick={() => setProjectType(value)}
-              >
-                <ProjectTypeIcon type={value} />
-                {label}
-              </button>
-            ))}
-          </div>
           <ProjectPromptCreator
             projectType={projectType}
             projectTypes={GAME_PROJECT_TYPES}
@@ -136,30 +100,15 @@ export function Home({ onNavigate, onCreate, onOpen }: HomeProps) {
           </button>
         </div>
 
-        <section ref={recentProjectsSection} className="home-discover" aria-labelledby="whats-new-heading">
-          <div className="home-section-heading">
-            <h2 id="whats-new-heading">Explore</h2>
-          </div>
-          <ExampleShelf examples={visibleExamples} covers={exampleCovers} showType onOpenProject={onOpen}>
-            {showWhatsNew ? <button className="home-whats-new-item" type="button" onClick={() => onNavigate(WHATS_NEW_ITEM.page)}>
-              <span className="home-whats-new-icon" aria-hidden="true" />
-              <span className="home-whats-new-copy">
-                <strong>{WHATS_NEW_ITEM.title}</strong>
-                <small>New</small>
-              </span>
-            </button> : null}
-          </ExampleShelf>
-
-          <div className="home-section-heading home-project-heading">
+        <section ref={sectionRef} className="home-recent studio-projects" aria-labelledby="projects-heading">
+          <div className="studio-section-heading">
             <h2 id="projects-heading">Recent projects</h2>
             {phase === "error" ? (
-              <button type="button" onClick={() => void loadProjects()}>
+              <button className="studio-text-link" type="button" onClick={() => void loadProjects()}>
                 <RefreshCw size={14} />Retry
               </button>
             ) : projects.length > recentProjectLimit ? (
-              <button className="home-show-all" type="button" onClick={() => setShowAllProjects((current) => !current)}>
-                {showAllProjects ? "Show less" : "Show all"}
-              </button>
+              <a className="studio-text-link" href={projectsHash()}>Show all</a>
             ) : null}
           </div>
 
@@ -167,15 +116,16 @@ export function Home({ onNavigate, onCreate, onOpen }: HomeProps) {
           {phase === "error" ? <p className="home-project-state" role="alert">{loadError}</p> : null}
           {phase === "ready" && projects.length === 0 ? (
             <p className="home-project-state">
-              {visibleExamples.length ? "No projects yet. Play an example above, or describe a game to start." : "No projects yet"}
+              No projects yet
             </p>
           ) : null}
           {phase === "ready" && projects.length > 0 ? (
-            <div className="home-project-grid home-recent-projects-grid">
+            <div className="studio-project-grid">
               {visibleProjects.map((project, index) => (
                 <ProjectCard
                   key={project.id}
                   project={project}
+                  agentStatus={activity.get(project.id)}
                   fallback={index % 4}
                   onOpen={() => onOpen(project.id)}
                   actions={{ onRename: () => {
@@ -188,6 +138,10 @@ export function Home({ onNavigate, onCreate, onOpen }: HomeProps) {
           ) : null}
           {projectActionError ? <p className="home-notice" role="alert">{projectActionError}</p> : null}
         </section>
+        {visibleExamples.length > 0 ? <section className="home-discover home-explore studio-examples" aria-labelledby="home-examples-heading">
+          <div className="studio-section-heading"><h2 id="home-examples-heading">Explore</h2></div>
+          <ExampleShelf examples={visibleExamples} covers={exampleCovers} showType onOpenProject={onOpen} />
+        </section> : null}
       </section>
       {renameTarget ? <ProjectRenameDialog name={renameTarget.name} returnFocus={renameTrigger.current} onClose={() => setRenameTarget(undefined)} onConfirm={(name) => {
         const project = renameTarget;
@@ -196,7 +150,7 @@ export function Home({ onNavigate, onCreate, onOpen }: HomeProps) {
       }} /> : null}
       {createOpen ? <ProjectCreateDialog initialType={projectType} projectTypes={GAME_PROJECT_TYPES} onClose={() => setCreateOpen(false)} onCreated={(project) => {
         setCreateOpen(false);
-        onOpen(project.id);
+        onOpen(project.id, createdProjectView(project.type));
       }} /> : null}
     </main>
   );
@@ -204,8 +158,8 @@ export function Home({ onNavigate, onCreate, onOpen }: HomeProps) {
 
 function ProjectGridSkeleton({ count }: { count: number }) {
   return (
-    <div className="home-project-grid home-recent-projects-grid" aria-label="Loading projects">
-      {Array.from({ length: count }, (_, item) => <div className="project-card home-project-skeleton" key={item} />)}
+    <div className="studio-project-grid" aria-label="Loading projects">
+      {Array.from({ length: count }, (_, item) => <div className="studio-project-skeleton" key={item} />)}
     </div>
   );
 }

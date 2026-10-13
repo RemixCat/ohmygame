@@ -2,31 +2,47 @@ import { useEffect, useState } from "react";
 import { GamePlayer, GamesPage } from "./games.js";
 import { Home } from "./home.js";
 import { LibraryPage } from "./library.js";
-import { PluginsPage } from "./plugins.js";
 import { ProjectsPage } from "./projects.js";
 import { ProjectShell } from "./project-shell.js";
-import { communityHash, conversationHash, DEFAULT_SETTINGS_SECTION, gameHash, parseAppRoute, projectHash, settingsHash, sidebarHash, type AppNavigationTarget, type SettingsSection } from "./routes.js";
+import { communityHash, createdProjectView, conversationHash, DEFAULT_SETTINGS_SECTION, gameHash, parseAppRoute, pluginHash, projectHash, settingsHash, sidebarHash, type AppNavigationTarget, type SettingsSection } from "./routes.js";
 import { AssetCanvasHome } from "./asset-canvas-home.js";
-import { loadQuickStartModels } from "./asset-canvas-quick-start.js";
-import { InteractiveStoryHome } from "./interactive-story-home.js";
+import { invalidateQuickStartModels, loadQuickStartModels } from "./asset-canvas-quick-start.js";
+import { GameStudioHome } from "./game-studio-home.js";
 import { SettingsPage } from "./settings-page.js";
-import type { PluginMention, PromptAttachment, PromptImage, PromptMode } from "../shared/contracts.js";
+import { PluginBuilder } from "./plugin-builder.js";
+import type { PluginMention, ProjectState, PromptAttachment, PromptImage, PromptMode } from "../shared/contracts.js";
 import type { PluginDetail } from "../shared/plugins.js";
 import { pluginMentionToken } from "../shared/plugins.js";
-import { createConversation, createPluginAuthoringSession, createProject } from "./api.js";
+import { createConversation, createProject, MODELS_CHANGED_EVENT } from "./api.js";
 import type { ComposerDraft } from "./composer.js";
+import { runtimeConnection, useReadyRuntimeGeneration } from "./runtime-connection.js";
 
 export function App() {
+  const serviceGeneration = useReadyRuntimeGeneration();
   const [route, setRoute] = useState(() => parseAppRoute(window.location.hash));
-  const [initialPrompt, setInitialPrompt] = useState<{ conversationId: string; prompt: string; mentions: PluginMention[]; images: PromptImage[]; mode: PromptMode; attachments?: PromptAttachment[] }>();
+  const [initialPrompt, setInitialPrompt] = useState<{ generation: number; conversationId: string; prompt: string; mentions: PluginMention[]; images: PromptImage[]; mode: PromptMode; attachments?: PromptAttachment[] }>();
   const [initialDraft, setInitialDraft] = useState<{ conversationId: string; draft: ComposerDraft }>();
   const [initialCanvasNode, setInitialCanvasNode] = useState<{ projectId: string; nodeId: string }>();
 
   // Provider catalogs are slow; load them now so asset canvas quick starts open without waiting.
-  useEffect(() => { void loadQuickStartModels(); }, []);
+  useEffect(() => {
+    invalidateQuickStartModels();
+    void loadQuickStartModels();
+    if (serviceGeneration > 1) window.dispatchEvent(new Event(MODELS_CHANGED_EVENT));
+    const refresh = () => { invalidateQuickStartModels(); void loadQuickStartModels(); };
+    window.addEventListener(MODELS_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(MODELS_CHANGED_EVENT, refresh);
+  }, [serviceGeneration]);
 
   useEffect(() => {
-    const updateRoute = () => setRoute(parseAppRoute(window.location.hash));
+    const updateRoute = () => {
+      const next = parseAppRoute(window.location.hash);
+      if (next.page === "settings" && next.section === "plugins" && window.location.hash.startsWith("#/plugins")) {
+        window.history.replaceState(window.history.state, "", next.pluginId ? pluginHash(next.pluginId) : settingsHash("plugins"));
+      }
+      setRoute(next);
+    };
+    updateRoute();
     window.addEventListener("hashchange", updateRoute);
     window.addEventListener("popstate", updateRoute);
     return () => {
@@ -35,8 +51,9 @@ export function App() {
     };
   }, []);
 
+  if (route.page === "plugin-builder") return <PluginBuilder key={route.sessionId} sessionId={route.sessionId} />;
   if (route.page === "settings") {
-    return <SettingsPage section={route.section} onBack={leaveSettings} onSectionChange={navigateToSettingsSection} />;
+    return <SettingsPage section={route.section} pluginId={route.pluginId} onBack={leaveSettings} onSectionChange={navigateToSettingsSection} onPluginChange={navigateToPlugin} onTryPlugin={tryPlugin} />;
   }
   if (route.page === "home") {
     return <Home onNavigate={navigateToSidebarPage} onCreate={openCreatedProject} onOpen={openProject} />;
@@ -45,9 +62,8 @@ export function App() {
     return <GamesPage onNavigate={navigateToSidebarPage} onOhMyGame={ohMyGame} />;
   }
   if (route.page === "game") return <GamePlayer gameId={route.gameId} onBack={goToGames} onNavigate={navigateToSidebarPage} onOhMyGame={ohMyGame} />;
-  if (route.page === "plugins") return <PluginsPage onNavigate={navigateToSidebarPage} onAddPlugin={addPlugin} onTryPlugin={tryPlugin} />;
-  if (route.page === "projects") return <ProjectsPage onNavigate={navigateToSidebarPage} onOpenProject={openProject} />;
-  if (route.page === "interactive-story") return <InteractiveStoryHome onNavigate={navigateToSidebarPage} onCreate={openCreatedProject} onOpenProject={openProject} />;
+  if (route.page === "projects") return <ProjectsPage projectType={route.projectType} onNavigate={navigateToSidebarPage} onOpenProject={openProject} />;
+  if (route.page === "general" || route.page === "web-game" || route.page === "interactive-story" || route.page === "godot") return <GameStudioHome key={route.page} projectType={route.page === "godot" ? "godot-game" : route.page} onNavigate={navigateToSidebarPage} onCreate={openCreatedProject} onOpenProject={openProject} />;
   if (route.page === "asset-canvas") return <AssetCanvasHome onNavigate={navigateToSidebarPage} onOpenProject={openAssetCanvasProject} />;
   if (route.page === "library") return <LibraryPage onNavigate={navigateToSidebarPage} />;
   if (route.page === "playtest") return null;
@@ -58,9 +74,11 @@ export function App() {
       projectId={route.projectId}
       conversationId={route.conversationId}
       view={route.view}
-      onViewChange={(view) => {
+      onViewChange={(view, options) => {
         const next = { ...route, view: view === "design" ? "design" as const : undefined };
-        window.history.pushState(null, "", next.conversationId ? conversationHash(next.projectId, next.conversationId, next.view) : projectHash(next.projectId, next.view));
+        const hash = next.conversationId ? conversationHash(next.projectId, next.conversationId, next.view) : projectHash(next.projectId, next.view);
+        if (options?.replace) window.history.replaceState(null, "", hash);
+        else window.history.pushState(null, "", hash);
         setRoute(next);
       }}
       initialPrompt={initialPrompt && initialPrompt.conversationId === route.conversationId ? initialPrompt : undefined}
@@ -74,9 +92,10 @@ export function App() {
     />
   );
 
-  function openCreatedProject(projectId: string, conversationId: string, prompt: string, mentions: PluginMention[], images: PromptImage[], mode: PromptMode, attachments?: PromptAttachment[]): void {
-    setInitialPrompt({ conversationId, prompt, mentions, images, mode, attachments });
-    navigateToConversation(projectId, conversationId);
+  function openCreatedProject(project: ProjectState, conversationId: string, prompt: string, mentions: PluginMention[], images: PromptImage[], mode: PromptMode, attachments?: PromptAttachment[]): void {
+    const connection = runtimeConnection();
+    setInitialPrompt({ generation: connection.status === "ready" ? connection.generation : -1, conversationId, prompt, mentions, images, mode, attachments });
+    navigateToConversation(project.id, conversationId, false, createdProjectView(project.type));
   }
 
   function openProject(projectId: string, view?: "design"): void {
@@ -93,15 +112,8 @@ export function App() {
     navigateToProject(projectId);
   }
 
-  async function addPlugin(): Promise<void> {
-    const session = await createPluginAuthoringSession();
-    setInitialPrompt(undefined);
-    setInitialDraft({ conversationId: session.conversationId, draft: { prompt: "$plugin-creator Create an OhMyGame plugin that ", mentions: [] } });
-    navigateToConversation(session.projectId, session.conversationId);
-  }
-
   async function tryPlugin(plugin: PluginDetail, prompt: string, projectId?: string): Promise<void> {
-    const project = projectId ? { id: projectId } : await createProject({ type: plugin.projectTypes?.[0] ?? "web-game" });
+    const project = projectId ? { id: projectId, type: undefined } : await createProject({ type: plugin.projectTypes?.[0] ?? "web-game" });
     const conversation = await createConversation(project.id);
     const mention: PluginMention = {
       name: plugin.name,
@@ -113,7 +125,7 @@ export function App() {
       conversationId: conversation.id,
       draft: { prompt: `${pluginMentionToken(mention)} ${prompt}`, mentions: [mention] },
     });
-    navigateToConversation(project.id, conversation.id);
+    navigateToConversation(project.id, conversation.id, false, createdProjectView(project.type));
   }
 
   function clearInitialPrompt(): void {
@@ -125,9 +137,9 @@ export function App() {
     setRoute({ page: "project", projectId, ...(view ? { view } : {}) });
   }
 
-  function navigateToConversation(projectId: string, conversationId: string, replace = false): void {
+  function navigateToConversation(projectId: string, conversationId: string, replace = false, initialView?: "design"): void {
     const current = parseAppRoute(window.location.hash);
-    const view = current.page === "project" && current.projectId === projectId ? current.view : undefined;
+    const view = initialView ?? (current.page === "project" && current.projectId === projectId ? current.view : undefined);
     window.history[replace ? "replaceState" : "pushState"](null, "", conversationHash(projectId, conversationId, view));
     setRoute({ page: "project", projectId, conversationId, ...(view ? { view } : {}) });
   }
@@ -171,6 +183,11 @@ export function App() {
   function navigateToSettingsSection(section: SettingsSection): void {
     window.history.replaceState(historyState(), "", settingsHash(section));
     setRoute({ page: "settings", section });
+  }
+
+  function navigateToPlugin(pluginId?: string): void {
+    window.history.replaceState(historyState(), "", pluginId ? pluginHash(pluginId) : settingsHash("plugins"));
+    setRoute({ page: "settings", section: "plugins", ...(pluginId ? { pluginId } : {}) });
   }
 
   function leaveSettings(): void {

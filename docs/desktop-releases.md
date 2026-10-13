@@ -63,8 +63,20 @@ SmartScreen warning during download and installation. The update manifest still
 provides the SHA-512 digest used by `electron-updater` to validate downloads.
 
 For a local package build, export `DESKTOP_UPDATE_URL` before running
-`npm run package:mac` or `npm run package:win`. Development builds do not use
+`bun run package:mac` or `bun run package:win`. Development builds do not use
 the update feed.
+
+TypeBox is pinned to the same version as Pi so the desktop daemon shares one
+installation. The `beforePack` hook bundles its public runtime entry points
+into `.runtime/typebox`, which replaces the original ESM files in the packaged
+app while preserving TypeBox's package metadata and declarations.
+
+Pi AI is a direct, pinned runtime dependency because the daemon imports its
+patched diagnostic helper. The `afterPack` hook checks that the packaged helper
+and adapters match the installed patch, then starts the packaged daemon with
+temporary data and verifies its authenticated API on native platform builds.
+An incomplete or unpatched dependency therefore fails packaging before an
+installer is created.
 
 ## Rollback
 

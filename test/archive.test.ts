@@ -1,14 +1,35 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import yauzl, { type Entry } from "yauzl";
 import {
   ArtifactBuilder,
   createPluginArchive,
 } from "../src/daemon/publish/archive.js";
 
+afterEach(() => vi.unstubAllEnvs());
+
 describe("publish archives", () => {
+  it("builds with project binaries instead of the app's esbuild override", async () => {
+    vi.stubEnv("ESBUILD_BINARY_PATH", "/app/esbuild");
+    const workspacePath = await mkdtemp(path.join(tmpdir(), "ohmygame-archive-env-"));
+    await writeFile(path.join(workspacePath, "package.json"), JSON.stringify({ scripts: { build: "node build.mjs" } }));
+    await writeFile(path.join(workspacePath, "build.mjs"), `
+      import { mkdirSync, writeFileSync } from "node:fs";
+      if (process.env.ESBUILD_BINARY_PATH) throw new Error("app binary leaked into build");
+      mkdirSync("dist", { recursive: true });
+      writeFileSync("dist/index.html", "built game");
+    `);
+    await expect(new ArtifactBuilder().create({
+      id: "environment-test", name: "Game", type: "web-game", updatedAt: new Date(0).toISOString(),
+      workspacePath, preview: { status: "stopped" },
+    })).resolves.toBeInstanceOf(Buffer);
+    expect(process.env.ESBUILD_BINARY_PATH).toBe("/app/esbuild");
+  });
+
   it("creates identical ZIPs in different time zones", async () => {
     const source = await mkdtemp(path.join(tmpdir(), "ohmygame-archive-"));
     await writeFile(path.join(source, "example.txt"), "same content");
@@ -35,6 +56,24 @@ describe("publish archives", () => {
     );
   });
 
+  it("stores Plugin ZIP entries so the bytes do not depend on zlib", async () => {
+    const source = await mkdtemp(path.join(tmpdir(), "ohmygame-archive-stored-"));
+    await mkdir(path.join(source, "skills"));
+    await writeFile(path.join(source, "example.txt"), "same content ".repeat(4096));
+    await writeFile(path.join(source, "skills", "SKILL.md"), "# Skill\n".repeat(4096));
+
+    const archive = await createPluginArchive(source);
+    const entries = await zipEntries(archive);
+
+    expect(entries.map((entry) => entry.fileName)).toEqual(["example.txt", "skills/SKILL.md"]);
+    for (const entry of entries) {
+      expect(entry.compressionMethod).toBe(0);
+      expect(entry.compressedSize).toBe(entry.uncompressedSize);
+    }
+    expect(createHash("sha256").update(archive).digest("hex"))
+      .toBe("6ec94c765105d7eea3633546bc65955e30c9eaab10579ab12ba8a3b7d00952ff");
+  });
+
   it("uses a Web Game's configured startup directory as its publish source", async () => {
     const workspacePath = await mkdtemp(
       path.join(tmpdir(), "ohmygame-archive-web-game-"),
@@ -54,6 +93,34 @@ describe("publish archives", () => {
         preview: { status: "stopped" },
       }),
     ).resolves.toBeInstanceOf(Buffer);
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("rejects when a file in the publish output cannot be read", async () => {
+    const workspacePath = await mkdtemp(path.join(tmpdir(), "ohmygame-archive-unreadable-"));
+    await writeFile(path.join(workspacePath, "index.html"), "game");
+    await writeFile(path.join(workspacePath, "save.dat"), "locked");
+    await chmod(path.join(workspacePath, "save.dat"), 0o000);
+
+    await expect(new ArtifactBuilder().create({
+      id: "unreadable-test", name: "Game", type: "web-game", updatedAt: new Date(0).toISOString(),
+      workspacePath, preview: { status: "stopped" },
+    })).rejects.toMatchObject({ code: "EACCES" });
+  });
+
+  it("rejects when files are removed after they are listed", async () => {
+    const source = await mkdtemp(path.join(tmpdir(), "ohmygame-archive-removed-"));
+    await writeFile(path.join(source, "first.txt"), "first");
+    await writeFile(path.join(source, "second.txt"), "second");
+    const mocked = vi.spyOn(fs, "stat").mockImplementation(((...args: unknown[]) => {
+      const callback = args.at(-1) as (error: NodeJS.ErrnoException) => void;
+      queueMicrotask(() => callback(Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" })));
+    }) as typeof fs.stat);
+
+    try {
+      await expect(createPluginArchive(source)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      mocked.mockRestore();
+    }
   });
 });
 
@@ -77,4 +144,23 @@ async function archiveWithMode(source: string, mode: number): Promise<Buffer> {
   } finally {
     mocked.mockRestore();
   }
+}
+
+function zipEntries(archive: Buffer): Promise<Entry[]> {
+  return new Promise((resolve, reject) => {
+    yauzl.fromBuffer(archive, { lazyEntries: true }, (error, zip) => {
+      if (error || !zip) {
+        reject(error ?? new Error("ZIP could not be opened."));
+        return;
+      }
+      const entries: Entry[] = [];
+      zip.once("error", reject);
+      zip.once("end", () => resolve(entries));
+      zip.on("entry", (entry: Entry) => {
+        entries.push(entry);
+        zip.readEntry();
+      });
+      zip.readEntry();
+    });
+  });
 }

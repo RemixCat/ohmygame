@@ -11,15 +11,17 @@ feedback from making real games with it.
 - For a new feature or a large change, open an issue to discuss it before
   writing code so implementation and product direction stay aligned.
 - Issues labeled `good first issue` or `help wanted` are good places to start.
+- Maintainers classify issues and PRs with shared type and area labels. See
+  [.github/LABELS.md](.github/LABELS.md) for the workflow and label definitions.
 
 ## Development setup
 
-Requires Node.js 22.19+.
+Requires Bun 1.4.2 or newer for the toolchain and Node.js 22.19+ for the daemon.
 
 ```bash
-npm install
-npm run dev            # web renderer + local daemon
-npm run dev:desktop    # Electron app
+bun install --frozen-lockfile
+bun run dev            # web renderer + local daemon
+bun run dev:desktop    # Electron app
 ```
 
 See [Configuration](#configuration) for sign-in, publishing, and proxy
@@ -39,7 +41,7 @@ VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_PUBLISHABLE_KEY=sb_publishable_your-key
 ```
 
-When either value is missing, `npm run dev` and `npm run dev:desktop` on
+When either value is missing, `bun run dev` and `bun run dev:desktop` on
 localhost automatically use a local debug account. Click **Sign in** to sign in
 immediately; signing out and restoring the session on reload also work.
 Publishing builds the actual game and serves a temporary local snapshot, which
@@ -83,13 +85,30 @@ The server contract is in
 Run these before opening a PR:
 
 ```bash
-npm test
-npm run typecheck
-npm run build
-npx prettier --check <changed files>
+bun run test
+bun run typecheck
+bun run build
+bun run test:node-runtime
 ```
 
 Add or update tests in `test/` when you fix a bug or add behavior.
+
+## Formatting
+
+When editing an existing file, match the surrounding style and keep formatting
+changes limited to the code you touch. The repository has not been fully formatted
+with Prettier, so a whole-file `prettier --check` is not required for edits to
+existing files.
+
+Use the repository's Prettier configuration for new files that Prettier supports.
+Check those files before opening a PR:
+
+```bash
+bunx --bun --no-install prettier --check <new files>
+```
+
+Keep broad formatting cleanup in a separate PR. CI does not currently enforce
+repository-wide formatting.
 
 ## Pull requests
 

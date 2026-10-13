@@ -1,11 +1,16 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import type { WorkspaceFile } from "../shared/contracts.js";
-import { Box, ExternalLink, Film, Image as ImageIcon, Layers3, LoaderCircle, MoreHorizontal, Music2, Play, Search, X } from "./icons.js";
+import type { LibraryAssetOrigin, LibraryAssetProject, LibraryAssetPurpose, WorkspaceFile } from "../shared/contracts.js";
+import { Box, Code2, ExternalLink, Film, Image as ImageIcon, Layers3, LoaderCircle, MoreHorizontal, Music2, Play, Search, X } from "./icons.js";
 import { useWorkspaceAssetUrl } from "./use-workspace-asset-url.js";
 import { AssetCardShell, AssetDialogShell, AssetMedia, useNearViewport } from "./asset-gallery.js";
 import { ModelPreview } from "./model-preview.js";
 
 export type MediaFilter = "all" | NonNullable<WorkspaceFile["mediaType"]>;
+
+export interface ProjectAssetFilters {
+  origin?: "all" | LibraryAssetOrigin;
+  purpose?: "all" | LibraryAssetPurpose;
+}
 
 export interface BrowsableAsset extends Omit<WorkspaceFile, "mediaType"> {
   mediaType: NonNullable<WorkspaceFile["mediaType"]>;
@@ -13,6 +18,15 @@ export interface BrowsableAsset extends Omit<WorkspaceFile, "mediaType"> {
   assetId?: string;
   projectName?: string;
   revision?: number;
+  origin?: LibraryAssetOrigin;
+  purpose?: LibraryAssetPurpose;
+  projects?: LibraryAssetProject[];
+  referenceOnly?: boolean;
+  saved?: boolean;
+}
+
+export function libraryAssetOriginLabel(origin: LibraryAssetOrigin | undefined): string {
+  return { generated: "Generated", uploaded: "Uploaded", workspace: "Project file", builtin: "Built-in", unknown: "Unknown source" }[origin ?? "unknown"];
 }
 
 const MEDIA_FILTERS: readonly { id: MediaFilter; label: string; icon: typeof Layers3 }[] = [
@@ -23,35 +37,53 @@ const MEDIA_FILTERS: readonly { id: MediaFilter; label: string; icon: typeof Lay
   { id: "model", label: "3D models", icon: Box },
 ];
 
-export function AssetToolbar({ mediaFilter, query, onMediaFilterChange, onQueryChange }: {
+export function AssetToolbar({ mediaFilter, query, onMediaFilterChange, onQueryChange, children }: {
   mediaFilter: MediaFilter;
   query: string;
   onMediaFilterChange: (filter: MediaFilter) => void;
   onQueryChange: (query: string) => void;
+  children?: ReactNode;
 }) {
   const searchId = `asset-search-${useId()}`;
+  const filtersRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const filters = filtersRef.current;
+    if (!filters) return;
+    const scroll = (event: WheelEvent) => {
+      if (event.shiftKey || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? filters.clientWidth : 1);
+      const next = Math.max(0, Math.min(filters.scrollWidth - filters.clientWidth, filters.scrollLeft + delta));
+      const previous = filters.scrollLeft;
+      filters.scrollLeft = next;
+      if (filters.scrollLeft !== previous) event.preventDefault();
+    };
+    filters.addEventListener("wheel", scroll, { passive: false });
+    return () => filters.removeEventListener("wheel", scroll);
+  }, []);
   return (
     <div className="library-toolbar">
-      <nav className="library-filters" aria-label="Media types">
+      <nav ref={filtersRef} className="library-filters" aria-label="Media types" onFocusCapture={(event) => event.target.scrollIntoView({ block: "nearest", inline: "nearest" })}>
         {MEDIA_FILTERS.map(({ id, label, icon: Icon }) => (
           <button className={mediaFilter === id ? "is-active" : undefined} type="button" key={id} aria-pressed={mediaFilter === id} onClick={() => onMediaFilterChange(id)}>
             <Icon size={15} /><span>{label}</span>
           </button>
         ))}
       </nav>
-      <label className="library-search" htmlFor={searchId}>
+      <div className="library-toolbar-end"><label className="library-search" htmlFor={searchId}>
         <Search size={14} aria-hidden="true" />
         <input id={searchId} value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="Search assets" />
-      </label>
+      </label>{children}</div>
     </div>
   );
 }
 
-export function WorkspaceAssetCard({ asset, onOpen, onRename, onDelete }: {
+export function WorkspaceAssetCard({ asset, title, onOpen, onRename, onDelete, onSaveToLibrary }: {
   asset: BrowsableAsset;
+  title?: string;
   onOpen: () => void;
-  onRename: () => void;
-  onDelete: () => void;
+  onRename?: () => void;
+  onDelete?: () => void;
+  onSaveToLibrary?: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [card, visible] = useNearViewport<HTMLElement>();
@@ -73,17 +105,18 @@ export function WorkspaceAssetCard({ asset, onOpen, onRename, onDelete }: {
   }, [menuOpen]);
 
   return <AssetCardShell
-    title={asset.prompt ?? fileName(asset.path)}
-    subtitle={<>{mediaTypeLabel(asset.mediaType)}{asset.projectName ? ` · ${asset.projectName}` : ""}</>}
+    title={title ?? asset.prompt ?? fileName(asset.path)}
+    subtitle={<>{mediaTypeLabel(asset.mediaType)}{asset.referenceOnly ? " · Reference" : ""}{asset.projectName ? ` · ${asset.projectName}` : asset.projects?.length === 1 ? ` · ${asset.projects[0]!.name}` : asset.projects?.length ? ` · ${asset.projects.length} projects` : ""}</>}
     preview={<AssetThumbnail asset={asset} visible={visible} />}
     badge={assetTypeBadge(asset.mediaType)}
-    actions={<div className="library-asset-actions">
+    actions={onRename || onDelete || onSaveToLibrary ? <div className="library-asset-actions">
         <button className="library-asset-menu" type="button" aria-label={`Asset actions for ${fileName(asset.path)}`} aria-expanded={menuOpen} aria-haspopup="menu" onClick={() => setMenuOpen((open) => !open)}><MoreHorizontal size={16} /></button>
         {menuOpen ? <div className="library-asset-actions-menu" role="menu">
-          <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onRename(); }}>Rename</button>
-          <button className="library-action-delete" type="button" role="menuitem" onClick={() => { setMenuOpen(false); onDelete(); }}>Delete</button>
+          {onSaveToLibrary ? <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onSaveToLibrary(); }}>Save to Library</button> : null}
+          {onRename ? <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onRename(); }}>Rename</button> : null}
+          {onDelete ? <button className="library-action-delete" type="button" role="menuitem" onClick={() => { setMenuOpen(false); onDelete(); }}>Delete</button> : null}
         </div> : null}
-      </div>}
+      </div> : undefined}
     articleRef={card}
     onOpen={onOpen}
   />;
@@ -111,12 +144,14 @@ export function assetTypeBadge(mediaType: BrowsableAsset["mediaType"]): ReactNod
   return undefined;
 }
 
-export function WorkspaceAssetDialog({ asset, onClose, onOpenProject, onRename, onDelete }: {
+export function WorkspaceAssetDialog({ asset, onClose, onOpenProject, onRename, onDelete, onSaveToLibrary, onShowInCode }: {
   asset: BrowsableAsset;
   onClose: () => void;
   onOpenProject?: () => void;
-  onRename: () => void;
-  onDelete: () => void;
+  onRename?: () => void;
+  onDelete?: () => void;
+  onSaveToLibrary?: () => void;
+  onShowInCode?: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const actions = useRef<HTMLDivElement>(null);
@@ -137,36 +172,43 @@ export function WorkspaceAssetDialog({ asset, onClose, onOpenProject, onRename, 
     onClose={onClose}
     onEscape={() => { if (menuOpen) setMenuOpen(false); else onClose(); }}
     headerActionsRef={actions}
-    headerActions={<>
+    headerActions={onRename || onDelete || onSaveToLibrary ? <>
       <button type="button" aria-label={`Asset actions for ${fileName(asset.path)}`} aria-expanded={menuOpen} aria-haspopup="menu" onClick={() => setMenuOpen((open) => !open)}><MoreHorizontal size={17} /></button>
       {menuOpen ? <div className="library-dialog-actions-menu" role="menu">
-        <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onRename(); }}>Rename</button>
-        <button className="library-action-delete" type="button" role="menuitem" onClick={() => { setMenuOpen(false); onDelete(); }}>Delete</button>
+        {onSaveToLibrary ? <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onSaveToLibrary(); }}>Save to Library</button> : null}
+        {onRename ? <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onRename(); }}>Rename</button> : null}
+        {onDelete ? <button className="library-action-delete" type="button" role="menuitem" onClick={() => { setMenuOpen(false); onDelete(); }}>Delete</button> : null}
       </div> : null}
-    </>}
+    </> : undefined}
     preview={<>
           {!preview.url && !preview.error ? <span className="library-dialog-state"><LoaderCircle className="spin" size={18} />Loading asset</span> : null}
           {preview.error ? <span className="library-dialog-state library-dialog-error" role="alert"><X size={18} />{preview.error}</span> : null}
           {preview.url ? <AssetMedia type={asset.mediaType} url={preview.url} label={fileName(asset.path)} /> : null}
         </>}
-    footer={<footer className={`library-dialog-footer${onOpenProject ? "" : " library-dialog-footer-compact"}`}>
+    footer={<footer className={`library-dialog-footer${onOpenProject ? "" : " library-dialog-footer-compact"}${asset.origin || asset.projects?.length ? " library-dialog-footer-library" : ""}`}>
           <dl>
             <div><dt>Type</dt><dd>{mediaTypeLabel(asset.mediaType)}</dd></div>
             <div><dt>Size</dt><dd>{fileSize(asset.size)}</dd></div>
+            {asset.origin ? <div><dt>Source</dt><dd>{libraryAssetOriginLabel(asset.origin)}</dd></div> : null}
+            {asset.referenceOnly ? <div><dt>Use</dt><dd>Reference</dd></div> : null}
+            {asset.projects?.length ? <div className="library-dialog-projects"><dt>Projects</dt><dd title={asset.projects.map((project) => project.name).join(", ")}>{asset.projects.map((project) => project.name).join(", ")}</dd></div> : null}
             {asset.projectName ? <div><dt>Project</dt><dd title={asset.projectName}>{asset.projectName}</dd></div> : null}
             <div className="library-dialog-path"><dt>Path</dt><dd title={asset.path}>{asset.path}</dd></div>
           </dl>
           <div className="library-dialog-footer-actions">
             {onOpenProject ? <button type="button" onClick={onOpenProject}><ExternalLink size={15} />Open project</button> : null}
+            {onShowInCode ? <button type="button" onClick={onShowInCode}><Code2 size={15} />Show in Code</button> : null}
           </div>
         </footer>}
   />;
 }
 
-export function filterAssets<T extends BrowsableAsset>(assets: T[], media: MediaFilter, query: string): T[] {
+export function filterAssets<T extends BrowsableAsset>(assets: readonly T[], media: MediaFilter, query: string, filters: ProjectAssetFilters = {}): T[] {
   const normalizedQuery = query.trim().toLowerCase();
   return assets.filter((asset) => (
     (media === "all" || asset.mediaType === media) &&
+    (!filters.origin || filters.origin === "all" || (asset.origin ?? "workspace") === filters.origin) &&
+    (!filters.purpose || filters.purpose === "all" || (asset.purpose ?? "asset") === filters.purpose) &&
     (!normalizedQuery || `${asset.path} ${asset.prompt ?? ""} ${asset.projectName ?? ""}`.toLowerCase().includes(normalizedQuery))
   ));
 }

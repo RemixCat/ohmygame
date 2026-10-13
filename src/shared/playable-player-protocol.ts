@@ -1,6 +1,8 @@
 import type { CompiledNodeGraph } from "./playable-compiled.js";
 import type { JsonObject, NodeGraph } from "./playable-nodes.js";
+import type { PlayableTranslate } from "./playable-move.js";
 import type { PlayablePickResult } from "./playable-picker.js";
+import type { PlayableSeen } from "./playable-story-map.js";
 import type {
   NodeRuntimePolicy,
   NodeRuntimeSnapshot,
@@ -31,9 +33,10 @@ export interface PlayablePreviewOptions {
 
 /**
  * An authoring tool that takes over the preview's input: `select` picks
- * elements to talk about, `text` edits an element's text in place.
+ * elements to talk about, `text` edits an element's text in place, `move`
+ * drags an element to a new place.
  */
-export type PlayablePreviewTool = "select" | "text";
+export type PlayablePreviewTool = "select" | "text" | "move";
 
 /** Text the author typed over an element in the preview. */
 export interface PlayableTextEdit {
@@ -43,6 +46,20 @@ export interface PlayableTextEdit {
   /**
    * The element was written in surface HTML and holds only text, so the edit
    * can go straight back to its source. Otherwise the Agent makes it.
+   */
+  inPlace: boolean;
+}
+
+/** An element the author dragged in the preview. */
+export interface PlayableMove {
+  /** The element before it moved. */
+  pick: PlayablePickResult;
+  /** Where it ends up, from where its layout puts it. */
+  translate: PlayableTranslate;
+  /**
+   * The element was written in surface HTML and no animation of its own
+   * overrides `translate`, so the offset can go straight back to its source.
+   * Otherwise the Agent makes it.
    */
   inPlace: boolean;
 }
@@ -59,6 +76,8 @@ export type PlayableHostMessage =
       definition: NodePlayerDefinition;
       assets: Record<string, PlayableAssetTransfer>;
       save?: unknown;
+      /** What the player has seen in earlier sessions, for the Story Map. */
+      seen?: unknown;
       preview?: PlayablePreviewOptions;
     }
   | {
@@ -76,6 +95,12 @@ export type PlayableFrameMessage =
       instanceId: string;
       requestId: string;
       save: PlayableSave;
+    }
+  | {
+      /** Keep this record; there is no reply, since losing it never stops the game. */
+      kind: "ohmygame:playable:seen";
+      instanceId: string;
+      seen: PlayableSeen;
     }
   | {
       kind: "ohmygame:playable:snapshot";
@@ -104,6 +129,11 @@ export type PlayableFrameMessage =
       instanceId: string;
       edit: PlayableTextEdit;
     }
+  | {
+      kind: "ohmygame:playable:moved";
+      instanceId: string;
+      move: PlayableMove;
+    }
   | { kind: "ohmygame:playable:pick-cancelled"; instanceId: string };
 
 export function isPlayableHostMessage(
@@ -123,7 +153,7 @@ export function isPlayableHostMessage(
     );
   }
   if (value.kind === "ohmygame:playable:pick-start")
-    return value.tool === "select" || value.tool === "text";
+    return value.tool === "select" || value.tool === "text" || value.tool === "move";
   if (value.kind === "ohmygame:playable:pick-cancel") return true;
   return (
     value.kind === "ohmygame:playable:save-result" &&
@@ -143,6 +173,8 @@ export function isPlayableFrameMessage(
     return false;
   if (value.kind === "ohmygame:playable:save")
     return typeof value.requestId === "string" && isRecord(value.save);
+  if (value.kind === "ohmygame:playable:seen")
+    return isRecord(value.seen);
   if (value.kind === "ohmygame:playable:snapshot")
     return isRecord(value.snapshot);
   if (value.kind === "ohmygame:playable:picked")
@@ -154,6 +186,15 @@ export function isPlayableFrameMessage(
       typeof value.edit.before === "string" &&
       typeof value.edit.after === "string" &&
       typeof value.edit.inPlace === "boolean"
+    );
+  if (value.kind === "ohmygame:playable:moved")
+    return (
+      isRecord(value.move) &&
+      isRecord(value.move.pick) &&
+      isRecord(value.move.translate) &&
+      typeof value.move.translate.x === "number" &&
+      typeof value.move.translate.y === "number" &&
+      typeof value.move.inPlace === "boolean"
     );
   if (value.kind === "ohmygame:playable:pick-cancelled") return true;
   return (

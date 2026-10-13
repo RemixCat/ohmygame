@@ -1,9 +1,11 @@
+import type { ProjectPreviewSettings } from "./preview-settings.js";
 import type { PublishCommunityGame, PublishDeployment } from "./publish-v1.js";
 import type { WebSearchToolMetadata } from "./web-search.js";
 
 export type PreviewStatus = "waiting" | "stopped" | "starting" | "ready" | "error";
 export type AgentStatus = "idle" | "running" | "cancelling" | "error";
-export type ProjectType = "web-game" | "godot-game" | "interactive-story" | "asset-canvas";
+export const PROJECT_TYPE_IDS = ["general", "web-game", "interactive-story", "asset-canvas", "godot-game"] as const;
+export type ProjectType = (typeof PROJECT_TYPE_IDS)[number];
 export const PROJECT_PACKAGE_MANAGERS = ["npm", "pnpm", "yarn", "bun"] as const;
 export type ProjectPackageManager = (typeof PROJECT_PACKAGE_MANAGERS)[number];
 export const PREVIEW_VIEWPORTS = ["fit", "tablet", "mobile"] as const;
@@ -53,11 +55,119 @@ export interface ModelProviderSummary {
 
 export type ProviderStatus = "connected" | "not_configured" | "connecting" | "error";
 export type ProviderCapability = "language" | "image" | "3d" | "video";
+export type MediaModelUsage = Exclude<ProviderCapability, "language">;
+/** Missing entries inherit the global default for that kind of generation. */
+export type MediaModelDefaults = Partial<Record<MediaModelUsage, ModelRef>>;
 
 export interface ProviderSummary extends ModelProviderSummary {
+  managed?: "free_cloud";
+  cloud?: import("./cloud-models.js").CloudConnectionState;
   status: ProviderStatus;
   capabilities: ProviderCapability[];
+  enabled?: boolean;
+  custom?: boolean;
+  preset?: CustomProviderPreset;
   error?: string;
+}
+
+export interface CustomProviderSettings {
+  id: string;
+  name: string;
+  baseUrl: string;
+  api: string;
+  authentication: "api_key" | "none";
+  preset?: CustomProviderPreset;
+  modelConfigurationVersion?: 2;
+}
+
+export type CustomProviderPreset = "gateway" | "ollama" | "lmstudio" | "google" | "openrouter" | "seedance" | "meshy" | "tripo" | "hyper3d";
+
+export interface CustomImageModelSettings {
+  protocol: ImageProtocol;
+  baseUrl?: string;
+  resolutions: ImageResolution[];
+  aspectRatios: ImageAspectRatio[];
+  maxReferenceImages: number;
+  maxOutputs: ImageOutputCount;
+}
+
+export type VideoProtocol = "openrouter-videos" | "seedance";
+export interface CustomVideoModelSettings {
+  protocol: VideoProtocol;
+  baseUrl?: string;
+  resolutions: VideoResolution[];
+  aspectRatios: VideoAspectRatio[];
+  durations: number[];
+  maxReferenceImages: number;
+  referenceModes: Array<"frame" | "reference">;
+}
+
+export type Model3DOperation = "image" | "text" | "retexture" | "remesh" | "animate";
+export type Model3DActionId = number | string;
+export interface Model3DOptions {
+  pose?: "a-pose" | "t-pose";
+  textureModel?: string;
+  textureQuality?: "fast" | "standard" | "detailed" | "extreme";
+  rigModel?: "v1.0-20240301" | "v2.5-20260210";
+  rigType?: "biped" | "quadruped" | "hexapod" | "octopod" | "serpentine" | "aquatic";
+  animateInPlace?: boolean;
+}
+export interface Model3DMetadata {
+  triangles: number;
+  textured: boolean;
+  rigged: boolean;
+  animations: string[];
+  forwardAxis?: "+X" | "+Z";
+  provider?: string;
+  operation?: Model3DOperation;
+}
+export interface Model3DBalance { balance: number; frozen?: number; }
+
+export interface CustomModel3DSettings {
+  protocol: "meshy" | "tripo" | "hyper3d";
+  baseUrl?: string;
+  operation: "image-to-3d" | "multi-image-to-3d";
+  /** Extra operations explicitly enabled for this compatible API connection. */
+  operations?: Model3DOperation[];
+  modelType: "standard" | "smart-topology";
+  maxReferenceImages: number;
+  polycount: Model3DModel["polycount"];
+  supportsTexture: boolean;
+  supportsPbr: boolean;
+  defaults?: { texture: boolean; pbr: boolean };
+}
+
+export interface Model3DDefinition {
+  id: string;
+  name: string;
+  settings: CustomModel3DSettings;
+}
+
+export interface CustomModelUsages {
+  language?: boolean;
+  image?: CustomImageModelSettings;
+  video?: CustomVideoModelSettings;
+  "3d"?: CustomModel3DSettings;
+}
+
+export interface SaveCustomProviderRequest extends Omit<CustomProviderSettings, "id"> {
+  apiKey?: string;
+  models?: CustomProviderModel[];
+  hiddenModelIds?: string[];
+}
+
+export interface CustomProviderDetails extends CustomProviderSettings {
+  models: CustomProviderModel[];
+  hiddenModelIds: string[];
+}
+
+export type DiscoverProviderModelsRequest = Pick<SaveCustomProviderRequest, "baseUrl" | "api" | "authentication" | "apiKey" | "preset"> & { providerId?: string };
+
+export interface DiscoveredProviderModels {
+  models: CustomProviderModel[];
+  truncated?: boolean;
+  warnings?: string[];
+  source?: "provider" | "presets";
 }
 
 export interface ModelProviderEndpointSettings {
@@ -65,6 +175,15 @@ export interface ModelProviderEndpointSettings {
 }
 
 export const CUSTOM_MODEL_APIS = ["openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai", "google-vertex"] as const;
+export const CUSTOM_IMAGE_MODEL_APIS = ["openai-completions", "openai-responses"] as const;
+
+export type CustomThinkingLevelMap = Partial<Record<AgentReasoningLevel, string | null>>;
+export interface CustomReasoningCapabilities {
+  source: "provider" | "catalog";
+  thinkingLevelMap: CustomThinkingLevelMap;
+  /** Catalog fallback for the editor when endpoint metadata becomes stale; never persisted. */
+  catalogThinkingLevelMap?: CustomThinkingLevelMap;
+}
 
 export interface CustomProviderModel {
   id: string;
@@ -74,14 +193,23 @@ export interface CustomProviderModel {
   contextWindow: number;
   maxTokens: number;
   reasoning: boolean;
+  /** Only explicit user overrides are written to the SDK model definition. */
+  thinkingLevelMap?: CustomThinkingLevelMap;
+  reasoningCapabilities?: CustomReasoningCapabilities;
   supportsImages: boolean;
+  /** Undefined is a legacy language model; an empty object is explicitly unassigned. */
+  usages?: CustomModelUsages;
 }
 
 export interface ProviderModelSettings {
-  models: Array<AgentModel & { visible: boolean; custom: boolean }>;
+  catalogDocsUrl?: string;
+  models: Array<AgentModel & { visible: boolean; custom: boolean; capabilities?: ProviderCapability[];
+    source?: "preset" | "custom" | "cloud"; model3d?: Model3DDefinition; description?: string }>;
   defaultApi: string;
   defaultBaseUrl?: string;
   canAddCustomModel: boolean;
+  model3DProtocol?: CustomModel3DSettings["protocol"];
+  catalogNotice?: string;
 }
 
 export type ModelAuthPrompt =
@@ -109,6 +237,7 @@ export type ImageModelRef = ModelRef;
 
 /** Why a connected provider offers no media models, so the canvas can say so instead of hiding it. */
 export interface MediaProviderStatus {
+  cloud?: import("./cloud-models.js").CloudConnectionState;
   provider: string;
   providerName: string;
   state: "ready" | "empty" | "error";
@@ -118,21 +247,32 @@ export interface MediaProviderStatus {
 export interface MediaModelCatalog<Model> {
   models: Model[];
   providers: MediaProviderStatus[];
+  defaultModel?: ModelRef;
 }
+
+export type ImageModelCatalog = MediaModelCatalog<ImageModel>;
 
 export type Model3DModelRef = ModelRef;
 
 export interface Model3DModel extends Model3DModelRef {
+  protocol?: CustomModel3DSettings["protocol"];
+  operations?: Model3DOperation[];
+  referenceImageLabels?: readonly string[];
   name: string;
   providerName: string;
   /** Distinct views of one object; the first is treated as the front. */
   maxReferenceImages: number;
   polycount: { min: number; max: number; default: number; presets: readonly number[] };
+  supportsTexture?: boolean;
+  supportsPbr?: boolean;
+  defaults?: { texture: boolean; pbr: boolean };
+  generationLabel?: string;
+  estimatedCredits?: number;
 }
 
 /** A preset move from the 3D provider's animation library. */
 export interface Model3DAnimationAction {
-  id: number;
+  id: Model3DActionId;
   name: string;
   category: string;
   subCategory: string;
@@ -152,7 +292,7 @@ export interface ImageModel extends ImageModelRef {
   supportsAspectRatio?: boolean;
 }
 
-export type ImageProtocol = "openai-images" | "gemini-generate-content" | "openrouter-images";
+export type ImageProtocol = "openai-images" | "gemini-generate-content" | "openrouter-images" | "volcengine-images";
 
 export interface PublicationState {
   gameId: string;
@@ -163,12 +303,38 @@ export interface PublicationState {
   description?: string;
 }
 
-export interface ProjectState {
+export type ProjectCoverMode = "auto" | "custom";
+
+export interface ProjectCoverState {
+  mode: ProjectCoverMode;
+}
+
+export interface PreviewRuntimeState {
+  status: PreviewStatus;
+  url?: string;
+  error?: string;
+  diagnostic?: import("./preview-diagnostics.js").PreviewDiagnostic;
+  diagnostics?: import("./preview-diagnostics.js").PreviewDiagnostic[];
+  phase?: "checking" | "installing" | "launching" | "connecting";
+  startedAt?: string;
+  logs?: string;
+  command?: string;
+  directory?: string;
+  manager?: ProjectPackageManager;
+  managerSource?: string;
+  revision?: number;
+  pages?: { client: string; source: import("./preview-page.js").PreviewPageSource; path: string }[];
+  stopReason?: "manual" | "idle" | "settings" | "recovery";
+}
+
+export interface ProjectState extends ProjectPreviewSettings {
   id: string;
   name: string;
   type: ProjectType;
   updatedAt: string;
   workspacePath: string;
+  /** General Game's explicit Web preview opt-in; missing means disabled. */
+  webPreviewEnabled?: boolean;
   /** Directory, relative to the workspace root, in which the Web Game preview starts. */
   startupDirectory?: string;
   /** Package script that starts the Web Game preview. Defaults to `dev`. */
@@ -179,14 +345,24 @@ export interface ProjectState {
   previewPath?: string;
   /** Device preset selected when a Web Game preview starts. */
   previewViewport?: PreviewViewport;
+  mediaModelDefaults?: MediaModelDefaults;
   /** Internal OhMyGame data kept separately from a user-selected workspace. */
   storagePath?: string;
   /** Whether OhMyGame owns the workspace directory or only references it. */
   workspaceLocation?: "managed" | "external";
   /** False when a previously selected workspace is no longer available on disk. */
   workspaceAvailable?: boolean;
-  preview: { status: PreviewStatus; url?: string; error?: string };
+  preview: PreviewRuntimeState;
   publication?: PublicationState;
+}
+
+export interface ProjectRunSettings extends ProjectPreviewSettings {
+  startupDirectory: string;
+  startupScript: string;
+  packageManager?: ProjectPackageManager;
+  previewPath: string;
+  previewViewport: PreviewViewport;
+  webPreviewEnabled?: boolean;
 }
 
 export interface ProjectAgentActivity {
@@ -194,17 +370,24 @@ export interface ProjectAgentActivity {
   status: Extract<AgentStatus, "running" | "cancelling">;
 }
 
-export type AssetCanvasNodeType = "text" | "image" | "video" | "model-3d" | "animate-3d" | "asset" | "document";
+export type AssetCanvasNodeType = "text" | "image" | "video" | "model-3d" | "animate-3d" | "asset" | "document" | "table";
 
 export interface AssetCanvasPosition {
   x: number;
   y: number;
 }
 
+export interface AssetCanvasNodeLayout extends AssetCanvasPosition {
+  width?: number;
+  height?: number;
+}
+
 export interface AssetCanvasEditorLayout {
   version: 1;
-  nodes: Record<string, AssetCanvasPosition>;
+  nodes: Record<string, AssetCanvasNodeLayout>;
   viewport: { x: number; y: number; zoom: number };
+  /** Fit a remixed board once its nodes are measured, then save the new viewport. */
+  fitView?: boolean;
   view: "canvas";
 }
 
@@ -220,6 +403,13 @@ export interface AssetCanvasTextReference {
 export interface AssetCanvasTextGenerationRequest {
   instruction: string;
   model?: AgentModelRef;
+  reasoningLevel?: AgentReasoningLevel;
+  referenceSource?: AssetCanvasTextGenerationSource;
+}
+
+export interface AssetCanvasTextGenerationSource {
+  boardId: string;
+  nodeId: string;
 }
 
 export interface AssetCanvasTextGenerationResponse {
@@ -228,7 +418,8 @@ export interface AssetCanvasTextGenerationResponse {
 }
 
 export type AssetCanvasNode = (
-  | { id: string; type: "document"; position: AssetCanvasPosition; data: { documentId: string } }
+  | { id: string; type: "table"; position: AssetCanvasPosition; data: { tableId: string } }
+  | { id: string; type: "document"; position: AssetCanvasPosition; data: { documentId: string; references?: AssetCanvasTextReference[] } }
   | { id: string; type: "asset"; position: AssetCanvasPosition; data: {
     assetId: string;
     mediaType: "image" | "video" | "audio" | "model";
@@ -237,6 +428,8 @@ export type AssetCanvasNode = (
     text: string;
     instruction: string;
     model?: AgentModelRef;
+    reasoningLevel?: AgentReasoningLevel;
+    references?: AssetCanvasTextReference[];
   } }
   | { id: string; type: "image"; position: AssetCanvasPosition; data: {
     prompt: string;
@@ -255,9 +448,16 @@ export type AssetCanvasNode = (
     aspectRatio: VideoAspectRatio;
     duration: number;
     references: AssetCanvasReference[];
+    referenceMode?: VideoReferenceMode;
+    referenceMentions?: Record<string, AssetCanvasReference>;
     assetId?: string;
   } }
   | { id: string; type: "model-3d"; position: AssetCanvasPosition; data: {
+    operation?: Exclude<Model3DOperation, "animate">;
+    prompt?: string;
+    promptSource?: AssetCanvasTextReference;
+    source?: AssetCanvasReference;
+    options?: Model3DOptions;
     model?: Model3DModelRef;
     targetPolycount: number;
     texture: boolean;
@@ -266,14 +466,16 @@ export type AssetCanvasNode = (
     assetId?: string;
   } }
   | { id: string; type: "animate-3d"; position: AssetCanvasPosition; data: {
-    /** The humanoid GLB to rig: a Model 3D node, a model Asset node, or a Library model. */
+    model?: Model3DModelRef;
+    options?: Model3DOptions;
+    /** The source GLB: a 3D output node, a model Asset node, or a Library model. */
     source?: AssetCanvasReference;
     heightMeters: number;
     /** Library actions in clip order. */
-    actionIds: number[];
+    actionIds: Model3DActionId[];
     assetId?: string;
   } }
-);
+) & { title?: string; description?: string; width?: number; height?: number };
 
 export interface AssetCanvasEdge {
   id: string;
@@ -284,7 +486,7 @@ export interface AssetCanvasEdge {
 
 export interface AssetCanvasDocument {
   version: 1;
-  /** Hydrated editor-only state. Persisted in editor/layout.json, not canvas.json. */
+  /** Hydrated editor state, persisted separately in canvas/editor/<board-id>.json. */
   editorLayout: AssetCanvasEditorLayout;
   viewport: { width: number; height: number };
   nodes: AssetCanvasNode[];
@@ -314,11 +516,33 @@ export interface ConversationAgentState {
 export type ItemStatus = "preparing" | "inProgress" | "completed" | "cancelled" | "interrupted" | "failed";
 export type TurnStatus = Extract<ItemStatus, "inProgress" | "completed" | "cancelled" | "interrupted" | "failed">;
 
-export type ThreadItemErrorCode = "model_not_configured";
+export type ThreadItemErrorCode = "model_not_configured" | "authentication_failed" | "access_denied" |
+  "quota_exceeded" | "rate_limited" | "invalid_request" | "model_unavailable" | "provider_unavailable" |
+  "dns_error" | "connection_refused" | "connection_reset" | "timeout" | "tls_error" |
+  "stream_error" | "network_error";
+
+export interface AgentErrorCause {
+  name?: string;
+  message?: string;
+  code?: string;
+}
+
+export interface AgentErrorDiagnostics {
+  provider?: string;
+  model?: string;
+  endpoint?: string;
+  statusCode?: number;
+  requestId?: string;
+  errorCode?: string;
+  causes?: AgentErrorCause[];
+  network?: { source: "environment" | "system" | "manual" | "direct"; proxyUrl?: string };
+  retryAttempts?: number;
+}
 
 export interface ThreadItemError {
   message: string;
   code?: ThreadItemErrorCode;
+  diagnostics?: AgentErrorDiagnostics;
 }
 
 export interface PromptReference {
@@ -332,7 +556,7 @@ export interface PromptReference {
  * conversation shows only the label.
  */
 export interface PromptContext {
-  kind: "playable-node" | "playable-element" | "playable-drawing" | "playable-asset" | "design-document";
+  kind: "playable-node" | "playable-element" | "playable-drawing" | "playable-asset" | "design-document" | "canvas-board";
   label: string;
   text: string;
 }
@@ -351,6 +575,8 @@ export interface PromptImage {
   mediaType: PromptImageMediaType;
   data: string;
   name?: string;
+  /** Display-only reference. UI projections leave data empty; model inputs retain it. */
+  url?: string;
 }
 
 export type PromptAttachmentKind = "image" | "text" | "document" | "audio" | "video" | "model" | "archive" | "binary";
@@ -616,9 +842,15 @@ export interface WorkspaceFile {
   prompt?: string;
   previewPath?: string;
   libraryAssetId?: string;
+  origin?: LibraryAssetOrigin;
+  purpose?: LibraryAssetPurpose;
 }
 
+export type LibraryAssetOrigin = "generated" | "uploaded" | "workspace" | "builtin" | "unknown";
+export type LibraryAssetPurpose = "asset" | "reference";
+
 export interface LibraryAsset {
+  model3d?: Model3DMetadata;
   id: string;
   name: string;
   size: number;
@@ -626,12 +858,31 @@ export interface LibraryAsset {
   contentType: string;
   createdAt: string;
   duration?: number;
+  /** Pixel dimensions of image and video content, read from the file header. */
+  width?: number;
+  height?: number;
   prompt?: string;
+  origin?: LibraryAssetOrigin;
+  purpose?: LibraryAssetPurpose;
+  /** Project copies remain available by ID without appearing in the saved collection. */
+  saved?: boolean;
+}
+
+export interface LibraryAssetProject {
+  id: string;
+  name: string;
+  type: ProjectType;
+}
+
+export interface LibraryAssetSummary extends LibraryAsset {
+  projects: LibraryAssetProject[];
+  referenceOnly: boolean;
 }
 
 export type LibraryUploadMediaType =
   | "image/png"
   | "image/jpeg"
+  | "image/svg+xml"
   | "image/webp"
   | "video/mp4"
   | "video/quicktime"
@@ -641,6 +892,7 @@ export type LibraryUploadMediaType =
 
 export interface CreateLibraryImageRequest {
   name: string;
+  purpose?: LibraryAssetPurpose;
   image: PromptImage & { mediaType: Extract<LibraryUploadMediaType, `image/${string}`> };
 }
 
@@ -654,6 +906,7 @@ export interface WorkspaceFileContent {
 
 export const IMAGE_SIZES = ["1024x1024", "1536x1024", "1024x1536"] as const;
 export type ImageSize = (typeof IMAGE_SIZES)[number];
+export const IMAGE_MAX_REFERENCE_IMAGES = 16;
 export const IMAGE_RESOLUTIONS = ["512", "1K", "2K", "4K"] as const;
 export type ImageResolution = (typeof IMAGE_RESOLUTIONS)[number];
 export const IMAGE_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"] as const;
@@ -669,6 +922,7 @@ export interface ImageGenerationOption {
 export const VIDEO_ASPECT_RATIOS = ["adaptive", "21:9", "16:9", "4:3", "3:2", "1:1", "2:3", "3:4", "9:16", "9:21"] as const;
 export type VideoAspectRatio = (typeof VIDEO_ASPECT_RATIOS)[number];
 export type VideoModelRef = ModelRef;
+export type VideoReferenceMode = "frame" | "reference";
 export interface VideoModel extends VideoModelRef {
   name: string;
   provider: string;
@@ -678,6 +932,10 @@ export interface VideoModel extends VideoModelRef {
   durations: readonly number[];
   maxImageReferences: number;
   imageReferenceMode?: "frame" | "reference";
+  referenceModes?: readonly VideoReferenceMode[];
+  /** A narrower ratio set used when image references are present. */
+  imageAspectRatios?: readonly VideoAspectRatio[];
+  frameAspectRatios?: readonly VideoAspectRatio[];
 }
 export const VIDEO_RESOLUTIONS = ["480p", "720p", "768p", "1080p", "1K", "2K", "4K"] as const;
 export type VideoResolution = (typeof VIDEO_RESOLUTIONS)[number];
@@ -715,6 +973,10 @@ interface RunConfiguredImageToolRequest {
 export type RunImageToolRequest = RunSizedImageToolRequest | RunConfiguredImageToolRequest;
 
 export interface Run3DToolRequest {
+  operation?: Exclude<Model3DOperation, "animate">;
+  prompt?: string;
+  sourceAssetId?: string;
+  options?: Model3DOptions;
   images: PromptImage[];
   model?: Model3DModelRef;
   targetPolycount?: number;
@@ -724,6 +986,7 @@ export interface Run3DToolRequest {
 
 export interface RunVideoToolRequest {
   prompt: string;
+  referenceMode?: VideoReferenceMode;
   model?: VideoModelRef;
   references?: VideoGenerationReference[];
   duration?: number;
@@ -736,10 +999,12 @@ export interface VideoGenerationReference {
   assetId: string;
 }
 
-/** Rigs a humanoid Library model and bakes preset actions into it, one clip per action. */
+/** Rigs a Library model and bakes the selected provider's preset actions into it. */
 export interface RunAnimate3DToolRequest {
+  model?: Model3DModelRef;
+  options?: Model3DOptions;
   assetId: string;
-  actionIds: number[];
+  actionIds: Model3DActionId[];
   heightMeters?: number;
 }
 
@@ -752,6 +1017,7 @@ export interface ToolRunFile {
 }
 
 export interface ToolRun {
+  model?: ModelRef;
   id: string;
   toolId: ToolId;
   createdAt: string;
@@ -767,6 +1033,7 @@ export interface ToolJobContext {
 }
 
 export interface ToolJob {
+  model?: ModelRef;
   id: string;
   toolId: ToolId;
   createdAt: string;
@@ -786,10 +1053,8 @@ export interface RuntimeEventData {
   "conversation.renamed": { conversation: ConversationSummary };
   "conversation.model.changed": { item: Extract<ThreadItem, { type: "modelChange" }> };
   "project.renamed": { project: ProjectState };
-  "preview.starting": Record<string, never>;
-  "preview.ready": { url: string };
-  "preview.error": { error: string };
-  "preview.stopped": Record<string, never>;
+  "project.updated": { project: ProjectState };
+  "preview.updated": { preview: PreviewRuntimeState };
   "agent.started": { prompt: string; mentions?: PluginMention[]; images?: PromptImage[]; attachments?: ConversationAttachment[]; contexts?: PromptContextLabel[]; revision?: "last-turn" };
   "plan.mode.changed": PlanSessionState;
   "item.started": { item: ThreadItem };
@@ -814,10 +1079,8 @@ export const RUNTIME_EVENT_TYPES = [
   "conversation.renamed",
   "conversation.model.changed",
   "project.renamed",
-  "preview.starting",
-  "preview.ready",
-  "preview.error",
-  "preview.stopped",
+  "project.updated",
+  "preview.updated",
   "agent.started",
   "item.started",
   "item.updated",

@@ -15,7 +15,10 @@ import groq from "@lobehub/icons-static-svg/icons/groq.svg";
 import huggingFace from "@lobehub/icons-static-svg/icons/huggingface-color.svg";
 import kimi from "@lobehub/icons-static-svg/icons/kimi-color.svg";
 import minimax from "@lobehub/icons-static-svg/icons/minimax-color.svg";
+import tripo from "@lobehub/icons-static-svg/icons/tripo-color.svg";
 import meshy from "@lobehub/icons-static-svg/icons/meshy-color.svg";
+import ollama from "@lobehub/icons-static-svg/icons/ollama.svg";
+import lmstudio from "@lobehub/icons-static-svg/icons/lmstudio.svg";
 import mistral from "@lobehub/icons-static-svg/icons/mistral-color.svg";
 import moonshot from "@lobehub/icons-static-svg/icons/moonshot.svg";
 import nvidia from "@lobehub/icons-static-svg/icons/nvidia-color.svg";
@@ -25,9 +28,12 @@ import openRouter from "@lobehub/icons-static-svg/icons/openrouter.svg";
 import qwen from "@lobehub/icons-static-svg/icons/qwen-color.svg";
 import together from "@lobehub/icons-static-svg/icons/together-color.svg";
 import vercel from "@lobehub/icons-static-svg/icons/vercel.svg";
+import volcengine from "@lobehub/icons-static-svg/icons/volcengine-color.svg";
+import byteDance from "@lobehub/icons-static-svg/icons/bytedance-color.svg";
 import xAI from "@lobehub/icons-static-svg/icons/xai.svg";
 import xiaomi from "@lobehub/icons-static-svg/icons/xiaomimimo.svg";
 import zai from "@lobehub/icons-static-svg/icons/zai.svg";
+import hyper3d from "./assets/providers/hyper3d.png";
 
 export interface ProviderIcon {
   src: string;
@@ -36,6 +42,7 @@ export interface ProviderIcon {
 
 const color = (src: string): ProviderIcon => ({ src, tone: "color" });
 const monochrome = (src: string): ProviderIcon => ({ src, tone: "monochrome" });
+const hyper3dIcon = monochrome(hyper3d);
 
 export const PROVIDER_ICONS: Readonly<Partial<Record<string, ProviderIcon>>> = {
   "amazon-bedrock": color(amazonBedrock),
@@ -53,10 +60,15 @@ export const PROVIDER_ICONS: Readonly<Partial<Record<string, ProviderIcon>>> = {
   "google-vertex": color(googleVertex),
   groq: monochrome(groq),
   huggingface: color(huggingFace),
+  hyper3d: hyper3dIcon,
+  "cloud-hyper3d": hyper3dIcon,
   "kimi-coding": color(kimi),
   minimax: color(minimax),
   "minimax-cn": color(minimax),
   meshy: color(meshy),
+  ollama: monochrome(ollama),
+  lmstudio: monochrome(lmstudio),
+  tripo: color(tripo),
   mistral: color(mistral),
   moonshotai: monochrome(moonshot),
   "moonshotai-cn": monochrome(moonshot),
@@ -71,6 +83,8 @@ export const PROVIDER_ICONS: Readonly<Partial<Record<string, ProviderIcon>>> = {
   "qwen-token-plan-individual": color(qwen),
   together: color(together),
   "vercel-ai-gateway": monochrome(vercel),
+  "volcengine-ark": color(volcengine),
+  "byteplus-modelark": color(byteDance),
   xai: monochrome(xAI),
   xiaomi: monochrome(xiaomi),
   "xiaomi-token-plan-ams": monochrome(xiaomi),

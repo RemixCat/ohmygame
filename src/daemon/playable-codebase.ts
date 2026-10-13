@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { EDITOR_LAYOUT_SCHEMA } from "../shared/editor-layout-schema.js";
@@ -9,10 +9,11 @@ import {
   isNodeEditorLayout,
   playableLayoutMatchesGraph,
   type NodeCodebase,
+  type NodeCodebaseDetail,
   type NodeCodebaseUpdate,
   type NodeEditorLayout,
 } from "../shared/playable-codebase.js";
-import type { NodeGraph, PlayableSignal } from "../shared/playable-nodes.js";
+import type { NodeGraph } from "../shared/playable-nodes.js";
 import { blankSource } from "./playable-presets.js";
 import { PLAYABLE_PROJECT_STYLE_FILES } from "./playable-style.js";
 import { listWorkspaceFiles } from "./workspace.js";
@@ -21,10 +22,18 @@ const GRAPH_FILE = "graph.json";
 const LAYOUT_FILE = "editor/layout.json";
 const GRAPH_SCHEMA_FILE = "schemas/graph.schema.json";
 const LAYOUT_SCHEMA_FILE = "schemas/editor-layout.schema.json";
+const PROJECT_STYLE_FILES = Object.keys(PLAYABLE_PROJECT_STYLE_FILES);
+const PROJECT_STYLE_MIGRATION_FILE = "schemas/project-style.version.json";
+const PROJECT_STYLE_MIGRATION_CONTENT = '{\n  "version": 1\n}\n';
 const codebaseOperations = new Map<string, Promise<void>>();
 
 export class NodeCodebaseError extends Error {
-  override readonly name = "NodeCodebaseError";
+  override readonly name: string = "NodeCodebaseError";
+}
+
+/** The files changed since the revision an update was made from. */
+export class NodeCodebaseConflictError extends NodeCodebaseError {
+  override readonly name = "NodeCodebaseConflictError";
 }
 
 const AGENT_INSTRUCTIONS = `# Playable Nodes Project
@@ -49,6 +58,10 @@ This workspace is the source of truth for an OhMyGame Playable Nodes project.
 - UI that appears on more than one Node, such as a top bar or a Home button, is a shared component under \`shared/components/\`. Each Node that shows it imports it, and declares and routes the Signals it emits like its own. There is no layer drawn over every Node; State carries whatever must continue across Nodes.
 - A Signal that is a way around the game rather than a step in the story, such as Home, Menu, or Settings, has \`"role": "navigation"\`. The editor names its target on the Exit instead of drawing a line; routing is the same.
 - Use \`replace\` for forward progression and \`push\` only when the player should be able to return with \`navigation.back()\`.
+- A Node that is not a step in the story, such as a menu or settings, has \`"story": { "hidden": true }\`, so the Story Map leaves it out and joins the Nodes before and after it. A Node counts as an ending when it has no Signals other than navigation ones; set \`story.ending\` only where that guess is wrong, and \`story.label\` when players should see another name than the title.
+- A Story Map Scene (the \`story-map\` Preset) shows the story with \`context.story.map()\`. Reach it with a \`push\` edge from a menu, a pause button, or an ending; it returns with \`navigation.back()\`. A Main menu's \`story-map\` navigation Exit is the usual way in; connect it to the Story Map Scene.
+- An entry, button, or link whose Signal may go nowhere checks \`context.navigation.connected(signalId)\` and shows disabled instead of emitting. Publishing requires every Signal other than navigation ones to be connected.
+- A new project has no Nodes. \`playable_add_node\` makes the first Node the Entry Node; when you add the first Node to graph.json yourself, set \`entryNodeId\` to it.
 - Keep IDs and source paths stable when editing existing objects. You do not need to edit \`editor/layout.json\`; the editor places new Nodes.
 - Read \`README.md\` and the schemas in \`schemas/\` before changing the contract. Do not copy or modify the OhMyGame Runtime inside this project.
 
@@ -65,6 +78,7 @@ The user sees the editor, not this contract. Talk to them in its words: say "the
 | Exit condition | Signal \`when\` |
 | Allow Back | edge \`mode: "push"\` |
 | Template | Preset |
+| On Story map, Ending | \`story.hidden\`, \`story.ending\` |
 `;
 
 const PROJECT_DOCUMENTATION = `# Playable Nodes Project
@@ -89,8 +103,9 @@ Each Node module exports \`mount(context)\`. The Runtime supplies:
 - \`context.root\`: the Node's isolated ShadowRoot.
 - \`context.assets.url(id)\`: a URL for an Asset declared by this Node.
 - \`context.state.get(key)\`, \`set(key, value)\`, \`patch(values)\`, and \`subscribe(listener)\`.
-- \`context.navigation.emit(signalId)\` and \`back()\`.
+- \`context.navigation.emit(signalId)\`, \`back()\`, and \`connected(signalId)\`, which is true when this Node declares the Signal and an edge routes it.
 - \`context.session.hasSave()\`, \`save()\`, \`continue()\`, \`restart()\`, and \`reset()\`.
+- \`context.story.map()\`: the story laid out from the graph in rows from the Start, with what the player has seen across every game. Nodes have \`id\`, \`label\`, \`row\`, \`column\` (from the left of its row of \`rowSize\`), \`ending\`, and \`seen\`; edges have \`from\`, \`to\`, and \`seen\`. It leaves out \`push\` side screens, navigation Signals, steps back up the story, and Nodes with \`story.hidden\`.
 - \`context.lifecycle.signal\`: aborted before cleanup when the Node exits.
 
 A shared component receives the Node's context from the Node that mounts it, so it emits that Node's Signals: every Node that shows it declares them in \`graph.json\`.
@@ -127,6 +142,7 @@ export async function createNodeCodebase(
       "README.md",
       GRAPH_SCHEMA_FILE,
       LAYOUT_SCHEMA_FILE,
+      PROJECT_STYLE_MIGRATION_FILE,
     ];
     const snapshot = await snapshotFiles(workspacePath, touchedFiles);
     try {
@@ -152,64 +168,122 @@ export async function createNodeCodebase(
 export async function readNodeCodebase(
   workspacePath: string,
 ): Promise<NodeCodebase> {
+  const { revision: _revision, ...codebase } = await readNodeCodebaseDetail(workspacePath);
+  return codebase;
+}
+
+/**
+ * Reads the codebase with the revision of its files. Writing that revision
+ * back with a change refuses to overwrite what the Agent, the editor, or
+ * anything else wrote to graph.json or editor/layout.json in the meantime.
+ */
+export async function readNodeCodebaseDetail(
+  workspacePath: string,
+): Promise<NodeCodebaseDetail> {
+  return withCodebaseLock(workspacePath, () => readCodebase(workspacePath));
+}
+
+/** Reads a codebase after applying one-time migrations needed by the editor. */
+export async function openNodeCodebaseDetail(
+  workspacePath: string,
+): Promise<NodeCodebaseDetail> {
   return withCodebaseLock(workspacePath, async () => {
-    const [graphValue, layoutValue] = await Promise.all([
-      readJson(path.join(workspacePath, GRAPH_FILE), GRAPH_FILE),
-      readJson(path.join(workspacePath, LAYOUT_FILE), LAYOUT_FILE),
-    ]);
-    const graph = graphValue as NodeGraph;
-    const layout = layoutValue as NodeEditorLayout;
-    if (!isNodeEditorLayout(layout)) throw new Error("Invalid editor/layout.json.");
-    const codebase = { graph, editorLayout: fitPlayableLayout(graph, layout) };
-    await validateCodebase(workspacePath, codebase, true);
+    const codebase = await readCodebase(workspacePath);
+    await migratePlayableProjectStyle(workspacePath);
     return codebase;
   });
 }
 
+/** Resolves with the revision of the written files. */
 export async function writeNodeCodebase(
   workspacePath: string,
   update: NodeCodebaseUpdate,
+): Promise<string> {
+  return withCodebaseLock(workspacePath, () => writeCodebase(workspacePath, update));
+}
+
+/**
+ * Reads the codebase, lets `change` make an update from it, and writes that
+ * update, all in one step that no other read or write through the daemon can
+ * land inside. `change` returns undefined to write nothing.
+ */
+export async function changeNodeCodebase(
+  workspacePath: string,
+  change: (codebase: NodeCodebaseDetail) => NodeCodebaseUpdate | undefined,
 ): Promise<void> {
   await withCodebaseLock(workspacePath, async () => {
-    const codebase: NodeCodebase = {
-      graph: update.graph,
-      editorLayout: update.editorLayout,
-    };
-    const sources = validateSourceUpdates(codebase.graph, update.sources);
-    const sourceDeletions = await validateSourceDeletions(
-      workspacePath,
-      codebase.graph,
-      update.sourceDeletions,
-      Object.keys(sources),
-    );
-    await validateCodebase(workspacePath, codebase, true, Object.keys(sources));
-    const touchedFiles = [
-      GRAPH_FILE,
-      LAYOUT_FILE,
-      ...Object.keys(sources),
-      ...sourceDeletions,
-      "AGENTS.md",
-      "README.md",
-      GRAPH_SCHEMA_FILE,
-      LAYOUT_SCHEMA_FILE,
-    ];
-    const snapshot = await snapshotFiles(workspacePath, touchedFiles);
-    try {
-      for (const [relative, content] of Object.entries(sources)) {
-        await writeTextAtomic(workspacePath, relative, content);
-      }
-      for (const relative of sourceDeletions) {
-        await rm(await resolveWorkspaceMutationPath(workspacePath, relative), { force: true });
-      }
-      await writeJsonAtomic(workspacePath, GRAPH_FILE, codebase.graph);
-      await writeJsonAtomic(workspacePath, LAYOUT_FILE, codebase.editorLayout);
-      await ensureNodeCodebaseContract(workspacePath);
-      await removeEmptySourceDirectories(workspacePath, sourceDeletions);
-    } catch (cause) {
-      await restoreFiles(workspacePath, snapshot);
-      throw cause;
-    }
+    const current = await readCodebase(workspacePath);
+    const update = change(current);
+    // The revision still refuses to write over a file the Agent edited in the meantime.
+    if (update) await writeCodebase(workspacePath, { ...update, revision: current.revision });
   });
+}
+
+async function readCodebase(workspacePath: string): Promise<NodeCodebaseDetail> {
+  const [graphText, layoutText] = await readCodebaseTexts(workspacePath);
+  const graph = parseJson(graphText, GRAPH_FILE) as NodeGraph;
+  const layout = parseJson(layoutText, LAYOUT_FILE) as NodeEditorLayout;
+  if (!isNodeEditorLayout(layout)) throw new Error("Invalid editor/layout.json.");
+  const codebase = { graph, editorLayout: fitPlayableLayout(graph, layout) };
+  await validateCodebase(workspacePath, codebase, true);
+  return { ...codebase, revision: codebaseRevision(graphText, layoutText) };
+}
+
+async function writeCodebase(
+  workspacePath: string,
+  update: NodeCodebaseUpdate,
+): Promise<string> {
+  if (update.revision !== undefined) {
+    const [graphText, layoutText] = await readCodebaseTexts(workspacePath);
+    if (codebaseRevision(graphText, layoutText) !== update.revision) {
+      throw new NodeCodebaseConflictError(
+        "The project changed. Reload the latest version before saving.",
+      );
+    }
+  }
+  const codebase: NodeCodebase = {
+    graph: update.graph,
+    editorLayout: update.editorLayout,
+  };
+  const sources = validateSourceUpdates(codebase.graph, update.sources);
+  const sourceDeletions = await validateSourceDeletions(
+    workspacePath,
+    codebase.graph,
+    update.sourceDeletions,
+    Object.keys(sources),
+  );
+  await validateCodebase(workspacePath, codebase, true, Object.keys(sources));
+  const touchedFiles = [
+    GRAPH_FILE,
+    LAYOUT_FILE,
+    ...Object.keys(sources),
+    ...sourceDeletions,
+    "AGENTS.md",
+    "README.md",
+    GRAPH_SCHEMA_FILE,
+    LAYOUT_SCHEMA_FILE,
+    ...PROJECT_STYLE_FILES,
+    PROJECT_STYLE_MIGRATION_FILE,
+  ];
+  const snapshot = await snapshotFiles(workspacePath, touchedFiles);
+  try {
+    for (const [relative, content] of Object.entries(sources)) {
+      await writeTextAtomic(workspacePath, relative, content);
+    }
+    for (const relative of sourceDeletions) {
+      await rm(await resolveWorkspaceMutationPath(workspacePath, relative), { force: true });
+    }
+    const graphText = jsonText(codebase.graph);
+    const layoutText = jsonText(codebase.editorLayout);
+    await writeTextAtomic(workspacePath, GRAPH_FILE, graphText);
+    await writeTextAtomic(workspacePath, LAYOUT_FILE, layoutText);
+    await ensureNodeCodebaseContract(workspacePath);
+    await removeEmptySourceDirectories(workspacePath, sourceDeletions);
+    return codebaseRevision(graphText, layoutText);
+  } catch (cause) {
+    await restoreFiles(workspacePath, snapshot);
+    throw cause;
+  }
 }
 
 export async function ensureNodeCodebaseContract(
@@ -218,6 +292,7 @@ export async function ensureNodeCodebaseContract(
   await Promise.all([
     ensureFile(path.join(workspacePath, "AGENTS.md"), AGENT_INSTRUCTIONS),
     ensureFile(path.join(workspacePath, "README.md"), PROJECT_DOCUMENTATION),
+    migratePlayableProjectStyle(workspacePath),
     writeJsonIfChanged(
       path.join(workspacePath, GRAPH_SCHEMA_FILE),
       PLAYABLE_GRAPH_SCHEMA,
@@ -227,6 +302,44 @@ export async function ensureNodeCodebaseContract(
       EDITOR_LAYOUT_SCHEMA,
     ),
   ]);
+}
+
+async function migratePlayableProjectStyle(
+  workspacePath: string,
+): Promise<void> {
+  const marker = await resolveWorkspaceMutationPath(
+    workspacePath,
+    PROJECT_STYLE_MIGRATION_FILE,
+  );
+  try {
+    await readFile(marker);
+    return;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+  }
+
+  const snapshot = await snapshotFiles(workspacePath, [
+    ...PROJECT_STYLE_FILES,
+    PROJECT_STYLE_MIGRATION_FILE,
+  ]);
+  try {
+    for (const [relative, content] of Object.entries(
+      PLAYABLE_PROJECT_STYLE_FILES,
+    )) {
+      await ensureFile(
+        await resolveWorkspaceMutationPath(workspacePath, relative),
+        content,
+      );
+    }
+    await writeTextAtomic(
+      workspacePath,
+      PROJECT_STYLE_MIGRATION_FILE,
+      PROJECT_STYLE_MIGRATION_CONTENT,
+    );
+  } catch (cause) {
+    await restoreFiles(workspacePath, snapshot);
+    throw cause;
+  }
 }
 
 async function validateCodebase(
@@ -263,6 +376,11 @@ async function validateCodebase(
   }
 }
 
+/**
+ * A new project has no Scenes: the author starts from a Template or the
+ * Agent from the author's description, and the first Scene added becomes the
+ * Start, which `entryNodeId` names until then.
+ */
 function blankCodebase(
   title: string,
   viewport: { width: number; height: number },
@@ -275,28 +393,10 @@ function blankCodebase(
       entryNodeId: "start",
       initialState: {},
       assets: {},
-      nodes: [node("start", "Node 1", [{ id: "next", label: "Next" }])],
+      nodes: [],
       edges: [],
     },
-    editorLayout: layout({ start: { x: 120, y: 180 } }),
-  };
-}
-
-function node(
-  id: string,
-  title: string,
-  signals: PlayableSignal[],
-) {
-  return {
-    id,
-    title,
-    source: {
-      html: `nodes/${id}/index.html`,
-      css: `nodes/${id}/style.css`,
-      javascript: `nodes/${id}/node.js`,
-    },
-    assets: [],
-    signals,
+    editorLayout: layout({}),
   };
 }
 
@@ -311,8 +411,9 @@ function layout(
   };
 }
 
-// A new project's only Node starts from the Blank Template. Examples, which
-// ship their own sources, live in the ohmygame-examples repository.
+// A new project brings the Project Style; any Node it starts with comes from
+// the Blank Template. Examples, which ship their own sources, live in the
+// ohmygame-examples repository.
 function starterSources(graph: NodeGraph): Record<string, string> {
   const sources: Record<string, string> = { ...PLAYABLE_PROJECT_STYLE_FILES };
   const blank = blankSource();
@@ -325,12 +426,32 @@ function starterSources(graph: NodeGraph): Record<string, string> {
 }
 
 async function readJson(file: string, label: string): Promise<unknown> {
+  return parseJson(await readFile(file, "utf8"), label);
+}
+
+function parseJson(text: string, label: string): unknown {
   try {
-    return JSON.parse(await readFile(file, "utf8")) as unknown;
+    return JSON.parse(text) as unknown;
   } catch (cause) {
     if (cause instanceof SyntaxError) throw new Error(`${label} is not valid JSON.`);
     throw cause;
   }
+}
+
+function readCodebaseTexts(workspacePath: string): Promise<[string, string]> {
+  return Promise.all([
+    readFile(path.join(workspacePath, GRAPH_FILE), "utf8"),
+    readFile(path.join(workspacePath, LAYOUT_FILE), "utf8"),
+  ]);
+}
+
+// The files' own text, so an edit made outside the daemon changes it too.
+function codebaseRevision(graphText: string, layoutText: string): string {
+  return createHash("sha256").update(JSON.stringify([graphText, layoutText])).digest("hex");
+}
+
+function jsonText(value: unknown): string {
+  return `${JSON.stringify(value, null, 2)}\n`;
 }
 
 async function existingGeneratedFiles(
@@ -346,6 +467,7 @@ async function existingGeneratedFiles(
 }
 
 async function ensureFile(file: string, content: string): Promise<void> {
+  await mkdir(path.dirname(file), { recursive: true });
   try {
     await writeFile(file, content, { encoding: "utf8", flag: "wx" });
   } catch (cause) {
@@ -354,7 +476,7 @@ async function ensureFile(file: string, content: string): Promise<void> {
 }
 
 async function writeJsonIfChanged(file: string, value: unknown): Promise<void> {
-  const expected = `${JSON.stringify(value, null, 2)}\n`;
+  const expected = jsonText(value);
   await mkdir(path.dirname(file), { recursive: true });
   try {
     if (await readFile(file, "utf8") === expected) return;
@@ -369,26 +491,10 @@ async function writeJson(
   value: unknown,
   flag?: "wx",
 ): Promise<void> {
-  await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, {
+  await writeFile(file, jsonText(value), {
     encoding: "utf8",
     ...(flag ? { flag } : {}),
   });
-}
-
-async function writeJsonAtomic(
-  workspacePath: string,
-  relative: string,
-  value: unknown,
-): Promise<void> {
-  const destination = await resolveWorkspaceMutationPath(workspacePath, relative);
-  const temporary = `${destination}.tmp-${process.pid}-${randomUUID()}`;
-  await mkdir(path.dirname(destination), { recursive: true });
-  try {
-    await writeJson(temporary, value);
-    await rename(temporary, destination);
-  } finally {
-    await rm(temporary, { force: true });
-  }
 }
 
 async function writeTextAtomic(

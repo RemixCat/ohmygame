@@ -7,14 +7,15 @@ function prompt(project: Parameters<typeof appendSystemPromptForProject>[0]): st
 
 describe("OhMyGame system prompt", () => {
   it("preserves shared interaction guidance for every project type", () => {
-    for (const type of ["web-game", "godot-game", "interactive-story", "asset-canvas"] as const) {
+    for (const type of ["general", "web-game", "godot-game", "interactive-story", "asset-canvas"] as const) {
       const text = prompt({ type });
 
       expect(text).toContain("brief commentary update before the first tool call");
       expect(text).toContain("update_plan");
       expect(text).toContain("Do not create or change files for casual conversation");
       expect(text).toContain("do not revert changes you did not make");
-      expect(text).toContain("its main document before implementing game changes");
+      expect(text).toContain("relevant boards/documents before canvas, design or asset work");
+      expect(text).toContain("For game implementation, also read the main document if one is selected");
       expect(text).not.toContain("may be empty");
     }
   });
@@ -36,12 +37,36 @@ describe("OhMyGame system prompt", () => {
     expect(text).not.toContain("existing folder as the workspace");
   });
 
+  it("uses Game Studio for general games and keeps the Web contract conditional", () => {
+    const text = prompt({ type: "general", webPreviewEnabled: true, startupDirectory: "client", startupScript: "start", packageManager: "pnpm", workspaceLocation: "external" });
+
+    expect(text).toContain("use game-studio when available");
+    expect(text).toContain("Applications, tools, and content");
+    expect(text).toContain("Web preview is enabled by the user");
+    expect(text).toContain("the client/ folder of the workspace, run with pnpm");
+    expect(text).toContain('a "start" script');
+    expect(text).not.toContain("use web-game-studio");
+    expect(text).not.toContain("playable_add_node");
+  });
+
+  it("keeps disabled General previews under user control without requiring a Node stack", () => {
+    const text = prompt({ type: "general" });
+    expect(text).toContain("Web preview is disabled");
+    expect(text).toContain("Do not start a persistent dev server or enable the capability yourself");
+    expect(text).toContain("Web publishing is independent of the preview switch");
+    expect(text).not.toContain("The game is a Node project");
+    expect(text).not.toContain("starts it after your turn");
+  });
+
   it("explains how an explicitly referenced design revision should be used", () => {
     const text = prompt({ type: "web-game" });
 
-    expect(text).toContain("explicitly referenced snapshot and revision");
-    expect(text).toContain("as the design context for that turn");
-    expect(text).toContain("design/documents/<id>.md and are editable Markdown sources");
+    expect(text).toContain("explicitly referenced document snapshots");
+    expect(text).toContain("canvas/AGENTS.md");
+    expect(text).toContain("read/edit/write");
+    expect(text).toContain("canvas_check");
+    expect(text).toContain("Read actual image files");
+    expect(text).toContain("Editing a prompt or reference does not request generation");
   });
 
   it("describes the configured run settings and external workspaces", () => {

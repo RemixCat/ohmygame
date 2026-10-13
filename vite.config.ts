@@ -19,12 +19,15 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: path.resolve(import.meta.dirname, "index.html"),
+        webGameHost: path.resolve(import.meta.dirname, "web-game-host.html"),
         playableSandbox: path.resolve(import.meta.dirname, "playable-sandbox.html"),
       },
     },
   },
   test: {
     include: ["test/**/*.test.{ts,tsx}"],
+    // Real compiler builds and grammar initialization need bounded parallelism on Bun.
+    maxWorkers: 4,
     // Playable build tests run real esbuild/vite builds and exceed the 5s default under parallel load.
     testTimeout: 30_000,
   },

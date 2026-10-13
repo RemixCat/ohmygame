@@ -3,6 +3,18 @@ import type { ConversationDetail, ConversationSummary, ProjectState, RuntimeEven
 import { initialRendererState, rendererReducer } from "../src/renderer/state.js";
 
 describe("rendererReducer", () => {
+  it("preserves unrelated turn and item references when streaming text", () => {
+    const historical = turn("previous", "completed", [user("previous", "Earlier")]);
+    const prompt = user("turn-1", "Build");
+    const active = turn("turn-1", "inProgress", [prompt, assistant("turn-1", "assistant-1", "", "inProgress")]);
+    const state = { ...initialized(), turns: [historical, active] };
+    const next = event(state, runtimeEvent(1, "item.agentMessage.delta", { itemId: "assistant-1", delta: "Hello" }));
+    expect(next.turns[0]).toBe(historical);
+    expect(next.turns[0].items).toBe(historical.items);
+    expect(next.turns[1]).not.toBe(active);
+    expect(next.turns[1].items[0]).toBe(prompt);
+    expect(next.turns[1].items[1]).toMatchObject({ text: "Hello" });
+  });
   it("stores the publication from the HTTP response without overwriting newer project state", () => {
     const state = initialized();
     const publication = {
@@ -13,6 +25,14 @@ describe("rendererReducer", () => {
     expect(next.project).toEqual({ ...state.project, publication });
     expect(next.lastEventId).toBe(state.lastEventId);
     expect(rendererReducer(state, { type: "publication-updated", projectId: "another-project", publication })).toBe(state);
+  });
+
+  it("syncs project settings and capability changes from project.updated events", () => {
+    const state = initialized();
+    const updated: ProjectState = { ...state.project!, type: "general", webPreviewEnabled: true, preview: { status: "waiting" } };
+    const next = event(state, runtimeEvent(1, "project.updated", { project: updated }));
+    expect(next.project).toEqual(updated);
+    expect(next.turns).toBe(state.turns);
   });
 
   it("loads shared turns without deriving a parallel item list", () => {
@@ -226,6 +246,18 @@ describe("rendererReducer", () => {
     const state = event(initialized(), { ...runtimeEvent(1, "agent.started", { prompt: "Other" }), conversationId: "conversation-2" });
     expect(state.turns).toEqual([]);
     expect(state.lastEventId).toBe(1);
+  });
+
+  it("ignores duplicate and stale events without duplicating queued prompts", () => {
+    const queued = { ...runtimeEvent(2, "prompt.queued", { prompt: "Next", references: [] }), turnId: "turn-2" };
+    const state = event(initialized(), queued);
+
+    expect(state.pendingPrompts).toHaveLength(1);
+    const replayed = event(state, queued);
+    expect(replayed.pendingPrompts).toEqual(state.pendingPrompts);
+    expect(replayed.lastEventId).toBe(2);
+    expect(event(state, { ...queued, id: 1 })).toEqual(state);
+    expect(state.pendingPrompts).toHaveLength(1);
   });
 
   it("updates the active conversation title", () => {

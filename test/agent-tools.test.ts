@@ -1,3 +1,4 @@
+import { TEST_GLB } from "./model3d-fixture.js";
 import { mkdir, mkdtemp, readFile, readdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -34,6 +35,12 @@ describe("agent tools", () => {
       [],
       ["read", "generate_image", "web_search"],
     )).toEqual(["read", "write", "edit", "bash", "web_search", "update_plan", "install_plugin"]);
+    expect(projectPiToolNames("planning", ["generate-image"], ["canvas_check", "generate_canvas_media"])).toContain("canvas_check");
+    expect(projectPiToolNames("planning", ["generate-image"], ["canvas_check", "generate_canvas_media"])).not.toContain("generate_canvas_media");
+    expect(activePiToolNames(["generate-image"], ["canvas_check", "generate_canvas_media"])).toContain("generate_canvas_media");
+    expect(activePiToolNames([], ["canvas_check", "generate_canvas_media"])).not.toContain("generate_canvas_media");
+    expect(activePiToolNames([], ["canvas_initialize"])).toContain("canvas_initialize");
+    expect(projectPiToolNames("planning", [], ["canvas_initialize"])).not.toContain("canvas_initialize");
   });
 
   it("uses the shared Pi tools for every project type", () => {
@@ -52,11 +59,11 @@ describe("agent tools", () => {
     ]);
   });
 
-  it("registers game use only when a matching runtime adapter is available", async () => {
+  it.each(["web-game", "general"] as const)("registers game use for %s only when a matching runtime adapter is available", async (type) => {
     const dataDirectory = await mkdtemp(path.join(tmpdir(), "ohmygame-agent-playtest-"));
     const projects = new ProjectManager(dataDirectory);
     await projects.load();
-    const project = await projects.create("Browser Game");
+    const project = await projects.create("Browser Game", type);
     const runner = new ToolRunner(dataDirectory, { generate: async () => ({ bytes: Buffer.from("image"), mediaType: "image/webp" }) });
     await runner.load();
     const driver: GameRuntimeAdapter = {
@@ -67,14 +74,15 @@ describe("agent tools", () => {
     };
 
     expect(createAgentTools(project, runner, projects).some(({ name }) => name === "game_use")).toBe(false);
-    expect(createAgentTools(
-      project,
-      runner,
-      projects,
-      undefined,
-      undefined,
-      { driver, resolveOpenTarget: async () => ({ runtime: "web", url: "http://127.0.0.1:43210/" }) },
-    ).some(({ name }) => name === "game_use")).toBe(true);
+    const playtest = { driver, resolveOpenTarget: async () => ({ runtime: "web" as const, url: "http://127.0.0.1:43210/" }) };
+    if (type === "general") {
+      expect(project.webPreviewEnabled).toBe(true);
+      expect(createAgentTools(project, runner, projects, undefined, undefined, playtest).some(({ name }) => name === "game_use")).toBe(true);
+      await projects.setRunSettings(project.id, { startupDirectory: ".", startupScript: "dev", previewPath: "/", previewViewport: "fit", webPreviewEnabled: false });
+      expect(createAgentTools(project, runner, projects, undefined, undefined, playtest).some(({ name }) => name === "game_use")).toBe(false);
+      await projects.setRunSettings(project.id, { startupDirectory: ".", startupScript: "dev", previewPath: "/", previewViewport: "fit", webPreviewEnabled: true });
+    }
+    expect(createAgentTools(project, runner, projects, undefined, undefined, playtest).some(({ name }) => name === "game_use")).toBe(true);
   });
 
   it("returns provider metadata from the built-in web search tool", async () => {
@@ -266,7 +274,7 @@ describe("agent tools", () => {
     }, {
       generate: async ({ images }) => {
         expect(images).toEqual([{ mediaType: "image/png", data: Buffer.from("source image").toString("base64") }]);
-        return { bytes: Buffer.from("generated glb"), mediaType: "model/gltf-binary" };
+        return { bytes: TEST_GLB, mediaType: "model/gltf-binary" };
       },
     });
     await runner.load();
@@ -278,7 +286,7 @@ describe("agent tools", () => {
     const relativePath = text.replace("Generated 3D model saved to ", "");
 
     expect(relativePath).toMatch(/^assets\/generated\/model-[0-9a-f-]+\.glb$/);
-    expect(await readFile(path.join(project.workspacePath, relativePath), "utf8")).toBe("generated glb");
+    expect(await readFile(path.join(project.workspacePath, relativePath))).toEqual(TEST_GLB);
     const model = (await listWorkspaceFiles(project.workspacePath)).find((file) => file.path === relativePath);
     expect(model?.previewPath).toMatch(/^\.data\/asset-previews\/model-[0-9a-f-]+\.png$/);
     expect(await readFile(path.join(project.workspacePath, model?.previewPath ?? ""), "utf8")).toBe("source image");
@@ -343,7 +351,8 @@ describe("agent tools", () => {
       signals: ["next"],
     } });
     const graph = JSON.parse(await readFile(path.join(story.workspacePath, "graph.json"), "utf8"));
-    expect(graph.nodes.map((node: { id: string }) => node.id)).toEqual(["start", "opening"]);
+    expect(graph.nodes.map((node: { id: string }) => node.id)).toEqual(["opening"]);
+    expect(graph.entryNodeId).toBe("opening");
     await expect(tool.execute("call-dup", { preset: "blank", id: "opening" }, undefined, undefined, {} as never))
       .rejects.toThrow(/already exists/);
   });
@@ -378,4 +387,3 @@ describe("agent tools", () => {
     expect(text).toContain("missing");
   });
 });
-

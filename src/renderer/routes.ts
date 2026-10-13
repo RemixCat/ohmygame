@@ -1,26 +1,33 @@
+import type { ProjectType } from "../shared/contracts.js";
+import { isProjectType } from "../shared/project-runtime.js";
+
 export type SidebarPage =
   | "home"
   | "projects"
   | "library"
-  | "plugins"
+  | "general"
+  | "web-game"
   | "interactive-story"
+  | "godot"
   | "asset-canvas"
   | "community";
 
-export type SettingsSection = "account" | "billing" | "appearance" | "providers" | "web-search" | "connections" | "about";
+export type SettingsSection = "account" | "billing" | "appearance" | "providers" | "web-search" | "network" | "plugins" | "about";
 export type AppNavigationTarget = SidebarPage | "settings";
-type SidebarRoutePage = Exclude<SidebarPage, "community">;
+type SidebarRoutePage = Exclude<SidebarPage, "community" | "projects">;
 
 export const DEFAULT_SETTINGS_SECTION: SettingsSection = "providers";
 
 const SIDEBAR_PAGES = new Set<SidebarRoutePage>([
-  "home", "projects", "library", "plugins", "interactive-story", "asset-canvas",
+  "home", "library", "general", "web-game", "interactive-story", "godot", "asset-canvas",
 ]);
 
 export type AppRoute =
   | { page: SidebarRoutePage }
+  | { page: "projects"; projectType?: ProjectType }
   | { page: "community" }
-  | { page: "settings"; section: SettingsSection }
+  | { page: "settings"; section: SettingsSection; pluginId?: string }
+  | { page: "plugin-builder"; sessionId: string }
   | { page: "game"; gameId: string }
   | { page: "playtest"; projectId: string }
   | { page: "thumbnail"; projectId: string; nodeId: string }
@@ -28,10 +35,26 @@ export type AppRoute =
 
 export function parseAppRoute(hash: string): AppRoute {
   if (hash === "#/" || hash === "") return { page: "home" };
-  const settingsMatch = /^#\/settings(?:\/(account|billing|appearance|providers|web-search|connections|about))?$/.exec(hash);
+  const builderMatch = /^#\/plugins\/builder\/([0-9a-f-]{36})$/.exec(hash);
+  if (builderMatch?.[1]) return { page: "plugin-builder", sessionId: builderMatch[1] };
+  const pluginMatch = /^#\/(?:settings\/)?plugins(?:\/([^/]+))?$/.exec(hash);
+  if (pluginMatch) {
+    try {
+      return { page: "settings", section: "plugins", ...(pluginMatch[1] ? { pluginId: decodeURIComponent(pluginMatch[1]) } : {}) };
+    } catch {
+      return { page: "settings", section: "plugins" };
+    }
+  }
+  const settingsMatch = /^#\/settings(?:\/(account|billing|appearance|providers|web-search|network|connections|about))?$/.exec(hash);
+  if (settingsMatch?.[1] === "connections") return { page: "settings", section: "plugins" };
   if (settingsMatch) return { page: "settings", section: (settingsMatch[1] as SettingsSection | undefined) ?? DEFAULT_SETTINGS_SECTION };
   const communityMatch = /^#\/community(?:\/games)?$/.exec(hash);
   if (communityMatch) return { page: "community" };
+  const projectsMatch = /^#\/projects(?:\?([^#]*))?$/.exec(hash);
+  if (projectsMatch) {
+    const projectType = new URLSearchParams(projectsMatch[1]).get("type");
+    return { page: "projects", ...(isProjectType(projectType) ? { projectType } : {}) };
+  }
   const sidebarMatch = /^#\/([^/]+)$/.exec(hash);
   if (sidebarMatch?.[1] && SIDEBAR_PAGES.has(sidebarMatch[1] as SidebarRoutePage)) {
     return { page: sidebarMatch[1] as SidebarRoutePage };
@@ -91,8 +114,24 @@ export function settingsHash(section: SettingsSection): string {
   return `#/settings/${section}`;
 }
 
+export function projectsHash(projectType?: ProjectType): string {
+  return projectType ? `#/projects?type=${encodeURIComponent(projectType)}` : "#/projects";
+}
+
+export function pluginHash(pluginId: string): string {
+  return `#/settings/plugins/${encodeURIComponent(pluginId)}`;
+}
+
+export function pluginBuilderHash(sessionId: string): string {
+  return `#/plugins/builder/${encodeURIComponent(sessionId)}`;
+}
+
 export function projectHash(projectId: string, view?: "design"): string {
   return `#/projects/${encodeURIComponent(projectId)}${view ? "/design" : ""}`;
+}
+
+export function createdProjectView(type: ProjectType | undefined): "design" | undefined {
+  return type === "general" ? "design" : undefined;
 }
 
 export function conversationHash(projectId: string, conversationId: string, view?: "design"): string {

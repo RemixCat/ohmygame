@@ -31,7 +31,7 @@ The workspace keeps the current Interactive Story layout:
 │ Header: Project ▾ · Home           Playtest · chat · Publish │
 ├───────────────┬──────────────────────────────────────────────┤
 │               │                                              │
-│  Chat with    │   Flow canvas                                │
+│  Chat with    │   Story (the flow canvas)                    │
 │  the Agent    │     or                                       │
 │  (left/right, │   Scene Workbench (opened from a Scene)      │
 │  collapsible) │                                              │
@@ -41,20 +41,20 @@ The workspace keeps the current Interactive Story layout:
 
 - The chat panel keeps its existing placement preference and collapse
   behavior.
-- The main area shows either the Flow canvas or the Workbench of one Scene,
-  with a breadcrumb (`Canvas › Case archive`) to return, as the current
-  editor does.
-- The **Project ▾** menu holds **Screen size**, **Variables**, **Export**,
-  and **Show technical details**. **Home** returns
+- The main area shows either the **Story** tab, the flow canvas, or the
+  Workbench of one Scene, with a breadcrumb (`Story › Case archive`) to
+  return. The tab is named for the whole story it shows, not for one Scene.
+- The **Project ▾** menu holds **Screen size**, **Variables**, and **Export**.
+  **Home** returns
   to the project list. **Playtest** opens the real Runtime; the chat toggle
   and **Publish** follow it.
 
-### Technical details
+### Source files
 
-The editor hides engine details by default. **Show technical details** in
-the Project ▾ menu reveals IDs, file paths, raw Variable values, the Playtest
-**History** (back stack) and **State**, and the **Code** tab. The setting is shared by
-every editor window.
+The **Code** tab is always available beside **Story** and **Design**. It shows
+the project's files and their contents. Scene cards use readable names;
+the Variables panel shows starting values in author words and includes the
+raw JSON value in each value's tooltip.
 
 ## Flow canvas
 
@@ -71,6 +71,8 @@ Each Scene card shows:
   ([Variables](#variables));
 - a **Start** badge on the Scene the player starts in (**Set as Start**
   moves it);
+- an **Ending** badge on a Scene the [Story map](#story-map) counts as an
+  ending, or **Off map** on one it leaves out;
 - an issue marker when the Scene fails to build, emits an undeclared Signal,
   or has an Exit that goes nowhere.
 
@@ -78,16 +80,22 @@ The canvas shows only Scenes. A top bar shown on several Scenes adds its
 Exits to each of those Scene cards; there is no separate card for it.
 
 A connection links an Exit port to a target Scene. Exits with **Allow Back**
-(`push` edges) are drawn differently from ordinary ones (`replace`).
+(`push` edges) are drawn differently from ordinary ones (`replace`), with a
+**↩ Back** label.
 
 Connections always leave an Exit on the right of its Scene and enter the
 target on the left. An Exit marked **Navigation** is a way around the game
 rather than a step in the story, such as a **Home** Exit on many Scenes. It
 has no line; its Exit row names the target instead, such as `→ Platform`.
-Clicking that label selects the connection and opens the connection panel.
-The author turns **Navigation** on or off there or in the Workbench's Exits;
-the agent sets it for Exits that come from a shared component. It only
-changes how the canvas draws the connection, never where the Exit goes.
+It only changes how the canvas draws the connection, never where the Exit
+goes.
+
+Clicking a line, or the target an Exit row names, selects the connection;
+Delete removes it, and dragging from the Exit again points it elsewhere.
+There is no connection panel. **Allow Back** and **Navigation** are the
+Agent's to set: the author asks for them in their own words ("let Archive
+open the case archive with Back allowed"), and the Agent marks Exits that
+come from a shared component, such as Home, as Navigation.
 
 The canvas keeps the current editor's mature interactions: Add Scene menu,
 context menu, selection, alignment guides, copy and paste, zoom controls,
@@ -101,9 +109,13 @@ Connecting can happen two ways, and both produce the same edges:
 
 ## Creating a Scene
 
+A new project has no Scenes. Its empty canvas says so and offers **Add a
+Scene**, or describing the story in the chat; the first Scene added becomes
+the Start.
+
 1. The author chooses **Add Scene** on the canvas.
-2. The **Add a Scene** window shows each Template (Blank, Main menu, Scene,
-   Choice, QTE, Hotspot, Ending) as a
+2. The **Add a Scene** window shows each Template (Blank, Main menu,
+   Choice, QTE, Hotspot, Ending, Story map) as a
    picture with one line of summary, and they pick one. The right-click
    menu offers the same Templates as a list.
 3. The Scene appears on the canvas with working starter content, and the
@@ -132,9 +144,9 @@ points at, edits, or draws on the preview to say what to change.
 │                        Live preview                          │
 │                  (real Runtime, real assets)                 │
 │                                                              │
-│      ┌──────────────────────────────────┐ ┌──────────┐       │
-│      │ ▶ Play · ⌖ Select · T Text · ✎ Draw │ │ 2 issues │       │
-│      └──────────────────────────────────┘ └──────────┘       │
+│  ┌──────────────────────────────────────────┐ ┌──────────┐   │
+│  │ ▶ Play  ⌖ Select  T Text  ✥ Move  ✎ Draw │ │ 2 issues │   │
+│  └──────────────────────────────────────────┘ └──────────┘   │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -175,6 +187,13 @@ always returns to **Play**.
   is renamed too, and a short message confirms it. Otherwise (text set by a
   script, or mixed content) the change is sent to the Agent, and the chat
   shows it working.
+- **Move** drags an element to a new place; Esc during a drag puts it back.
+  A press on inline text moves the box that holds it, and the Scene's root
+  and background stay put. When the element was written in the Scene's HTML,
+  the offset is written straight to its `style` as `translate` in cqw and
+  cqh, so it holds at any screen size, and Undo takes it back. Otherwise (an
+  element a script creates, or one whose own animation sets `translate`)
+  the move is sent to the Agent.
 - **Draw** draws freehand over the preview. The drawing is sent with the next
   chat message, on a screenshot of the preview.
 
@@ -221,7 +240,7 @@ possible later improvement, not a v1 requirement.
 ### Code, when it is really needed
 
 The Workbench has no code. The Scene's files are in the **Code** tab, which
-appears only with technical details shown and is never the default view.
+is always available. **Story** remains the initial view for new projects.
 
 ## Project Style
 
@@ -230,7 +249,7 @@ The Project Style is the project's shared visual language: the tokens in
 in `components.js`. It is stored as ordinary shared source files that every
 Scene imports. The editor has no Style panel: a read-only view could not
 change anything, so the style is changed in conversation, or in those files
-from the Code view with technical details on.
+from the Code view.
 
 - The Agent reads and uses the Project Style whenever it builds a Scene.
 - Authors can change the style through conversation ("make the whole game
@@ -281,8 +300,8 @@ What the game remembers from Scene to Scene...
 Ask the AI to add or change them.
 ```
 
-Starting values read in author words (Yes/No, empty, "3 items"); technical
-details add the raw value. There is no form to add, delete, or edit them.
+Starting values read in author words (Yes/No, empty, "3 items"); their tooltips
+include the raw value. There is no form to add, delete, or edit them.
 
 A branch shows as Exits. A Scene that goes different ways declares one Exit
 per outcome, and the Agent writes when each is taken. The canvas shows it on
@@ -297,7 +316,7 @@ Final talk
 The condition is a description (Signal `when`), not a rule the editor runs:
 the Scene decides which Exit to take, and the Agent updates the words when it
 changes the logic. There are no Condition or Update State Scenes. Playtest
-shows what the game remembers with technical details, for when a branch goes
+shows what the game remembers in its State panel, for when a branch goes
 the wrong way.
 
 ## Playtest
@@ -314,9 +333,52 @@ breaks, a short note says so and offers **Ask AI to fix**, which brings the
 editor forward on that Scene and fills the chat with where the player was,
 the Exits they took, and the errors, ready to send.
 
+Playtest also remembers which Scenes the author has seen and which Exits
+they took, across replays, as players' games do; a [Story map](#story-map)
+shows it. **Forget seen Scenes**, beside Replay, starts that record over.
+
 The Agent reads the full record (current Scene, back stack, Exits taken,
 State, errors, save) in serializable form, so it can verify a flow it just
 built.
+
+## Story map
+
+Interactive films and visual novels often show players a map of the story:
+the branches they have found, the ones still locked, and the endings
+collected. The **Story map** Template is that screen. It is an ordinary
+Scene; the author reaches it from a menu, a pause button, or an ending
+through an Exit with **Allow Back**, and its **Back** returns there.
+
+A Main menu always has a **Story map** entry and Exit. Dragging that Exit
+to a Story map Scene makes the entry work; until then it shows disabled,
+the way Continue does before there is a save. It is a Navigation Exit, so a
+game can be published while it goes nowhere; an author who does not want it
+asks the Agent to remove it.
+
+The map is drawn from the canvas's connections, not from where cards sit on
+the canvas, so arranging the canvas never changes what players see. It
+reads from the Start down: each Scene sits one row below the Scenes that
+lead to it, and branches spread side by side. What it leaves out:
+
+- Exits with **Allow Back** lead to side screens, such as an archive, and
+  Navigation Exits lead around the game, so neither is a step in the story;
+- connections back up the story, such as retrying after a failed QTE;
+- Scenes marked off the map. Main menu and Story map Scenes start off it.
+  The Scenes before and after one are joined, so a menu between two Scenes
+  links them directly.
+
+Players see the Scenes they have reached, by name, and the Scenes one step
+past them as locked **???**, with a line for each way they went and a count
+of Scenes and endings found. What they have seen lasts across new games.
+
+The author decides only what the map cannot guess, from a Scene's context
+menu: **On Story map**, and **Ending**. A Scene with no Exits other than
+Navigation ones is guessed to be an ending. The Agent can set both, and the
+name players see when it should differ from the Scene's title. Asking the
+Agent changes how the map looks, since it is the Scene's own code.
+
+The Workbench previews a Story map Scene with everything seen, so the author
+sees the whole map while editing; Playtest shows what they have played.
 
 ## Relationship with Asset Canvas
 
@@ -357,21 +419,23 @@ an asset side panel on the Flow canvas can be reconsidered then.
 
 ### Templates
 
-v1 ships six Templates (Presets). Each contains starter source that
+v1 ships seven Templates (Presets). Each contains starter source that
 already uses the Project Style, its expected Signals, a one-line summary
 for the author, and a brief that tells the Agent what the author usually
 wants next. The brief is not shown to the author. Each Template's picture in
 **Add a Scene** is a capture of the Scene it creates: the starter source
-with the default Project Style and no background.
+with the default Project Style and no background. The Story map's shows a
+sample story partly played, since a new one has nothing seen to show.
 
 | Template  | Starter content                                        | Starter Signals        |
 | --------- | ------------------------------------------------------ | ---------------------- |
 | Blank     | The background; a click or the video's end continues   | `next`                 |
-| Main menu | Title, tagline, a list of entries, over the background | `start`                |
+| Main menu | Title, tagline, a list of entries, over the background | `start`, `story-map`   |
 | Choice    | A subtitle line and answer bars that can read State    | `option-a`, `option-b` |
 | QTE       | A key to press before a ring runs out                  | `success`, `fail`      |
 | Hotspot   | A picture with pulsing spots, one Signal per spot      | `door`, `window`       |
 | Ending    | Stamped ending title, closing lines, and Play again    | none                   |
+| Story map | The branches seen so far, locked ones, endings found   | none (Back)            |
 
 Starter Signals are ordinary declared Signals; the author or Agent renames
 and adds them freely. The set follows the old editor's story nodes: Open UI
@@ -411,13 +475,13 @@ Thumbnails are screenshots of the real Scene, never a separate rendering.
 
 The same capture is attached to Agent requests about that Scene.
 
-### Element picking and text editing
+### Element picking, text editing, and moving
 
-Picking (**Select**) and in-place editing (**Text**) are editor tooling
+Picking (**Select**), in-place editing (**Text**), and moving (**Move**) are editor tooling
 implemented by the sandbox host, not by node code, and they are disabled in
 the Published Player.
 
-1. **Select** or **Text** puts the preview into pick mode. The sandbox host
+1. **Select**, **Text**, or **Move** puts the preview into pick mode. The sandbox host
    draws a hover outline inside the node's surface and blocks node input.
 2. With **Select**, clicking returns a **picked element** description: node
    ID, source location when known, CSS path within the node root, tag,
@@ -432,7 +496,16 @@ the Published Player.
    and came from the node's HTML. The editor then replaces that element's
    text in the source file, only if the file still reads the old text;
    anything else goes to the Agent.
-5. Picks and a drawing appear as chips in the chat composer and are sent with
+5. With **Move**, dragging moves the element with an inline `translate`
+   added to the one it had. On release the host reports the element and its
+   new offset in cqw and cqh, and whether it came from the node's HTML with
+   no animation of its own that overrides `translate`. The editor then sets
+   `translate` in that element's `style` attribute, only if the source still
+   has the same tag there; anything else goes to the Agent. The Project
+   Style's `.rise` entrance adds to the element's `translate`
+   (`animation-composition: add`), so a moved element rises into its new
+   place.
+6. Picks and a drawing appear as chips in the chat composer and are sent with
    the next message together with one screenshot of the preview. The chips
    clear once sent.
 
@@ -441,7 +514,7 @@ the Published Player.
 "Advance when the video ends" is Scene content, not a Runtime feature. The
 Project Style includes a small `playScene()` component that shows the
 Scene's background and emits a given Signal when the video ends or the
-player clicks. Blank uses it, and a new project starts from Blank. Authors who want something
+player clicks. Blank uses it. Authors who want something
 else (a choice over the last frame, a loop until input) change the Scene like
 any other.
 

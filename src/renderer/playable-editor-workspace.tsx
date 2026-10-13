@@ -7,6 +7,7 @@ import {
   PanelToggle,
   Play,
   Share2,
+  Settings,
 } from "./icons.js";
 import {
   useCallback,
@@ -25,32 +26,33 @@ import {
   type Edge,
   type EdgeChange,
   type NodeChange,
+  type ReactFlowInstance,
 } from "@xyflow/react";
 import { snapCanvasPosition } from "./canvas-alignment.js";
 import { EditorCanvas, isTextEntry, undoShortcut, type CanvasContextMenuState } from "./editor-canvas.js";
 import type { ProjectState, PromptContext } from "../shared/contracts.js";
-import type { NodeCodebase, NodeCodebaseUpdate, NodeEditorLayout } from "../shared/playable-codebase.js";
+import { rebasePlayableCodebase, samePlayableGraph, type NodeCodebase, type NodeCodebaseUpdate, type NodeEditorLayout } from "../shared/playable-codebase.js";
 import {
   type NodeGraph,
-  type PlayableNavigationMode,
   type PlayableNode,
 } from "../shared/playable-nodes.js";
-import type { NodePlayerDefinition, PlayableTextEdit } from "../shared/playable-player-protocol.js";
+import { setPlayableElementTranslate } from "../shared/playable-move.js";
+import { isPlayableStoryEnding, withPlayableStoryOption } from "../shared/playable-story-map.js";
+import type { NodePlayerDefinition, PlayableMove, PlayableTextEdit } from "../shared/playable-player-protocol.js";
 import { parsePlayableSourceLocation, replacePlayableElementText } from "../shared/playable-text-edit.js";
 import { clearPlayableBackdrop, playableBackdrop, setPlayableBackdrop } from "../shared/playable-backdrop.js";
 import {
   addPlayableNodeAsset,
   playableEdgeId,
   setPlayableSignalLabel,
-  setPlayableSignalRole,
   playableThumbnailHash,
   type PlayablePresetSummary,
   type PlayableProjectValidationIssue,
   type PlayableThumbnailManifest,
 } from "../shared/playable-editor.js";
-import { viewportRatio } from "../shared/canvas-formats.js";
 import {
   addPlayableNode,
+  ApiError,
   buildInteractiveStory,
   getNodeCodebase,
   getPlayableValidation,
@@ -59,24 +61,25 @@ import {
   listPlayableThumbnails,
   updateNodeCodebase,
 } from "./api.js";
-import { CanvasSettingsDialog } from "./canvas-settings-dialog.js";
 import { PublishDialog, type PublishDetails } from "./publish-dialog.js";
 import { WorkspaceCodeView } from "./coding-workspace.js";
 import { playtestHash } from "./routes.js";
 import { PlayableNodeWorkbench, type PlayableAssetRequest, type PlaytestStart } from "./playable-node-workbench.js";
-import { PlayableVariablesPanel } from "./playable-project-panels.js";
+import { PlayableProjectSettingsDialog } from "./playable-project-settings-dialog.js";
 import { requestPlaytestStart } from "./playable-playtest.js";
-import { setTechnicalDetails, useTechnicalDetails } from "./playable-details.js";
 import type { PlayableChatState } from "./playable-chat.js";
-import { buildCodebase, createFlowNode, nodeIdForIssuePath, nodeSourcePaths, toFlowEdge, toFlowNode, toPlayableEdge, uniqueNodeId, type GraphMeta, type PlayableFlowData, type PlayableFlowNode } from "./playable-flow.js";
+import { buildCodebase, createFlowNode, nodeIdForIssuePath, nodeSourcePaths, toFlowEdge, toFlowNode, uniqueNodeId, type GraphMeta, type PlayableFlowData, type PlayableFlowNode } from "./playable-flow.js";
 import { PLAYABLE_NODE_TYPES, PlayableCanvasContext } from "./playable-node-card.js";
-import { PlayableAddControl, PlayableCanvasContextMenu, PlayableEdgeInspector, PlayableProjectMenu } from "./playable-canvas-menus.js";
+import { PlayableAddControl, PlayableCanvasContextMenu, PlayableEmptyCanvas } from "./playable-canvas-menus.js";
 import { WorkspaceTabs, type WorkspaceTabOption } from "./workspace-tabs.js";
+import { useDesktopSave } from "./desktop-close-guard.js";
 
 const DEFAULT_CANVAS_VIEWPORT = { x: 64, y: 32, zoom: 1 };
-const GameDesignWorkspace = lazy(() => import("./game-design-workspace.js").then((module) => ({ default: module.GameDesignWorkspace })));
+const CanvasWorkspace = lazy(() => import("./canvas-workspace.js").then((module) => ({ default: module.CanvasWorkspace })));
 
 const HISTORY_LIMIT = 50;
+const SAVE_ATTEMPTS = 3;
+const PROJECT_CHANGED = "The project changed while you were editing, so its latest version was loaded. Make your last change again.";
 
 /** A step to undo or redo: the codebase, and the source files as they were, when the step wrote any. */
 interface HistoryEntry {
@@ -96,8 +99,9 @@ interface CopiedPlayableNode {
  * It speaks the editor's words (Scene, Exit, Variables); code and
  * graph.json keep the engine's (Node, Signal, State).
  */
-export function PlayableEditorWorkspace({ project, agentBusy, publishing, workspaceRevision = 0, openFileRequest, onPublish, publishDialog, onOpenPublish, onClosePublish, chatOnRight = false, chatCollapsed = false, onHome, onToggleChat, onChatContextChange, onAskAgent, onSendToAgent, designOpen = false, onDesignOpenChange, onDesignSaveReady }: {
+export function PlayableEditorWorkspace({ project, agentBusy, publishing, workspaceRevision = 0, openFileRequest, onPublish, publishDialog, onOpenPublish, onClosePublish, chatOnRight = false, chatCollapsed = false, onHome, onToggleChat, onChatContextChange, onAskAgent, onSendToAgent, designOpen = false, onDesignOpenChange, onDesignSaveReady, onDesignContextChange, onProjectUpdated }: {
   project: ProjectState;
+  onProjectUpdated?: (project: ProjectState) => void;
   agentBusy: boolean;
   publishing: boolean;
   workspaceRevision?: number;
@@ -117,11 +121,11 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
   /** Puts a request in the chat prompt. */
   onAskAgent?: (text: string) => void;
   onDesignSaveReady?: (save: (() => Promise<void>) | undefined) => void;
+  onDesignContextChange?: (context: PromptContext | undefined) => void;
   /** Sends a request to the AI now, with the open Node as context. */
   onSendToAgent?: (text: string, contexts: PromptContext[]) => Promise<boolean>;
 }) {
   const projectId = project.id;
-  const technical = useTechnicalDetails();
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
   const [notice, setNotice] = useState<string>();
   const [graphMeta, setGraphMeta] = useState<GraphMeta>();
@@ -145,14 +149,27 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
   const [copiedNode, setCopiedNode] = useState<CopiedPlayableNode>();
   const [presets, setPresets] = useState<PlayablePresetSummary[]>([]);
   const [issues, setIssues] = useState<PlayableProjectValidationIssue[]>([]);
-  const [builtDefinition, setBuiltDefinition] = useState<NodePlayerDefinition>();
+  const [builtDefinitionState, setBuiltDefinitionState] = useState<{
+    projectId: string;
+    workspaceRevision: number;
+    codeRevision: number;
+    definition: NodePlayerDefinition;
+  }>();
+  const builtDefinition = builtDefinitionState?.projectId === projectId
+    && builtDefinitionState.workspaceRevision === workspaceRevision
+    && builtDefinitionState.codeRevision === codeRevision
+    ? builtDefinitionState.definition : undefined;
   const [thumbnails, setThumbnails] = useState<PlayableThumbnailManifest>();
-  const [thumbnailRevision, setThumbnailRevision] = useState(0);
-  const [canvasSettingsOpen, setCanvasSettingsOpen] = useState(false);
-  const [variablesOpen, setVariablesOpen] = useState(false);
+  const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
   const [building, setBuilding] = useState(false);
+  const [playtesting, setPlaytesting] = useState(false);
   const [writing, setWriting] = useState(false);
   const latestCodebase = useRef<NodeCodebase | undefined>(undefined);
+  const canvas = useRef<ReactFlowInstance<PlayableFlowNode, Edge>>(null);
+  /** What the editor last read from or wrote to disk, and the revision a save has to start from. */
+  const diskCodebase = useRef<{ codebase: NodeCodebase; revision: string } | undefined>(undefined);
+  /** Counts the versions loaded from disk, so a save queued before a load is not written over it. */
+  const diskGeneration = useRef(0);
   const queuedCodebase = useRef<string | undefined>(undefined);
   const saveChain = useRef(Promise.resolve());
   const undoHistory = useRef<HistoryEntry[]>([]);
@@ -165,8 +182,6 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
   const historyTimer = useRef<number | undefined>(undefined);
   const historyGestureBase = useRef<NodeCodebase | undefined>(undefined);
   const [, setHistoryRevision] = useState(0);
-  /** The build of each Node the canvas last tried to capture, so a failure is not retried. */
-  const thumbnailAttempts = useRef(new Map<string, string>());
 
   const codebase = useMemo(
     () => graphMeta ? buildCodebase(graphMeta, nodes, edges, editorLayout, workspaceView) : undefined,
@@ -179,7 +194,6 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
   const canvasStageHeight = 440 / Math.max(1, playerViewportAspect);
   const canUndo = Boolean(historyPendingBase.current || undoHistory.current.length);
   const canRedo = !historyPendingBase.current && redoHistory.current.length > 0;
-  const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
   const openedNode = !designOpen && workspaceView === "canvas" && phase === "ready"
     ? nodes.find((node) => node.id === openedNodeId)?.data.node
     : undefined;
@@ -222,14 +236,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
   useEffect(() => {
     let disposed = false;
     setPhase("loading");
-    window.clearTimeout(historyTimer.current);
-    undoHistory.current = [];
-    redoHistory.current = [];
-    writtenSources.current = {};
-    historyObserved.current = undefined;
-    historyObservedJson.current = undefined;
-    historyPendingBase.current = undefined;
-    historyGestureBase.current = undefined;
+    resetHistory();
     setCanvasContextMenu(undefined);
     setCopiedNode(undefined);
     void Promise.all([
@@ -237,7 +244,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
       listPlayablePresets().catch(() => ({ presets: [] as PlayablePresetSummary[] })),
     ]).then(([loaded, catalog]) => {
       if (disposed) return;
-      applyCodebase(loaded, { fromDisk: true });
+      applyCodebase(loaded, { diskRevision: loaded.revision });
       setPresets(catalog.presets);
       setPhase("ready");
     }).catch((error) => {
@@ -254,53 +261,57 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
     void getPlayableValidation(projectId).then((result) => {
       if (disposed) return;
       setIssues(result.issues);
-      setBuiltDefinition(result.definition);
+      setBuiltDefinitionState(result.definition
+        ? { projectId, workspaceRevision, codeRevision, definition: result.definition }
+        : undefined);
     }).catch(() => {});
     return () => { disposed = true; };
   }, [phase, projectId, codeRevision, workspaceRevision]);
 
   useEffect(() => {
     setThumbnails(undefined);
-    thumbnailAttempts.current.clear();
   }, [projectId]);
 
-  useEffect(() => {
-    let disposed = false;
-    void listPlayableThumbnails(projectId).then((manifest) => {
-      if (!disposed) setThumbnails(manifest);
-    }).catch(() => {});
-    return () => { disposed = true; };
-  }, [projectId, workspaceRevision, thumbnailRevision]);
-
-  // Nodes with no thumbnail, or one of an older build, are captured in the
-  // background, one hidden window at a time.
+  // Submit every missing thumbnail; the desktop limits hidden windows, while
+  // this effect owns the batch and publishes each completed capture. A new
+  // build reads the cache again, including Nodes cancelled before they ran.
   useEffect(() => {
     const capture = window.ohMyGameDesktop?.captureNodeThumbnail;
-    if (!capture || !builtDefinition || !thumbnails) return;
-    const pending = builtDefinition.graph.nodes.flatMap((node) => {
-      const hash = playableThumbnailHash(builtDefinition, node.id);
-      return hash && thumbnails[node.id]?.hash !== hash
-        && thumbnailAttempts.current.get(node.id) !== hash ? [{ nodeId: node.id, hash }] : [];
-    });
-    if (!pending.length) return;
+    const batchId = crypto.randomUUID();
     let disposed = false;
+    let capturing = false;
     void (async () => {
-      for (const { nodeId, hash } of pending) {
-        if (disposed) return;
-        thumbnailAttempts.current.set(nodeId, hash);
-        const captured = await capture(projectId, nodeId, builtDefinition.graph.viewport).catch(() => false);
-        if (captured) setThumbnailRevision((current) => current + 1);
-      }
-    })();
-    return () => { disposed = true; };
-  }, [projectId, builtDefinition, thumbnails]);
+      const manifest = await listPlayableThumbnails(projectId);
+      if (disposed) return;
+      setThumbnails(manifest);
+      if (!capture || !builtDefinition) return;
+      const pending = builtDefinition.graph.nodes.flatMap((node) => {
+        const hash = playableThumbnailHash(builtDefinition, node.id);
+        return hash && manifest[node.id]?.hash !== hash ? [{ nodeId: node.id, hash }] : [];
+      });
+      if (!pending.length) return;
+      capturing = true;
+      await Promise.all(pending.map(async ({ nodeId, hash }) => {
+        const captured = await capture(projectId, nodeId, builtDefinition.graph.viewport, batchId).catch(() => false);
+        if (!captured || disposed) return;
+        const updated = await listPlayableThumbnails(projectId);
+        if (disposed || updated[nodeId]?.hash !== hash) return;
+        setThumbnails((cached) => ({ ...cached, [nodeId]: updated[nodeId]! }));
+      }));
+    })().catch(() => {});
+    return () => {
+      disposed = true;
+      if (capturing) void window.ohMyGameDesktop?.cancelNodeThumbnails?.(batchId).catch(() => {});
+    };
+  }, [projectId, builtDefinition]);
 
   /**
-   * Adopts a whole codebase into the editor. `fromDisk` makes the serialized
-   * form the save baseline, so opening a project does not write it straight
-   * back; an undo has to save, so it passes nothing.
+   * Adopts a whole codebase into the editor. `diskRevision` says it is what
+   * the files hold, which makes the serialized form the save baseline, so
+   * opening a project does not write it straight back; an undo has to save,
+   * so it passes nothing.
    */
-  function applyCodebase(loaded: NodeCodebase, options: { fromDisk?: boolean } = {}): void {
+  function applyCodebase(loaded: NodeCodebase, options: { diskRevision?: string } = {}): NodeCodebase {
     const { nodes: graphNodes, edges: graphEdges, ...meta } = loaded.graph;
     const view = loaded.editorLayout.view === "code" ? "code" : "canvas";
     const flowNodes = graphNodes.map((node) => toFlowNode(node, loaded.editorLayout));
@@ -311,9 +322,96 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
     setEditorLayout(loaded.editorLayout);
     setWorkspaceView(view);
     const applied = buildCodebase(meta, flowNodes, flowEdges, loaded.editorLayout, view);
-    if (options.fromDisk) queuedCodebase.current = JSON.stringify(applied);
+    latestCodebase.current = applied;
+    if (options.diskRevision !== undefined) {
+      queuedCodebase.current = JSON.stringify(applied);
+      diskCodebase.current = { codebase: applied, revision: options.diskRevision };
+      diskGeneration.current += 1;
+    }
     observeHistory(applied);
     setSelectedEdgeId(undefined);
+    return applied;
+  }
+
+  /** History steps are whole codebases, so none may outlive the version on disk they were taken from. */
+  function resetHistory(): void {
+    window.clearTimeout(historyTimer.current);
+    undoHistory.current = [];
+    redoHistory.current = [];
+    writtenSources.current = {};
+    historyObserved.current = undefined;
+    historyObservedJson.current = undefined;
+    historyPendingBase.current = undefined;
+    historyGestureBase.current = undefined;
+  }
+
+  /** Loads a version that reached disk while the editor was open, as reopening the project would. */
+  function adoptDiskCodebase(loaded: NodeCodebase, revision: string): void {
+    resetHistory();
+    applyCodebase(loaded, { diskRevision: revision });
+    setCodeRevision((current) => current + 1);
+    updateHistoryControls();
+  }
+
+  /**
+   * Writes a codebase from the revision the editor last saw, and resolves
+   * with whether it was written. graph.json and editor/layout.json are not
+   * written over a version the editor has not seen: when the Agent changed
+   * the graph since, moved Scenes, the viewport, and edited source files are
+   * saved on its graph, and a change to the graph itself is given up for it.
+   */
+  async function writeCodebase(next: NodeCodebaseUpdate, queuedGeneration: number): Promise<boolean> {
+    let generation = queuedGeneration;
+    let outgoing = next;
+    /** The save baseline while a carried layout is on its way, to drop if it does not arrive. */
+    let carriedBaseline: string | undefined;
+    try {
+      for (let attempt = 1; ; attempt += 1) {
+        const disk = diskCodebase.current;
+        if (generation !== diskGeneration.current || !disk) {
+          // A newer version was loaded since this save was queued. Its graph is
+          // the one to keep; only a save that would not have changed it is let go quietly.
+          if (!outgoing.sources && !outgoing.sourceDeletions && disk && samePlayableGraph(outgoing.graph, disk.codebase.graph)) return false;
+          throw new Error(PROJECT_CHANGED);
+        }
+        try {
+          const saved = await updateNodeCodebase(projectId, { ...outgoing, revision: disk.revision });
+          if (generation === diskGeneration.current) {
+            diskCodebase.current = { codebase: { graph: outgoing.graph, editorLayout: outgoing.editorLayout }, revision: saved.revision };
+          }
+          return true;
+        } catch (cause) {
+          if (!(cause instanceof ApiError) || cause.status !== 409) throw cause;
+          if (attempt === SAVE_ATTEMPTS) throw new Error("The project keeps changing. Try again in a moment.");
+        }
+        const remote = await getNodeCodebase(projectId);
+        if (generation !== diskGeneration.current) continue;
+        if (samePlayableGraph(remote.graph, disk.codebase.graph)
+          && JSON.stringify(remote.editorLayout) === JSON.stringify(disk.codebase.editorLayout)) {
+          // Formatting changed, so retry without resetting the editor or its history.
+          diskCodebase.current = { codebase: disk.codebase, revision: remote.revision };
+          continue;
+        }
+        // Rebase the request first (a copy is not shown until its sources are saved),
+        // then carry edits made on the canvas while it waited.
+        const pending = rebasePlayableCodebase(disk.codebase, outgoing, remote);
+        const carried = pending
+          ? rebasePlayableCodebase(disk.codebase, latestCodebase.current ?? outgoing, pending)
+          : undefined;
+        adoptDiskCodebase(remote, remote.revision);
+        if (!carried) throw new Error(PROJECT_CHANGED);
+        // Shown before it is saved, so what the author does meanwhile is done to the graph from disk.
+        const shown = applyCodebase(carried);
+        carriedBaseline = JSON.stringify(shown);
+        queuedCodebase.current = carriedBaseline;
+        generation = diskGeneration.current;
+        outgoing = { ...outgoing, ...shown };
+      }
+    } catch (cause) {
+      // The carried layout is shown but not on disk; let the next change save it.
+      if (carriedBaseline !== undefined && queuedCodebase.current === carriedBaseline) queuedCodebase.current = undefined;
+      throw cause;
+    }
   }
 
   function updateHistoryControls(): void {
@@ -425,7 +523,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
   useEffect(() => () => window.clearTimeout(historyTimer.current), []);
 
   useEffect(() => {
-    if (workspaceView === "code") return;
+    if (workspaceView === "code" || projectSettingsOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       const step = undoShortcut(event);
       if (!step || isTextEntry(event.target)) return;
@@ -434,18 +532,40 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [codebase, workspaceView]);
+  }, [codebase, workspaceView, projectSettingsOpen]);
+
+  // A navigation Exit has no line for the canvas to delete, so a connection
+  // selected from its Exit row is deleted here, as a drawn one is.
+  const selectedNavigation = Boolean(selectedEdgeId && edges.some((edge) => edge.id === selectedEdgeId
+    && nodes.find((node) => node.id === edge.source)?.data.node.signals.some((signal) => signal.id === edge.sourceHandle && signal.role === "navigation")));
+  useEffect(() => {
+    if (!selectedNavigation || openedNodeId || projectSettingsOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.key !== "Delete" && event.key !== "Backspace") || isTextEntry(event.target)) return;
+      setEdges((current) => current.filter((edge) => edge.id !== selectedEdgeId));
+      setSelectedEdgeId(undefined);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedNavigation, selectedEdgeId, openedNodeId, projectSettingsOpen]);
 
   const save = useCallback((next: NodeCodebaseUpdate): Promise<void> => {
     const serialized = JSON.stringify(next);
     if (serialized === queuedCodebase.current) return saveChain.current;
     queuedCodebase.current = serialized;
-    const operation = saveChain.current
+    const generation = diskGeneration.current;
+    const written = saveChain.current
       .catch(() => undefined)
-      .then(() => updateNodeCodebase(projectId, next));
+      .then(() => writeCodebase(next, generation));
+    const operation = written.then(() => undefined);
     saveChain.current = operation;
-    void operation.then(
-      () => { setNotice(undefined); setCodeRevision((revision) => revision + 1); },
+    void written.then(
+      (saved) => {
+        // A save let go for a newer version on disk leaves that version's notice in place.
+        if (!saved) return;
+        setNotice(undefined);
+        setCodeRevision((revision) => revision + 1);
+      },
       (error) => {
         if (queuedCodebase.current === serialized) queuedCodebase.current = undefined;
         setNotice(`Could not save your changes: ${errorMessage(error)}`);
@@ -453,6 +573,14 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
     );
     return operation;
   }, [projectId]);
+
+  useDesktopSave(async () => {
+    const pending = latestCodebase.current;
+    if (!pending) return saveChain.current;
+    // React Flow delays onMoveEnd while scrolling; read the displayed view on close.
+    const viewport = workspaceView === "canvas" && !designOpen ? canvas.current?.getViewport() : undefined;
+    await save(viewport ? { ...pending, editorLayout: { ...pending.editorLayout, viewport } } : pending);
+  });
 
   useEffect(() => {
     if (phase !== "ready" || !codebase) return;
@@ -488,12 +616,6 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
     });
   }
 
-  function setEdgeMode(edgeId: string, mode: PlayableNavigationMode): void {
-    setEdges((current) => current.map((edge) => edge.id === edgeId
-      ? { ...toFlowEdge({ ...toPlayableEdge(edge)!, mode }), selected: edge.selected }
-      : edge));
-  }
-
   /** Selects a connection, as clicking its line does. */
   function selectEdge(edgeId: string): void {
     setCanvasContextMenu(undefined);
@@ -504,6 +626,12 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
   function renameNode(nodeId: string, title: string): void {
     setNodes((current) => current.map((node) => node.id === nodeId
       ? { ...node, data: { ...node.data, node: { ...node.data.node, title } } }
+      : node));
+  }
+
+  function setStoryOption(nodeId: string, option: "hidden" | "ending", value: boolean): void {
+    setNodes((current) => current.map((node) => node.id === nodeId
+      ? { ...node, data: { ...node.data, node: withPlayableStoryOption(node.data.node, option, value) } }
       : node));
   }
 
@@ -541,12 +669,15 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
     // The base stops the graph change from being recorded as a separate step.
     const base = structuredClone(codebase);
     historyGestureBase.current = base;
+    const generation = diskGeneration.current;
     try {
       applyGraph(graph);
       await save({ graph, editorLayout: codebase.editorLayout, sources });
     } finally {
       if (historyGestureBase.current === base) historyGestureBase.current = undefined;
     }
+    // The save loaded the Agent's changes; undoing to `base` would take them back.
+    if (generation !== diskGeneration.current) return undefined;
     writtenSources.current = { ...writtenSources.current, ...sources };
     const entry = pushUndoSnapshot(base, before);
     redoHistory.current = [];
@@ -573,6 +704,23 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
       ? setPlayableSignalLabel(graph, node.id, signal.id, edit.after.trim())
       : graph;
     await writeSources(next, { [location.file]: html }, { [location.file]: before });
+    return true;
+  }
+
+  /**
+   * Writes a move from the preview back to the `style` of the element in the
+   * surface HTML that holds it. False when it cannot be done in place.
+   */
+  async function writeMove(move: PlayableMove): Promise<boolean> {
+    const graph = codebase?.graph;
+    const location = move.pick.source ? parsePlayableSourceLocation(move.pick.source) : undefined;
+    const node = graph?.nodes.find((candidate) => candidate.id === move.pick.nodeId);
+    if (!graph || !location || !node || node.source.html !== location.file) return false;
+    const file = await getWorkspaceFile(projectId, location.file);
+    const before = file.truncated ? undefined : file.content;
+    const html = before === undefined ? undefined : setPlayableElementTranslate(before, location, move.pick.tag, move.translate);
+    if (before === undefined || html === undefined) return false;
+    if (html !== before) await writeSources(graph, { [location.file]: html }, { [location.file]: before });
     return true;
   }
 
@@ -653,15 +801,18 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
     setWriting(true);
     try {
       commitPendingHistory();
+      const generation = diskGeneration.current;
       await save(codebase);
-      pushUndoSnapshot(codebase);
+      // After a save that loaded the Agent's changes, undoing to `codebase` would take them back.
+      if (generation === diskGeneration.current) pushUndoSnapshot(codebase);
       redoHistory.current = [];
       await addPlayableNode(projectId, {
         preset: presetId,
         id: uniqueNodeId(presetId, new Set(nodes.map((node) => node.id))),
         position: snapCanvasPosition(position),
       });
-      applyCodebase(await getNodeCodebase(projectId), { fromDisk: true });
+      const loaded = await getNodeCodebase(projectId);
+      applyCodebase(loaded, { diskRevision: loaded.revision });
       setCodeRevision((revision) => revision + 1);
       updateHistoryControls();
     } catch (cause) {
@@ -697,22 +848,23 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
         createFlowNode({ ...structuredClone(copy.node), id, source }, snapCanvasPosition(position)),
       ];
       const next = buildCodebase(graphMeta, nextNodes, edges, editorLayout, workspaceView);
-      queuedCodebase.current = JSON.stringify(next);
-      await updateNodeCodebase(projectId, {
+      const update: NodeCodebaseUpdate = {
         ...next,
         sources: {
           [source.html]: copy.sources[copy.node.source.html] ?? "",
           [source.css]: copy.sources[copy.node.source.css] ?? "",
           [source.javascript]: copy.sources[copy.node.source.javascript] ?? "",
         },
-      });
+      };
+      await save(update);
+      // The sources are written, so the canvas state alone is what autosave compares next;
+      // unless an autosave of the canvas without the copy was queued meanwhile, which the next one has to put right.
+      if (queuedCodebase.current === JSON.stringify(update)) queuedCodebase.current = JSON.stringify(next);
       setNodes(nextNodes);
       observeHistory(next);
-      setCodeRevision((revision) => revision + 1);
       updateHistoryControls();
     } catch (cause) {
       undoHistory.current.pop();
-      queuedCodebase.current = undefined;
       setNotice(errorMessage(cause));
     } finally {
       setWriting(false);
@@ -733,7 +885,8 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
 
   /** Opens the Playtest window; `start` plays from a Scene instead of the saved game. */
   async function startPlaytest(start?: PlaytestStart): Promise<void> {
-    if (!codebase) return;
+    if (!codebase || building || playtesting) return;
+    setPlaytesting(true);
     if (!start) clearSelection();
     try {
       await save(codebase);
@@ -745,6 +898,8 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
       }
     } catch (cause) {
       setNotice(errorMessage(cause));
+    } finally {
+      setPlaytesting(false);
     }
   }
 
@@ -760,8 +915,6 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
       link.download = `${project.name}.zip`;
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
-    } catch (cause) {
-      setNotice(errorMessage(cause));
     } finally {
       setBuilding(false);
     }
@@ -809,6 +962,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
         data: {
           node: node.data.node,
           entry: codebase?.graph.entryNodeId === node.id,
+          ending: isPlayableStoryEnding(node.data.node),
           issues: nodeIssues.get(node.id) ?? [],
           connected: connected.get(node.id) ?? {},
           failed: failed.has(node.id),
@@ -818,20 +972,19 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
       };
     });
   }, [nodes, edges, selectedEdgeId, issues, graphMeta, codebase, thumbnails, builtDefinition]);
-  const canvasPlayer = useMemo(() => ({ projectId, technical, onRenameNode: renameNode, onSelectEdge: selectEdge }), [projectId, technical]);
+  const canvasPlayer = useMemo(() => ({ projectId, onRenameNode: renameNode, onSelectEdge: selectEdge, onOpenNode: openNode }), [projectId]);
   const projectIssues = issues.filter((issue) => !issue.surfaceId && !nodeIdForIssuePath(issue.path, nodes));
-  const showCodeTab = technical || workspaceView === "code";
   const tabs: WorkspaceTabOption<"canvas" | "design" | "code">[] = [
-    { id: "canvas", label: "Canvas", icon: Clapperboard },
+    { id: "canvas", label: "Story", icon: Clapperboard },
     ...(onDesignOpenChange ? [{ id: "design" as const, label: "Design", icon: FileText }] : []),
-    ...(showCodeTab ? [{ id: "code" as const, label: "Code", icon: Code2 }] : []),
+    { id: "code", label: "Code", icon: Code2 },
   ];
   const renderNavigation = () => <div className={`viewer-navigation${chatOnRight ? " is-chat-right" : ""}`}>
     {chatOnRight && onHome ? (
       <button className="icon-button pane-header-action workspace-home-button" type="button" onClick={onHome} title="Home" aria-label="Home"><House size={14} /></button>
     ) : null}
     <WorkspaceTabs
-      tabs={tabs} active={designOpen ? "design" : workspaceView} label="Workspace mode"
+      tabs={tabs} active={designOpen ? "design" : workspaceView}
       onChange={(tab) => {
         const navigate = () => {
           if (tab !== "design") {
@@ -849,6 +1002,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
   return (
     <section
       className={`viewer-pane interactive-story-workspace playable-editor-workspace${openedNode ? " is-node-editor-open" : ""}`}
+      data-active-tab={designOpen ? "design" : workspaceView}
       aria-label="Playable Nodes workspace"
       style={{
         "--story-viewport-ratio": `${playerViewport.width} / ${playerViewport.height}`,
@@ -860,28 +1014,14 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
       <header className="pane-header viewer-header interactive-story-header window-drag-handle">
         <span className="workspace-navigation-drag-exclusion" aria-hidden="true" />
         {renderNavigation()}
-        <div className="viewer-controls-slot">
-          {!designOpen ? <PlayableProjectMenu
-            disabled={phase !== "ready"}
-            screenSize={viewportRatio(playerViewport)}
-            exporting={building}
-            canExport={!agentBusy && !publishing && !building}
-            technical={technical}
-            variablesOpen={variablesOpen}
-            onScreenSize={() => setCanvasSettingsOpen(true)}
-            onVariables={() => setVariablesOpen((open) => !open)}
-            onExport={() => void exportGame()}
-            onTechnicalChange={(on) => {
-              setTechnicalDetails(on);
-              if (!on && workspaceView === "code") setWorkspaceView("canvas");
-            }}
-          /> : null}
-        </div>
         <div className={`viewer-publish${designOpen ? " design-header-actions" : ""}`} ref={setDesignHeaderActions}>
-          {!designOpen ? <><button className="icon-button pane-header-action" type="button" title="Playtest" aria-label="Playtest" onClick={() => void startPlaytest()}>
-            <Play size={14} fill="currentColor" />
+          {!designOpen ? <><button className="icon-button pane-header-action" type="button" title="Project settings" aria-label="Project settings" aria-haspopup="dialog" disabled={phase !== "ready"} onClick={() => setProjectSettingsOpen(true)}>
+            <Settings size={14} />
           </button>
-          <button className="publish-button workspace-publish-button" type="button" title="Publish" aria-label="Publish" disabled={agentBusy || publishing || building} onClick={onOpenPublish}>
+          <button className="icon-button pane-header-action" type="button" data-tooltip={playtesting ? "Opening playtest..." : "Playtest in a new window"} aria-label="Playtest" disabled={phase !== "ready" || building || playtesting} onClick={() => void startPlaytest()}>
+            {playtesting ? <LoaderCircle className="spin" size={14} /> : <Play size={14} />}
+          </button>
+          <button className="publish-button workspace-publish-button" type="button" title={publishing ? "Publishing" : "Publish"} aria-label={publishing ? "Publishing" : "Publish"} disabled={agentBusy || publishing || building} onClick={onOpenPublish}>
             {publishing ? <LoaderCircle className="spin" size={14} /> : <Share2 size={14} />}
             <span>Publish</span>
           </button>
@@ -893,8 +1033,8 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
           </> : null}
         </div>
       </header>
-      {designOpen ? <Suspense fallback={<div className="design-loading"><LoaderCircle className="spin" size={18} /></div>}><GameDesignWorkspace
-        project={project} headerActionsTarget={designHeaderActions} onLeaveReady={registerDesignLeave} onSaveReady={onDesignSaveReady}
+      {designOpen ? <Suspense fallback={<div className="design-loading"><LoaderCircle className="spin" size={18} /></div>}><CanvasWorkspace
+        project={project} onProjectUpdated={onProjectUpdated} headerActionsTarget={designHeaderActions} onLeaveReady={registerDesignLeave} onSaveReady={onDesignSaveReady} onContextChange={onDesignContextChange}
       /></Suspense> : workspaceView !== "code" ? <div className="interactive-story-body">
         <div className="interactive-story-canvas">
           {phase === "loading" ? <div className="story-canvas-state">Loading Scenes...</div> : null}
@@ -904,6 +1044,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
               <EditorCanvas<PlayableFlowNode>
                 nodes={renderedNodes}
                 edges={renderedEdges}
+                onInit={(instance) => { canvas.current = instance; }}
                 nodeTypes={PLAYABLE_NODE_TYPES}
                 addControl={<PlayableAddControl
                   presets={presets}
@@ -911,7 +1052,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
                   onAdd={(presetId, position) => void addNodeFromPreset(presetId, position)}
                 />}
                 onOpenMenu={setCanvasContextMenu}
-                deleteKeyCode={openedNode ? null : ["Backspace", "Delete"]}
+                deleteKeyCode={openedNode || projectSettingsOpen ? null : ["Backspace", "Delete"]}
                 onNodesChange={onNodesChange}
                 onNodeDragStart={() => { setCanvasContextMenu(undefined); beginHistoryGesture(); }}
                 onNodeDragStop={finishHistoryGesture}
@@ -930,17 +1071,15 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
                 onNodesDelete={(deleted) => removeNodes(new Set(deleted.map((node) => node.id)))}
                 isValidConnection={(connection) => Boolean(connection.source && connection.target && connection.sourceHandle)}
                 defaultViewport={editorLayout.viewport}
-              />
+              >
+                {nodes.length ? null : <PlayableEmptyCanvas
+                  presets={presets}
+                  busy={writing}
+                  onAdd={(presetId, position) => void addNodeFromPreset(presetId, position)}
+                />}
+              </EditorCanvas>
             </PlayableCanvasContext.Provider>
           ) : null}
-          {selectedEdge && phase === "ready" && codebase ? <PlayableEdgeInspector
-            edge={selectedEdge}
-            graph={codebase.graph}
-            onChangeMode={(mode) => setEdgeMode(selectedEdge.id, mode)}
-            onChangeNavigation={(navigation) => { if (selectedEdge.sourceHandle) if (codebase) applyGraph(setPlayableSignalRole(codebase.graph, selectedEdge.source, selectedEdge.sourceHandle, navigation)); }}
-            onDelete={() => { setEdges((current) => current.filter((edge) => edge.id !== selectedEdge.id)); setSelectedEdgeId(undefined); }}
-            onClose={() => setSelectedEdgeId(undefined)}
-          /> : null}
           {canvasContextMenu ? <PlayableCanvasContextMenu
             menu={canvasContextMenu}
             presets={presets}
@@ -949,6 +1088,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
             canPaste={Boolean(copiedNode) && !writing}
             busy={writing}
             isEntry={canvasContextMenu.nodeId === codebase?.graph.entryNodeId}
+            story={storyOptions(nodes.find((node) => node.id === canvasContextMenu.nodeId)?.data.node)}
             onClose={() => setCanvasContextMenu(undefined)}
             onUndo={() => void undoEditorChange()?.catch(() => {})}
             onRedo={() => void redoEditorChange()?.catch(() => {})}
@@ -958,6 +1098,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
             onCopy={() => { if (canvasContextMenu.nodeId) void copyNode(canvasContextMenu.nodeId); }}
             onDuplicate={() => { if (canvasContextMenu.nodeId) void duplicateNode(canvasContextMenu.nodeId); }}
             onSetEntry={() => { if (canvasContextMenu.nodeId) setEntryNode(canvasContextMenu.nodeId); }}
+            onStoryOption={(option, value) => { if (canvasContextMenu.nodeId) setStoryOption(canvasContextMenu.nodeId, option, value); }}
             onDelete={() => { if (canvasContextMenu.nodeId) removeNodes(new Set([canvasContextMenu.nodeId])); }}
           /> : null}
           {notice && phase === "ready" ? <div className="story-save-notice" role="alert">{notice}</div> : null}
@@ -982,6 +1123,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
         {...(onAskAgent ? { onAskAgent } : {})}
         {...(onSendToAgent ? { onSendToAgent } : {})}
         onWriteText={writeText}
+        onWriteMove={writeMove}
         onAddAsset={async (asset) => {
           const { graph, assetId } = addPlayableNodeAsset(codebase.graph, openedNode.id, asset);
           await writeGraph(graph);
@@ -994,16 +1136,18 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
         onChatContextChange={onChatContextChange}
       /> : null}
       {openedNode && notice ? <div className="story-save-notice is-over-workbench" role="alert">{notice}</div> : null}
-      {!designOpen && variablesOpen && graphMeta && workspaceView === "canvas" && !openedNodeId ? <PlayableVariablesPanel
-        initialState={graphMeta.initialState}
-        descriptions={graphMeta.variables}
-        onClose={() => setVariablesOpen(false)}
-      /> : null}
-      {!designOpen && canvasSettingsOpen ? <CanvasSettingsDialog
-        viewport={playerViewport}
-        hasContent={nodes.length > 0}
-        onClose={() => setCanvasSettingsOpen(false)}
-        onChange={(viewport) => setGraphMeta((current) => current ? { ...current, viewport } : current)}
+      {!designOpen && projectSettingsOpen && codebase ? <PlayableProjectSettingsDialog
+        project={project}
+        graph={codebase.graph}
+        exporting={building}
+        canExport={!agentBusy && !publishing && !building}
+        onSave={async (viewport) => {
+          const graph = { ...codebase.graph, viewport };
+          await save({ graph, editorLayout: codebase.editorLayout });
+          applyGraph(graph);
+        }}
+        onExport={exportGame}
+        onClose={() => setProjectSettingsOpen(false)}
       /> : null}
       {publishDialog ? <PublishDialog project={project} publishing={publishing} justPublished={publishDialog === "success"} onClose={onClosePublish} onPublish={publishGame} /> : null}
     </section>
@@ -1014,6 +1158,11 @@ async function readNodeSources(projectId: string, node: PlayableNode): Promise<R
   const paths = [node.source.html, node.source.css, node.source.javascript];
   const files = await Promise.all(paths.map((path) => getWorkspaceFile(projectId, path)));
   return Object.fromEntries(paths.map((path, index) => [path, files[index]?.content ?? ""]));
+}
+
+/** How a Scene shows on the Story map, for its context menu. */
+function storyOptions(node: PlayableNode | undefined): { onMap: boolean; ending: boolean } {
+  return { onMap: !node?.story?.hidden, ending: node ? isPlayableStoryEnding(node) : false };
 }
 
 function errorMessage(error: unknown): string {

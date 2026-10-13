@@ -1,34 +1,52 @@
-import { ArrowLeft, ChevronDown, ChevronRight, Code2, ExternalLink, LoaderCircle, Search, UserRound } from "./icons.js";
+import { ArrowLeft, ChevronDown, ChevronRight, Code2, ExternalLink, LoaderCircle, Pencil, Search, Server, Plus, Plug, RefreshCw, Settings, Trash2, UserRound } from "./icons.js";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type {
+  CustomProviderDetails,
+  CustomProviderModel,
   ModelAuthEvent,
   ModelAuthMethod,
   ModelAuthNotification,
   ModelAuthPrompt,
+  ImageModel,
   ModelProviderSummary,
   ProviderCapability,
   ProviderSummary,
+  VideoModel,
 } from "../shared/contracts.js";
 import {
+  getCustomProvider,
+  removeProvider,
+  setProviderEnabled,
   cancelModelAuth,
-  disconnectModelProvider,
   getOpenAIEndpointSettings,
   listProviders,
+  listImageModelCatalog,
   notifyAgentModelsChanged,
   respondToModelAuth,
   startModelProviderLogin,
   subscribeToModelAuth,
   updateOpenAIEndpointSettings,
-  updateMeshyApiKey,
-  clearMeshyApiKey,
+  updateModel3DProviderApiKey,
+  updateSeedanceApiKey,
+  listVideoModelCatalog,
 } from "./api.js";
 import { PROVIDER_ICONS } from "./provider-icons.js";
+import { CustomProviderDialog, PROVIDER_API_LABELS, type CustomProviderField } from "./custom-provider-dialog.js";
 import { ProviderModels } from "./provider-models.js";
+import { Provider3DBalance } from "./provider-3d-balance.js";
+import { MODEL3D_CONNECTION_ID } from "../shared/model3d-operations.js";
+import { GlobalMediaModelDefaults } from "./media-model-defaults.js";
 import { SegmentedControl } from "./segmented-control.js";
+import { useAuth } from "./auth.js";
+import { accountCloudState, cloudQuotaSummary, CloudQuotaDetails } from "./cloud-quota.js";
+import { getCloudQuotas, MODELS_CHANGED_EVENT } from "./api.js";
+import { HYPER3D_CONNECTION_ID } from "../shared/cloud-models.js";
+import { isLocalModelProvider, LOCAL_MODEL_PROVIDERS, withLocalModelProviders, type LocalModelProviderId } from "./local-model-providers.js";
 
 export type ModelsView = { page: "providers" } | { page: "provider"; provider: ProviderSummary };
 
-const POPULAR_PROVIDER_IDS = ["openrouter", "openai", "anthropic"];
+const POPULAR_PROVIDER_IDS = ["openrouter", "openai", "anthropic", "meshy", "tripo"];
+const SEEDANCE_PROVIDER_IDS = new Set(["volcengine-ark", "byteplus-modelark"]);
 const PROVIDER_CAPABILITY_FILTERS: Array<{ value: "all" | ProviderCapability; label: string }> = [
   { value: "all", label: "All" },
   { value: "language", label: "Language" },
@@ -52,39 +70,79 @@ export function ModelsSettings({ view, onViewChange }: { view: ModelsView; onVie
 }
 
 function ProviderList({ onProvider }: { onProvider: (provider: ProviderSummary) => void }) {
+  const auth = useAuth();
+  const userId = auth.state.status === "signed-in" ? auth.state.user.id : undefined;
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [query, setQuery] = useState("");
   const [moreOpen, setMoreOpen] = useState(false);
+  const [adding, setAdding] = useState<"custom" | LocalModelProviderId>();
+  const [pending, setPending] = useState<Set<string>>(new Set());
   const [capability, setCapability] = useState<"all" | ProviderCapability>("all");
   useEffect(() => {
-    let active = true;
-    void listProviders().then((loaded) => {
-      if (active) setProviders(loaded);
-    }).catch((cause) => {
-      if (active) setError(errorMessage(cause));
-    }).finally(() => {
-      if (active) setLoading(false);
-    });
-    return () => { active = false; };
-  }, []);
+    let active = true, sequence = 0;
+    const load = () => {
+      const revision = ++sequence;
+      void listProviders().then((loaded) => {
+        if (active && revision === sequence) { setProviders(loaded); setError(undefined); }
+      }).catch((cause) => {
+        if (active && revision === sequence) setError(errorMessage(cause));
+      }).finally(() => {
+        if (active && revision === sequence) setLoading(false);
+      });
+    };
+    load();
+    window.addEventListener(MODELS_CHANGED_EVENT, load);
+    window.addEventListener("focus", load);
+    const timer = setInterval(load, 30_000);
+    return () => { active = false; clearInterval(timer); window.removeEventListener(MODELS_CHANGED_EVENT, load); window.removeEventListener("focus", load); };
+  }, [userId]);
+  async function toggleProvider(provider: ProviderSummary, enabled: boolean): Promise<void> {
+    setPending((current) => new Set(current).add(provider.id));
+    setError(undefined);
+    setProviders((current) => current.map((item) => item.id === provider.id ? { ...item, enabled } : item));
+    try {
+      const saved = await setProviderEnabled(provider.id, enabled);
+      setProviders((current) => current.map((item) => item.id === provider.id ? saved : item));
+    } catch (cause) {
+      setProviders((current) => current.map((item) => item.id === provider.id ? provider : item));
+      setError(errorMessage(cause));
+    } finally {
+      setPending((current) => { const next = new Set(current); next.delete(provider.id); return next; });
+    }
+  }
+  const rowActions = { onToggle: (provider: ProviderSummary, enabled: boolean) => void toggleProvider(provider, enabled), pending };
+  const openProvider = (provider: ProviderSummary): void => {
+    if (!provider.custom && isLocalModelProvider(provider)) setAdding(provider.preset);
+    else onProvider(provider);
+  };
+  const availableProviders = (loading ? providers : withLocalModelProviders(providers)).map((provider) => {
+    if (!provider.managed) return provider;
+    const cloud = accountCloudState(provider.cloud, userId);
+    return { ...provider, cloud, ...(provider.cloud?.userId !== userId || !userId ? { configured: false, status: "not_configured" as const } : {}) };
+  });
   const normalizedQuery = query.trim().toLowerCase();
-  const visibleProviders = providers.filter((provider) => (
-    (capability === "all" || provider.capabilities.includes(capability))
+  const visibleProviders = availableProviders.filter((provider) => (
+    // Hyper3D's account and key connections share one settings entry.
+    (provider.id !== HYPER3D_CONNECTION_ID || !availableProviders.some((item) => item.id === "hyper3d"))
+    && (capability === "all" || provider.capabilities.includes(capability))
     && (!normalizedQuery || [
       provider.name,
+      ...(isLocalModelProvider(provider) ? [LOCAL_MODEL_PROVIDERS[provider.preset].name] : []),
       providerDescription(provider),
       ...provider.capabilities.map((item) => PROVIDER_CAPABILITY_LABELS[item]),
     ].some((value) => value.toLowerCase().includes(normalizedQuery)))
   ));
-  const connectedProviders = visibleProviders.filter((provider) => provider.status === "connected");
-  const remainingProviders = visibleProviders.filter((provider) => provider.status !== "connected");
+  const localProviders = visibleProviders.filter(isLocalModelProvider);
+  const freeProviders = visibleProviders.filter((provider) => provider.managed === "free_cloud" || provider.id === "hyper3d");
+  const connectedProviders = visibleProviders.filter((provider) => !freeProviders.includes(provider) && provider.status === "connected" && !isLocalModelProvider(provider));
+  const remainingProviders = visibleProviders.filter((provider) => !freeProviders.includes(provider) && provider.status !== "connected" && !isLocalModelProvider(provider));
   const popularProviders = remainingProviders
     .filter((provider) => POPULAR_PROVIDER_IDS.includes(provider.id))
     .sort((first, second) => POPULAR_PROVIDER_IDS.indexOf(first.id) - POPULAR_PROVIDER_IDS.indexOf(second.id));
   const moreProviders = remainingProviders.filter((provider) => !POPULAR_PROVIDER_IDS.includes(provider.id));
-  const filteredProviders = [...connectedProviders, ...popularProviders, ...moreProviders];
+  const filteredProviders = [...freeProviders, ...connectedProviders, ...popularProviders, ...localProviders, ...moreProviders];
   const filtering = capability !== "all" || Boolean(normalizedQuery);
   return (
     <section className="settings-panel settings-overview-panel">
@@ -95,21 +153,32 @@ function ProviderList({ onProvider }: { onProvider: (provider: ProviderSummary) 
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search providers" aria-label="Search providers" />
         </label>
       </header>
+      {adding ? <CustomProviderDialog initialProvider={adding === "custom" ? undefined : LOCAL_MODEL_PROVIDERS[adding]} onClose={() => setAdding(undefined)} onSaved={() => {
+        setAdding(undefined);
+        setQuery("");
+        setCapability("all");
+        void listProviders().then(setProviders).catch((cause) => setError(errorMessage(cause)));
+      }} /> : null}
       <div className="settings-provider-list">
-        <SegmentedControl className="settings-provider-filters" label="Filter providers by capability" options={PROVIDER_CAPABILITY_FILTERS} value={capability} onChange={setCapability} />
+        <div className="settings-provider-toolbar">
+          <SegmentedControl className="settings-provider-filters" label="Filter providers by capability" options={PROVIDER_CAPABILITY_FILTERS} value={capability} onChange={setCapability} />
+          <button className="settings-add-button settings-provider-add" type="button" onClick={() => setAdding("custom")}><Plus size={13} />Add provider</button>
+        </div>
+        {capability !== "language" ? <GlobalMediaModelDefaults capability={capability} /> : null}
         {loading ? <div className="settings-loading"><LoaderCircle className="spin" size={18} />Loading providers</div> : null}
-        {!loading && providers.length === 0 && !error ? <p className="settings-empty">No configurable providers are available.</p> : null}
-        {!loading && providers.length > 0 && visibleProviders.length === 0 ? <p className="settings-empty">No providers match these filters.</p> : null}
-        {filtering && filteredProviders.length ? <ProviderGroup title="Providers" providers={filteredProviders} onProvider={onProvider} /> : null}
-        {!filtering && connectedProviders.length ? <ProviderGroup title="Connected providers" providers={connectedProviders} onProvider={onProvider} /> : null}
-        {!filtering && popularProviders.length ? <ProviderGroup title="Popular providers" providers={popularProviders} onProvider={onProvider} /> : null}
+        {!loading && visibleProviders.length === 0 ? <p className="settings-empty">No providers match these filters.</p> : null}
+        {filtering && filteredProviders.length ? <ProviderGroup {...rowActions} title="Providers" providers={filteredProviders} onProvider={openProvider} /> : null}
+        {!filtering && freeProviders.length ? <ProviderGroup {...rowActions} title="Free cloud" providers={freeProviders} onProvider={openProvider} /> : null}
+        {!filtering && connectedProviders.length ? <ProviderGroup {...rowActions} title="Connected providers" providers={connectedProviders} onProvider={openProvider} /> : null}
+        {!filtering && popularProviders.length ? <ProviderGroup {...rowActions} title="Popular providers" providers={popularProviders} onProvider={openProvider} /> : null}
+        {!filtering && localProviders.length ? <ProviderGroup {...rowActions} title="Local providers" providers={localProviders} onProvider={openProvider} /> : null}
         {!filtering && moreProviders.length ? (
           <section className="settings-provider-group">
             <button className="settings-provider-more" type="button" aria-expanded={moreOpen} onClick={() => setMoreOpen((open) => !open)}>
               <span>More providers <small>({moreProviders.length})</small></span>
               <ChevronDown size={14} />
             </button>
-            {moreOpen ? moreProviders.map((provider) => <ProviderRow provider={provider} onProvider={onProvider} key={provider.id} />) : null}
+            {moreOpen ? moreProviders.map((provider) => <ProviderRow {...rowActions} provider={provider} onProvider={openProvider} key={provider.id} />) : null}
           </section>
         ) : null}
         {error ? <p className="settings-error" role="alert">{error}</p> : null}
@@ -118,49 +187,401 @@ function ProviderList({ onProvider }: { onProvider: (provider: ProviderSummary) 
   );
 }
 
-function ProviderGroup({ detail, onProvider, providers, title }: { detail?: string; onProvider: (provider: ProviderSummary) => void; providers: ProviderSummary[]; title: string }) {
+type ProviderRowActions = { onToggle: (provider: ProviderSummary, enabled: boolean) => void; pending: Set<string> };
+
+function ProviderGroup({ detail, onProvider, providers, title, ...actions }: { detail?: string; onProvider: (provider: ProviderSummary) => void; providers: ProviderSummary[]; title: string } & ProviderRowActions) {
   return (
     <section className="settings-provider-group">
       <h4>{title}</h4>
-      {providers.map((provider) => <ProviderRow provider={provider} detail={detail} featured={provider.id === "openrouter"} onProvider={onProvider} key={provider.id} />)}
+      {providers.map((provider) => <ProviderRow {...actions} provider={provider} detail={detail} featured={provider.id === "openrouter"} onProvider={onProvider} key={provider.id} />)}
     </section>
   );
 }
 
-function ProviderRow({ detail, featured = false, onProvider, provider }: { detail?: string; featured?: boolean; onProvider: (provider: ProviderSummary) => void; provider: ProviderSummary }) {
+function ProviderRow({ detail, featured = false, onProvider, provider, onToggle, pending }: { detail?: string; featured?: boolean; onProvider: (provider: ProviderSummary) => void; provider: ProviderSummary } & ProviderRowActions) {
+  const combined = provider.id === "hyper3d";
+  const ActionIcon = combined ? Settings : provider.status === "connecting" ? LoaderCircle : provider.status === "error" ? RefreshCw : provider.configured ? Settings : Plug;
+  const actionLabel = combined ? "Manage Hyper3D" : `${providerAction(provider)} ${provider.name}`;
   return (
     <div className={`settings-provider-row${featured ? " is-featured" : ""}`}>
       <ProviderMark provider={provider} />
       <span className="settings-provider-copy">
         <strong className="settings-provider-name"><span>{provider.name}</span>{featured ? <small>Recommended</small> : null}</strong>
         <span className="settings-provider-details">
-          <span className="settings-provider-description">{providerDescription(provider)}{detail ? <><i>·</i>{detail}</> : null}</span>
-          <span className="settings-provider-capabilities" aria-label={`Capabilities: ${provider.capabilities.map((capability) => PROVIDER_CAPABILITY_LABELS[capability]).join(", ")}`}>
+          <span className="settings-provider-description">{provider.managed ? cloudQuotaSummary(provider.cloud) : providerDescription(provider)}{detail ? <><i>·</i>{detail}</> : null}</span>
+          <span className="settings-provider-capabilities" aria-label={`Provider labels: ${[...provider.capabilities.map((capability) => PROVIDER_CAPABILITY_LABELS[capability]), ...(provider.custom && !isLocalModelProvider(provider) ? ["Custom"] : [])].join(", ")}`}>
             {provider.capabilities.map((capability) => <small key={capability}>{PROVIDER_CAPABILITY_LABELS[capability]}</small>)}
+            {provider.custom && !isLocalModelProvider(provider) ? <small>Custom</small> : null}
           </span>
         </span>
       </span>
-      {provider.status === "not_configured" ? null : <em className={`settings-provider-status is-${provider.status}`}><i />{providerStatus(provider)}</em>}
-      <button className={featured ? "is-primary" : undefined} type="button" disabled={provider.status === "connecting"} onClick={() => onProvider(provider)}>{providerAction(provider)}</button>
+      {combined || provider.configured ? <label className="settings-toggle settings-provider-toggle" title={provider.enabled !== false ? "Enabled" : "Disabled"}>
+        <input type="checkbox" role="switch" aria-label={`Enable ${provider.name}`} checked={provider.enabled !== false} disabled={pending.has(provider.id)} onChange={(event) => onToggle(provider, event.target.checked)} /><span aria-hidden="true" />
+      </label> : provider.status === "not_configured" ? null : <em className={`settings-provider-status is-${provider.status}`}><i />{providerStatus(provider)}</em>}
+      <button className="icon-button settings-provider-action" type="button" data-tooltip={actionLabel} aria-label={actionLabel} disabled={provider.status === "connecting" || pending.has(provider.id)} onClick={() => onProvider(provider)}><ActionIcon size={17} className={provider.status === "connecting" ? "spin" : undefined} aria-hidden="true" /></button>
     </div>
   );
 }
 
-function ProviderMark({ provider }: { provider: Pick<ModelProviderSummary, "id"> }) {
-  const icon = PROVIDER_ICONS[provider.id];
-  if (!icon) return <span className="settings-provider-mark-slot" aria-hidden="true" />;
+function ProviderMark({ provider }: { provider: Pick<ProviderSummary, "id" | "preset"> }) {
+  const icon = PROVIDER_ICONS[isLocalModelProvider(provider) ? provider.preset : provider.id];
+  if (!icon) return <span className="settings-provider-mark-slot" aria-hidden="true"><Server size={20} /></span>;
   return <span className={`settings-provider-mark is-${icon.tone}`} aria-hidden="true"><img src={icon.src} alt="" /></span>;
 }
 
-function ProviderAuthView({ provider, onBack, onCompleted }: { provider: ModelProviderSummary; onBack: () => void; onCompleted: () => void }) {
-  if (provider.id === "meshy") return <MeshyAuthView provider={provider} onBack={onBack} onCompleted={onCompleted} />;
+function ProviderAuthView({ provider, onBack, onCompleted }: { provider: ProviderSummary; onBack: () => void; onCompleted: () => void }) {
+  if (provider.id === "hyper3d" || provider.id === HYPER3D_CONNECTION_ID) return <Hyper3DProviderDetail provider={provider} onBack={onBack} />;
+  if (provider.managed === "free_cloud") return <FreeCloudProviderDetail provider={provider} onBack={onBack} />;
+  if (provider.custom) return <CustomProviderDetail provider={provider} onBack={onBack} onRemoved={onCompleted} />;
+  if (provider.id === "meshy" || provider.id === "tripo") return <Native3DProviderAuthView provider={provider} onBack={onBack} onCompleted={onCompleted} />;
+  if (SEEDANCE_PROVIDER_IDS.has(provider.id)) return <SeedanceAuthView provider={provider} onBack={onBack} onCompleted={onCompleted} />;
   const [method, setMethod] = useState<ModelAuthMethod | undefined>(provider.configured ? undefined : provider.methods.length === 1 ? provider.methods[0]?.type : undefined);
-  if (provider.configured) return <ConnectedProvider provider={provider} onBack={onBack} onDisconnected={onCompleted} />;
+  if (provider.configured) return <ConnectedProvider provider={provider} onBack={onBack} onRemoved={onCompleted} />;
   if (!method) return <AuthMethodChoice provider={provider} onBack={onBack} onChoose={setMethod} />;
   return <ActiveProviderAuth provider={provider} method={method} onBack={onBack} onCompleted={onCompleted} />;
 }
 
-function MeshyAuthView({ provider, onBack, onCompleted }: { provider: ModelProviderSummary; onBack: () => void; onCompleted: () => void }) {
+function Hyper3DProviderDetail({ provider, onBack }: { provider: ProviderSummary; onBack: () => void }) {
+  const auth = useAuth();
+  const userId = auth.state.status === "signed-in" ? auth.state.user.id : undefined;
+  const [providers, setProviders] = useState([provider]);
+  const [error, setError] = useState<string>();
+  const [refreshing, setRefreshing] = useState(false);
+  const [modelsRevision, setModelsRevision] = useState(0);
+  const refreshRef = useRef<(force?: boolean) => Promise<void>>(async () => {});
+  useEffect(() => {
+    let active = true, sequence = 0;
+    const load = async (force = false) => {
+      const revision = ++sequence;
+      setRefreshing(true);
+      try {
+        if (force) await getCloudQuotas();
+        const loaded = await listProviders();
+        if (active && revision === sequence) { setProviders(loaded); setError(undefined); if (force) setModelsRevision((value) => value + 1); }
+      } catch (cause) { if (active && revision === sequence) setError(errorMessage(cause)); }
+      finally { if (active && revision === sequence) setRefreshing(false); }
+    };
+    refreshRef.current = load;
+    const refresh = () => { void load(); };
+    refresh();
+    window.addEventListener("focus", refresh);
+    window.addEventListener(MODELS_CHANGED_EVENT, refresh);
+    const timer = setInterval(refresh, 30_000);
+    return () => { active = false; clearInterval(timer); window.removeEventListener("focus", refresh); window.removeEventListener(MODELS_CHANGED_EVENT, refresh); };
+  }, [userId]);
+  const keyProvider = providers.find((item) => item.id === "hyper3d");
+  const account = providers.find((item) => item.id === HYPER3D_CONNECTION_ID);
+  const current = keyProvider ?? { ...provider, id: "hyper3d", name: "Hyper3D" };
+  return <section className="settings-panel settings-provider-detail">
+    <ProviderDetailHeader provider={current} description="Free account credits and your API key" onBack={onBack}>
+      <ProviderEnableControl provider={current} onChanged={() => void refreshRef.current()} />
+    </ProviderDetailHeader>
+    <FreeCloudAccount provider={account} refreshing={refreshing} onRefresh={() => void refreshRef.current(true)} />
+    {keyProvider ? <Native3DProviderKeyForm key={String(keyProvider.configured)} provider={keyProvider} /> : null}
+    {error ? <p className="settings-error" role="alert">{error}</p> : null}
+    <ProviderModels key={`${userId}-${keyProvider?.configured}-${modelsRevision}`} providerId="hyper3d" additionalProviderId={account?.id}
+      sourceLabels={{ hyper3d: keyProvider?.configured ? "Your API key" : "API key required", [HYPER3D_CONNECTION_ID]: "Free account" }} />
+  </section>;
+}
+
+function FreeCloudAccount({ provider, refreshing, onRefresh }: { provider?: ProviderSummary; refreshing: boolean; onRefresh: () => void }) {
+  const auth = useAuth();
+  const userId = auth.state.status === "signed-in" ? auth.state.user.id : undefined;
+  const cloud = accountCloudState(provider?.cloud, userId);
+  const needsSignIn = !userId || cloud?.availability === "sign_in_required";
+  const quota = cloud?.quota;
+  return <>
+    <div className="settings-provider-connection">
+      <div className="settings-provider-setting-row settings-provider-auth-row">
+        <span className="settings-search-field-label">Account</span>
+        <span className="settings-provider-setting-value" title={auth.state.status === "signed-in" ? auth.state.user.email : undefined}>{auth.state.status === "signed-in" ? auth.state.user.email ?? auth.state.user.name : "OhMyGame account"}</span>
+        {needsSignIn ? <button type="button" className="settings-add-button" onClick={auth.openSignIn}>Sign in</button> : null}
+      </div>
+    </div>
+    <section className="settings-detail-section provider-models" aria-label="Daily quota">
+      <div className="provider-models-heading">
+        <h4>Daily quota</h4>
+        {userId ? <button type="button" className="icon-button settings-provider-setting-edit" disabled={refreshing} onClick={onRefresh} aria-label="Refresh quota" data-tooltip="Refresh quota"><RefreshCw size={15} className={refreshing ? "spin" : undefined} aria-hidden="true" /></button> : null}
+      </div>
+      {quota ? <CloudQuotaDetails quota={quota} /> : <p className="settings-detail-hint" role="status">{needsSignIn ? "Sign in for free daily credits." : refreshing ? "Checking your daily allowance…" : cloudQuotaSummary(cloud)}</p>}
+      {quota && cloud?.availability !== "ready" ? <p className="settings-detail-hint" role="status">{cloud?.availability === "personal_exhausted" ? "Your daily quota is used up. More becomes available after the reset." : cloudQuotaSummary(cloud)}</p> : null}
+    </section>
+  </>;
+}
+
+function FreeCloudProviderDetail({ provider, onBack }: { provider: ProviderSummary; onBack: () => void }) {
+  const auth = useAuth();
+  const userId = auth.state.status === "signed-in" ? auth.state.user.id : undefined;
+  const [current, setCurrent] = useState(provider);
+  const [modelsRevision, setModelsRevision] = useState(0);
+  const [error, setError] = useState<string>();
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshRef = useRef<(force?: boolean) => void>(() => {});
+  useEffect(() => {
+    let active = true, sequence = 0;
+    const load = (force = false) => {
+      const revision = ++sequence;
+      setRefreshing(true);
+      void (force ? getCloudQuotas() : Promise.resolve()).then(listProviders).then((providers) => {
+        if (!active || revision !== sequence) return;
+        setCurrent(providers.find((item) => item.id === provider.id) ?? provider);
+        setError(undefined);
+        if (force) setModelsRevision((value) => value + 1);
+      }).catch((cause) => { if (active && revision === sequence) setError(errorMessage(cause)); })
+        .finally(() => { if (active && revision === sequence) setRefreshing(false); });
+    };
+    refreshRef.current = load;
+    const refresh = () => load();
+    refresh();
+    window.addEventListener(MODELS_CHANGED_EVENT, refresh);
+    const timer = setInterval(refresh, 30_000);
+    return () => { active = false; clearInterval(timer); window.removeEventListener(MODELS_CHANGED_EVENT, refresh); };
+  }, [provider.id, userId]);
+  return <section className="settings-panel settings-provider-detail">
+    <ProviderDetailHeader provider={current} onBack={onBack}>
+      <ProviderEnableControl provider={current} onChanged={() => refreshRef.current()} />
+    </ProviderDetailHeader>
+    <FreeCloudAccount provider={current} refreshing={refreshing} onRefresh={() => refreshRef.current(true)} />
+    {error ? <p className="settings-error" role="alert">{error}</p> : null}
+    <ProviderModels key={`${provider.id}-${userId}-${modelsRevision}`} providerId={provider.id} />
+  </section>;
+}
+
+function SeedanceAuthView({ provider, onBack, onCompleted }: { provider: ProviderSummary; onBack: () => void; onCompleted: () => void }) {
+  const deletion = useProviderDeletion(provider.id, onCompleted);
+  const [apiKey, setApiKey] = useState("");
+  const [error, setError] = useState<string>();
+  const [saving, setSaving] = useState(false);
+  const [modelsRevision, setModelsRevision] = useState(0);
+  async function save(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    setSaving(true);
+    setError(undefined);
+    try {
+      await updateSeedanceApiKey(provider.id, apiKey);
+      onCompleted();
+    } catch (cause) {
+      setError(errorMessage(cause));
+    } finally {
+      setSaving(false);
+    }
+  }
+  const inputId = `${provider.id}-api-key`;
+  return (
+    <section className="settings-panel settings-provider-detail">
+      <ProviderDetailHeader provider={provider} onBack={onBack}>
+        {provider.configured ? <><ProviderDeleteButton deletion={deletion} disabled={saving} /><ProviderEnableControl provider={provider} disabled={deletion.busy} onChanged={() => setModelsRevision((value) => value + 1)} /></> : null}
+      </ProviderDetailHeader>
+      <ProviderDeleteConfirmation provider={provider} deletion={deletion} disabled={saving} />
+      <form className="settings-detail-field" onSubmit={(event) => void save(event)}>
+        <label className="settings-search-field-label" htmlFor={inputId}>API key</label>
+        <div className="settings-detail-inline">
+          <input
+            id={inputId}
+            className="settings-search-input"
+            type="password"
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+            placeholder={provider.configured ? "Paste a new key to replace the current one" : `Paste your ${provider.name} API key`}
+            disabled={saving || deletion.busy}
+          />
+          <button className="settings-primary-button" type="submit" disabled={saving || deletion.busy || !apiKey.trim()}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </form>
+      {error || deletion.error ? <p className="settings-error" role="alert">{deletion.error ?? error}</p> : null}
+      {provider.configured && provider.id === "volcengine-ark" ? <ProviderImageModels key={`seedream-${modelsRevision}`} providerId={provider.id} /> : null}
+      {provider.configured ? <SeedanceModels key={`seedance-${modelsRevision}`} providerId={provider.id} /> : null}
+    </section>
+  );
+}
+
+function ProviderImageModels({ providerId }: { providerId: string }) {
+  const [models, setModels] = useState<ImageModel[]>();
+  const [emptyMessage, setEmptyMessage] = useState("No image models are available.");
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    let active = true;
+    void listImageModelCatalog().then((catalog) => {
+      if (!active) return;
+      const status = catalog.providers.find((provider) => provider.provider === providerId);
+      setModels(catalog.models.filter((model) => model.provider === providerId));
+      setEmptyMessage(status?.message ?? "No image models are available.");
+      setError(status?.state === "error" ? status.message : undefined);
+    }).catch((cause) => {
+      if (active) setError(errorMessage(cause));
+    });
+    return () => { active = false; };
+  }, [providerId]);
+
+  return (
+    <section className="settings-detail-section provider-models" aria-label="Image models">
+      <div className="provider-models-heading">
+        <h4>Image models <small>{models?.length ?? ""}</small></h4>
+      </div>
+      {error ? <p className="settings-error" role="alert">{error}</p> : null}
+      {models ? (
+        <div className="provider-models-list" role="list" aria-label="Image models">
+          {models.map((model) => (
+            <div className="provider-model-row" key={model.id} role="listitem">
+              <label>
+                <span className="provider-model-copy">
+                  <strong title={model.name}>{model.name}</strong>
+                  <small title={model.id}>{model.id}</small>
+                </span>
+              </label>
+            </div>
+          ))}
+          {!models.length && !error ? <p className="settings-empty">{emptyMessage}</p> : null}
+        </div>
+      ) : !error ? <div className="settings-loading"><LoaderCircle className="spin" size={16} />Loading models</div> : null}
+    </section>
+  );
+}
+
+function SeedanceModels({ providerId }: { providerId: string }) {
+  const [models, setModels] = useState<VideoModel[]>();
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    let active = true;
+    void listVideoModelCatalog().then((catalog) => {
+      if (active) setModels(catalog.models.filter((model) => model.provider === providerId));
+    }).catch((cause) => {
+      if (active) setError(errorMessage(cause));
+    });
+    return () => { active = false; };
+  }, [providerId]);
+
+  return (
+    <section className="settings-detail-section provider-models" aria-label="Video models">
+      <div className="provider-models-heading">
+        <h4>Video models <small>{models?.length ?? ""}</small></h4>
+      </div>
+      {error ? <p className="settings-error" role="alert">{error}</p> : null}
+      {models ? (
+        <div className="provider-models-list" role="list" aria-label="Video models">
+          {models.map((model) => (
+            <div className="provider-model-row" key={model.id} role="listitem">
+              <div className="provider-model-readonly">
+                <span className="provider-model-copy">
+                  <strong title={model.name}>{model.name}</strong>
+                  <small title={model.id}>{model.id}</small>
+                </span>
+              </div>
+            </div>
+          ))}
+          {!models.length ? <p className="settings-empty">No video models are available.</p> : null}
+        </div>
+      ) : !error ? <div className="settings-loading"><LoaderCircle className="spin" size={16} />Loading models</div> : null}
+    </section>
+  );
+}
+
+function useProviderDeletion(providerId: string, onRemoved?: () => void) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  async function remove() {
+    if (busy) return;
+    setBusy(true);
+    setError(undefined);
+    try { await removeProvider(providerId); onRemoved?.(); }
+    catch (cause) { setError(errorMessage(cause)); }
+    finally { setBusy(false); }
+  }
+  return { confirming, setConfirming, busy, error, remove };
+}
+
+function ProviderDeleteButton({ deletion, disabled = false, label = "Delete provider" }: { deletion: ReturnType<typeof useProviderDeletion>; disabled?: boolean; label?: string }) {
+  return <button className="icon-button settings-provider-setting-edit settings-provider-delete" type="button" aria-label={label} data-tooltip={label} aria-expanded={deletion.confirming} disabled={deletion.busy || disabled} onClick={() => deletion.setConfirming((value) => !value)}><Trash2 size={15} aria-hidden="true" /></button>;
+}
+
+function ProviderDeleteConfirmation({ provider, deletion, disabled = false }: { provider: ProviderSummary; deletion: ReturnType<typeof useProviderDeletion>; disabled?: boolean }) {
+  if (!deletion.confirming) return null;
+  return <div className="settings-provider-delete-confirmation" role="group" aria-label="Delete provider confirmation">
+    <span>{provider.id === "hyper3d" ? "Remove your saved Hyper3D API key and its model settings?" : provider.custom ? "Delete this provider, its key and model settings?" : "Delete this provider's saved connection and settings?"}{!provider.custom && provider.credentialType === "oauth" ? " Your subscription stays active." : null}</span>
+    <button className="settings-danger-button" type="button" disabled={deletion.busy || disabled} onClick={() => void deletion.remove()}>{deletion.busy ? "Deleting…" : provider.id === "hyper3d" ? "Remove API key" : "Delete provider"}</button>
+    <button className="settings-secondary-button" type="button" disabled={deletion.busy} onClick={() => deletion.setConfirming(false)}>Cancel</button>
+  </div>;
+}
+
+function CustomProviderDetail({ provider, onBack, onRemoved }: { provider: ProviderSummary; onBack: () => void; onRemoved: () => void }) {
+  const deletion = useProviderDeletion(provider.id, onRemoved);
+  const [settings, setSettings] = useState<CustomProviderDetails>();
+  const [editing, setEditing] = useState<CustomProviderField>();
+  const [openingEditor, setOpeningEditor] = useState(false);
+  const [modelsRevision, setModelsRevision] = useState(0);
+  const deleting = deletion.busy;
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      let value = await getCustomProvider(provider.id);
+      if (value.modelConfigurationVersion !== 2) {
+        await listImageModelCatalog().catch(() => undefined);
+        value = await getCustomProvider(provider.id);
+      }
+      if (active) { setSettings(value); setModelsRevision((revision) => revision + 1); }
+    })().catch((cause) => { if (active) setError(errorMessage(cause)); });
+    return () => { active = false; };
+  }, [provider.id]);
+  async function openEditor(field: CustomProviderField): Promise<void> {
+    if (openingEditor || deleting || editing) return;
+    setOpeningEditor(true);
+    setError(undefined);
+    try {
+      // Model edits on this page may have changed the settings since the detail first loaded.
+      setSettings(await getCustomProvider(provider.id));
+      setEditing(field);
+    } catch (cause) { setError(errorMessage(cause)); }
+    finally { setOpeningEditor(false); }
+  }
+  const fields: Array<{ field: CustomProviderField; label: string; value: string }> = settings ? [
+    { field: "apiKey", label: "API key", value: settings.authentication === "api_key" ? "••••••••" : "Not required" },
+    { field: "baseUrl", label: "Base URL", value: settings.baseUrl },
+    { field: "api", label: "API", value: PROVIDER_API_LABELS[settings.api] ?? settings.api },
+  ] : [];
+  // Models may override the provider URL; show one balance per distinct compatible connection.
+  const balanceConnections = new Map<string, CustomProviderModel>();
+  for (const model of settings?.models ?? []) {
+    const config = model.usages?.["3d"];
+    if (!config) continue;
+    const connection = JSON.stringify([config.protocol, (config.baseUrl ?? settings!.baseUrl).replace(/\/+$/, "")]);
+    if (!balanceConnections.has(connection)) balanceConnections.set(connection, model);
+  }
+  return <section className="settings-panel settings-provider-detail">
+    <ProviderDetailHeader provider={{ ...provider, name: settings?.name ?? provider.name }} onBack={onBack}>
+      <ProviderDeleteButton deletion={deletion} disabled={openingEditor || Boolean(editing)} />
+      <ProviderEnableControl provider={provider} disabled={deleting} onChanged={() => setModelsRevision((value) => value + 1)} />
+    </ProviderDetailHeader>
+    <ProviderDeleteConfirmation provider={provider} deletion={deletion} disabled={openingEditor || Boolean(editing)} />
+    {settings ? <div className="settings-provider-connection">
+      {fields.map(({ field, label, value }) => <div className="settings-provider-setting-row" key={field}>
+        <span className="settings-search-field-label">{label}</span>
+        <span className="settings-provider-setting-value" title={field === "apiKey" ? undefined : value}>{value}</span>
+        <button className="icon-button settings-provider-setting-edit" type="button" aria-label={`Edit ${label}`} data-tooltip={`Edit ${label}`} disabled={deleting || openingEditor || Boolean(editing)} onClick={() => void openEditor(field)}><Pencil size={15} aria-hidden="true" /></button>
+      </div>)}
+    </div> : !error ? <div className="settings-loading"><LoaderCircle className="spin" size={16} />Loading configuration</div> : null}
+    {error || deletion.error ? <p className="settings-error" role="alert">{deletion.error ?? error}</p> : null}
+    {provider.configured ? [...balanceConnections].map(([connection, model]) => <Provider3DBalance key={connection} model={{ provider: provider.id, id: model.id }} label={balanceConnections.size > 1 ? `API balance · ${model.name}` : undefined} />) : null}
+    {settings ? <ProviderModels key={modelsRevision} providerId={provider.id} onEditModels={() => void openEditor("models")} /> : null}
+    {editing && settings ? <CustomProviderDialog settings={settings} initialFocus={editing} onClose={() => setEditing(undefined)} onSaved={(value) => { setSettings(value); setEditing(undefined); setModelsRevision((revision) => revision + 1); }} /> : null}
+  </section>;
+}
+
+function Native3DProviderAuthView({ provider, onBack, onCompleted }: { provider: ProviderSummary; onBack: () => void; onCompleted: () => void }) {
+  return <section className="settings-panel settings-provider-detail">
+    <ProviderDetailHeader provider={provider} description="API key" onBack={onBack}>
+      {provider.configured ? <ProviderEnableControl provider={provider} /> : null}
+    </ProviderDetailHeader>
+    <Native3DProviderKeyForm provider={provider} onCompleted={onCompleted} />
+    {provider.configured ? <ProviderModels providerId={provider.id} /> : null}
+  </section>;
+}
+
+function Native3DProviderKeyForm({ provider, onCompleted }: { provider: ProviderSummary; onCompleted?: () => void }) {
+  const deletion = useProviderDeletion(provider.id, onCompleted);
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
@@ -169,8 +590,9 @@ function MeshyAuthView({ provider, onBack, onCompleted }: { provider: ModelProvi
     setSaving(true);
     setError(undefined);
     try {
-      await updateMeshyApiKey(apiKey);
-      onCompleted();
+      await updateModel3DProviderApiKey(provider.id, apiKey);
+      setApiKey("");
+      onCompleted?.();
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -178,47 +600,23 @@ function MeshyAuthView({ provider, onBack, onCompleted }: { provider: ModelProvi
     }
   }
 
-  async function clear(): Promise<void> {
-    setSaving(true);
-    setError(undefined);
-    try {
-      await clearMeshyApiKey();
-      onCompleted();
-    } catch (cause) {
-      setError(errorMessage(cause));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  return (
-    <section className="settings-panel settings-provider-detail">
-      <ProviderDetailHeader provider={provider} onBack={onBack} />
-      {provider.configured ? (
-        <ProviderStatusRow source={provider.source}>
-          <button className="settings-danger-button" type="button" disabled={saving} onClick={() => void clear()}>Disconnect</button>
-        </ProviderStatusRow>
-      ) : null}
-      <form className="settings-detail-field" onSubmit={(event) => void save(event)}>
-        <label className="settings-search-field-label" htmlFor="meshy-api-key">API key</label>
-        <div className="settings-detail-inline">
-          <input
-            id="meshy-api-key"
-            className="settings-search-input"
-            type="password"
-            value={apiKey}
-            onChange={(event) => setApiKey(event.target.value)}
-            placeholder={provider.configured ? "Paste a new key to replace the current one" : "Paste your Meshy API key"}
-            disabled={saving}
-          />
-          <button className="settings-primary-button" type="submit" disabled={saving || !apiKey.trim()}>
-            {saving ? "Saving…" : "Save"}
-          </button>
-        </div>
-      </form>
-      {error ? <p className="settings-error" role="alert">{error}</p> : null}
-    </section>
-  );
+  return <>
+    <ProviderDeleteConfirmation provider={provider} deletion={deletion} disabled={saving} />
+    <form className="settings-detail-field" onSubmit={(event) => void save(event)}>
+      <div className="provider-models-heading">
+        <label className="settings-search-field-label" htmlFor={`${provider.id}-api-key`}>{provider.id === "hyper3d" ? "Your API key" : "API key"}</label>
+        {provider.configured ? <ProviderDeleteButton deletion={deletion} disabled={saving} label="Remove API key" /> : null}
+      </div>
+      <div className="settings-detail-inline">
+        <input id={`${provider.id}-api-key`} className="settings-search-input" type="password" autoComplete="off" spellCheck={false} value={apiKey} onChange={(event) => setApiKey(event.target.value)}
+          placeholder={provider.configured ? "Paste a new key to replace the current one" : `Paste your ${provider.name} API key`} disabled={saving || deletion.busy} />
+        <button className="settings-primary-button" type="submit" disabled={saving || deletion.busy || !apiKey.trim()}>{saving ? "Saving…" : "Save"}</button>
+      </div>
+    </form>
+    {provider.id === "hyper3d" ? <p className="settings-detail-hint">API key models use your Hyper3D balance. Free account models remain available.</p> : null}
+    {provider.configured ? <Provider3DBalance model={{ provider: provider.id, id: MODEL3D_CONNECTION_ID }} /> : null}
+    {error || deletion.error ? <p className="settings-error" role="alert">{deletion.error ?? error}</p> : null}
+  </>;
 }
 
 function AuthMethodChoice({ provider, onBack, onChoose }: { provider: ModelProviderSummary; onBack: () => void; onChoose: (method: ModelAuthMethod) => void }) {
@@ -247,21 +645,24 @@ function AuthMethodChoice({ provider, onBack, onChoose }: { provider: ModelProvi
   );
 }
 
-function ConnectedProvider({ provider, onBack, onDisconnected }: { provider: ModelProviderSummary; onBack: () => void; onDisconnected: () => void }) {
-  const [disconnecting, setDisconnecting] = useState(false);
+function ConnectedProvider({ provider, onBack, onRemoved }: { provider: ProviderSummary; onBack: () => void; onRemoved: () => void }) {
+  const deletion = useProviderDeletion(provider.id, onRemoved);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
+  const [editing, setEditing] = useState<ModelAuthMethod | "endpoint">();
+  const [credentialType, setCredentialType] = useState(provider.credentialType ?? "api_key");
+  const [modelsRevision, setModelsRevision] = useState(0);
   const endpoint = useProviderEndpoint(provider.id);
-  async function disconnect(): Promise<void> {
-    setDisconnecting(true);
-    try {
-      await disconnectModelProvider(provider.id);
-      notifyAgentModelsChanged();
-      onDisconnected();
-    } catch (cause) {
-      setError(errorMessage(cause));
-      setDisconnecting(false);
-    }
+  function edit(setting: ModelAuthMethod | "endpoint"): void {
+    setNotice(undefined);
+    setError(undefined);
+    setEditing(setting);
+  }
+  function completeAuth(method: ModelAuthMethod): void {
+    setCredentialType(method);
+    setEditing(undefined);
+    setModelsRevision((value) => value + 1);
+    setNotice(method === "oauth" ? "Browser sign-in connected." : "API key updated.");
   }
   async function saveEndpoint(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -270,39 +671,62 @@ function ConnectedProvider({ provider, onBack, onDisconnected }: { provider: Mod
     try {
       await endpoint.save();
       notifyAgentModelsChanged();
+      setEditing(undefined);
       setNotice("Base URL saved.");
     } catch (cause) {
       setError(errorMessage(cause));
     }
   }
-  const displayedError = error ?? endpoint.error;
+  const displayedError = deletion.error ?? error ?? endpoint.error;
   // Only API keys can go through a proxy; a ChatGPT sign-in always talks to OpenAI directly.
-  const showsEndpoint = endpoint.supported && provider.credentialType !== "oauth";
+  const showsEndpoint = endpoint.supported && credentialType !== "oauth";
+  const canEditKey = credentialType !== "oauth" && provider.methods.some((method) => method.type === "api_key");
+  const alternateMethod = provider.methods.length > 1 ? provider.methods.find((method) => method.type !== credentialType)?.type : undefined;
   return (
     <section className="settings-panel settings-provider-detail">
-      <ProviderDetailHeader provider={provider} onBack={onBack} />
-      <ProviderStatusRow source={provider.source}>
-        {provider.credentialType ? (
-          <button className="settings-danger-button" type="button" disabled={disconnecting} onClick={() => void disconnect()}>{disconnecting ? "Disconnecting…" : "Disconnect"}</button>
-        ) : (
-          <span className="settings-managed-label">Managed outside OhMyGame</span>
-        )}
-      </ProviderStatusRow>
-      {showsEndpoint ? (
-        <form onSubmit={(event) => void saveEndpoint(event)}>
-          <BaseUrlField endpoint={endpoint}>
-            <button className="settings-primary-button" type="submit" disabled={endpoint.loading || endpoint.saving || !endpoint.baseUrl.trim() || !endpoint.dirty}>{endpoint.saving ? "Saving…" : "Save"}</button>
-          </BaseUrlField>
-        </form>
-      ) : null}
+      <ProviderDetailHeader provider={provider} onBack={onBack}>
+        <ProviderDeleteButton deletion={deletion} disabled={Boolean(editing) || endpoint.saving} />
+        <ProviderEnableControl provider={provider} disabled={deletion.busy} onChanged={() => setModelsRevision((value) => value + 1)} />
+      </ProviderDetailHeader>
+      <ProviderDeleteConfirmation provider={{ ...provider, credentialType }} deletion={deletion} disabled={Boolean(editing) || endpoint.saving} />
+      {alternateMethod || canEditKey || showsEndpoint ? <div className="settings-provider-connection">
+        {alternateMethod ? <div className="settings-provider-setting-row settings-provider-auth-row">
+          <span className="settings-search-field-label">Sign-in</span>
+          <span className="settings-provider-setting-value">{credentialType === "oauth" ? "Browser sign-in" : "API key"}</span>
+          <button className="settings-secondary-button" type="button" disabled={Boolean(editing) || deletion.busy} onClick={() => edit(alternateMethod)}>{alternateMethod === "oauth" ? "Use browser sign-in" : "Use API key"}</button>
+        </div> : null}
+        {canEditKey ? <section aria-label="API key settings">
+          <div className="settings-provider-setting-row">
+            <span className="settings-search-field-label">API key</span>
+            <span className="settings-provider-setting-value" aria-label="API key is configured">••••••••</span>
+            <button className="icon-button settings-provider-setting-edit" type="button" aria-label="Edit API key" data-tooltip="Edit API key" aria-expanded={editing === "api_key"} disabled={Boolean(editing) || deletion.busy} onClick={() => edit("api_key")}><Pencil size={15} aria-hidden="true" /></button>
+          </div>
+        </section> : null}
+        {editing === "api_key" || editing === "oauth" ? <div className="settings-provider-setting-editor"><ActiveProviderAuth provider={provider} method={editing} inline onBack={() => setEditing(undefined)} onCompleted={() => completeAuth(editing)} onFailed={(message) => { setEditing(undefined); setError(message); }} /></div> : null}
+        {showsEndpoint ? <section aria-label="Base URL settings">
+          <div className="settings-provider-setting-row">
+            <span className="settings-search-field-label">Base URL</span>
+            <span className="settings-provider-setting-value" title={endpoint.savedBaseUrl}>{endpoint.loading ? "Loading…" : endpoint.savedBaseUrl || "Unavailable"}</span>
+            <button className="icon-button settings-provider-setting-edit" type="button" aria-label="Edit Base URL" data-tooltip="Edit Base URL" aria-expanded={editing === "endpoint"} disabled={Boolean(editing) || endpoint.loading || deletion.busy} onClick={() => edit("endpoint")}><Pencil size={15} aria-hidden="true" /></button>
+          </div>
+          {editing === "endpoint" ? <form className="settings-provider-setting-editor settings-detail-section" onSubmit={(event) => void saveEndpoint(event)}>
+            <BaseUrlField endpoint={endpoint} />
+            <div className="settings-form-actions">
+              <button className="settings-secondary-button" type="button" disabled={endpoint.saving} onClick={() => { endpoint.reset(); setEditing(undefined); setError(undefined); }}>Cancel</button>
+              <button className="settings-primary-button" type="submit" disabled={endpoint.loading || endpoint.saving || !endpoint.baseUrl.trim() || !endpoint.dirty}>{endpoint.saving ? "Saving…" : "Save"}</button>
+            </div>
+          </form> : null}
+        </section> : null}
+      </div> : null}
       {displayedError ? <p className="settings-error" role="alert">{displayedError}</p> : null}
       {notice ? <p className="settings-success" role="status">{notice}</p> : null}
-      <ProviderModels providerId={provider.id} />
+      <ProviderModels key={modelsRevision} providerId={provider.id} />
+      {provider.capabilities.includes("image") ? <ProviderImageModels key={`images-${modelsRevision}`} providerId={provider.id} /> : null}
     </section>
   );
 }
 
-function ActiveProviderAuth({ provider, method, onBack, onCompleted }: { provider: ModelProviderSummary; method: ModelAuthMethod; onBack: () => void; onCompleted: () => void }) {
+function ActiveProviderAuth({ provider, method, inline = false, onBack, onCompleted, onFailed }: { provider: ModelProviderSummary; method: ModelAuthMethod; inline?: boolean; onBack: () => void; onCompleted: () => void; onFailed?: (error: string) => void }) {
   const [operationId, setOperationId] = useState<string>();
   const [prompt, setPrompt] = useState<{ id: string; value: ModelAuthPrompt }>();
   const [notification, setNotification] = useState<ModelAuthNotification>();
@@ -310,7 +734,8 @@ function ActiveProviderAuth({ provider, method, onBack, onCompleted }: { provide
   const [error, setError] = useState<string>();
   const operationRef = useRef<string | undefined>(undefined);
   const openedUrl = useRef<string | undefined>(undefined);
-  const endpoint = useProviderEndpoint(provider.id);
+  const endpoint = useProviderEndpoint(inline ? "" : provider.id);
+  const editingKey = inline && method === "api_key";
   // A proxy Base URL only applies to API keys; never send a ChatGPT sign-in through it.
   const editsEndpoint = endpoint.supported && method === "api_key";
 
@@ -324,7 +749,7 @@ function ActiveProviderAuth({ provider, method, onBack, onCompleted }: { provide
       operationRef.current = id;
       setOperationId(id);
     }).catch((cause) => {
-      if (active) setError(errorMessage(cause));
+      if (active) fail(errorMessage(cause));
     });
     return () => {
       active = false;
@@ -339,6 +764,11 @@ function ActiveProviderAuth({ provider, method, onBack, onCompleted }: { provide
       onError: () => setError("Connection to the authentication flow was interrupted."),
     });
   }, [operationId]);
+
+  function fail(message: string): void {
+    if (onFailed) onFailed(message);
+    else setError(message);
+  }
 
   function handleAuthEvent(event: ModelAuthEvent): void {
     if (event.type === "notification") {
@@ -359,7 +789,7 @@ function ActiveProviderAuth({ provider, method, onBack, onCompleted }: { provide
       onBack();
     } else if (event.type === "error") {
       operationRef.current = undefined;
-      setError(event.error);
+      fail(event.error);
     }
   }
 
@@ -394,24 +824,24 @@ function ActiveProviderAuth({ provider, method, onBack, onCompleted }: { provide
     void openExternal(external).catch(() => undefined);
   }, [external, method]);
   return (
-    <section className="settings-panel settings-provider-detail">
-      <ProviderDetailHeader provider={provider} onBack={() => void cancel()} />
+    <section className={inline ? undefined : "settings-panel settings-provider-detail"}>
+      {!inline ? <ProviderDetailHeader provider={provider} onBack={() => void cancel()} /> : null}
       {prompt && !browserFallback ? (
         <form className="settings-detail-section" onSubmit={(event) => void respond(event)}>
           {editsEndpoint ? <BaseUrlField endpoint={endpoint} /> : null}
           <label className="settings-detail-field">
-            <span className="settings-search-field-label">{prompt.value.message}</span>
+            <span className="settings-search-field-label">{editingKey && prompt.value.type === "secret" ? "New API key" : prompt.value.message}</span>
             {prompt.value.type === "select" ? (
               <select className="settings-search-input" value={answer || prompt.value.options[0]?.id || ""} onChange={(event) => setAnswer(event.target.value)}>
                 {prompt.value.options.map((option) => <option value={option.id} key={option.id}>{option.label}</option>)}
               </select>
             ) : (
-              <input className="settings-search-input" type={prompt.value.type === "secret" ? "password" : "text"} value={answer} placeholder={prompt.value.placeholder} onChange={(event) => setAnswer(event.target.value)} autoFocus />
+              <input className="settings-search-input" type={prompt.value.type === "secret" ? "password" : "text"} value={answer} placeholder={editingKey && prompt.value.type === "secret" ? "Paste a new key to replace the current one" : prompt.value.placeholder} onChange={(event) => setAnswer(event.target.value)} autoFocus autoComplete={prompt.value.type === "secret" ? "new-password" : "off"} spellCheck={false} />
             )}
           </label>
           <div className="settings-form-actions">
             <button className="settings-secondary-button" type="button" onClick={() => void cancel()}>Cancel</button>
-            <button className="settings-primary-button" type="submit" disabled={endpoint.loading || endpoint.saving || (editsEndpoint && !endpoint.baseUrl.trim()) || (prompt.value.type !== "select" && !prompt.value.optional && !answer.trim())}>Continue</button>
+            <button className="settings-primary-button" type="submit" disabled={endpoint.loading || endpoint.saving || (editsEndpoint && !endpoint.baseUrl.trim()) || (prompt.value.type !== "select" && !prompt.value.optional && !answer.trim())}>{editingKey && prompt.value.type === "secret" ? "Save key" : "Continue"}</button>
           </div>
         </form>
       ) : (
@@ -444,45 +874,56 @@ function ActiveProviderAuth({ provider, method, onBack, onCompleted }: { provide
   );
 }
 
-function ProviderDetailHeader({ provider, onBack }: { provider: ModelProviderSummary; onBack: () => void }) {
+function ProviderDetailHeader({ provider, onBack, children, title, description }: { provider: ModelProviderSummary; onBack: () => void; children?: ReactNode; title?: string; description?: string }) {
   return (
     <header className="settings-provider-detail-header">
       <button type="button" onClick={onBack} aria-label="Back"><ArrowLeft size={16} /></button>
       <ProviderMark provider={provider} />
-      <span>
-        <h3>{provider.name}</h3>
-        <small>{providerDescription(provider)}</small>
+      <span className="settings-provider-heading">
+        <h3>{title ?? provider.name}</h3>
+        <small>{description ?? providerDescription(provider)}</small>
       </span>
+      {children}
     </header>
   );
 }
 
-function ProviderStatusRow({ source, children }: { source?: string; children: ReactNode }) {
-  return (
-    <div className="settings-detail-status">
-      <span className="settings-detail-status-line">
-        <i aria-hidden="true" />
-        <strong>Connected</strong>
-        {source ? <small>{source}</small> : null}
-      </span>
-      {children}
-    </div>
-  );
+function ProviderEnableControl({ provider, onChanged, disabled = false, label }: { provider: ProviderSummary; onChanged?: () => void; disabled?: boolean; label?: string }) {
+  const [enabled, setEnabled] = useState(provider.enabled !== false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  useEffect(() => { setEnabled(provider.enabled !== false); }, [provider.id, provider.enabled]);
+  async function toggle(next: boolean): Promise<void> {
+    if (busy) return;
+    const previous = enabled;
+    setEnabled(next);
+    setBusy(true);
+    setError(undefined);
+    try { setEnabled((await setProviderEnabled(provider.id, next)).enabled !== false); onChanged?.(); }
+    catch (cause) { setEnabled(previous); setError(errorMessage(cause)); }
+    finally { setBusy(false); }
+  }
+  return <div className="settings-provider-enable-control">
+    <label className="settings-provider-enable-label" title={enabled ? "Available for new requests" : "Disabled · Your credentials and models are kept"}>
+      <small>{enabled ? "Enabled" : "Disabled"}</small>
+      <span className="settings-toggle"><input type="checkbox" role="switch" aria-label={label ?? `Enable ${provider.name}`} checked={enabled} disabled={busy || disabled} onChange={(event) => void toggle(event.target.checked)} /><span aria-hidden="true" /></span>
+    </label>
+    {error ? <p className="settings-error" role="alert">{error}</p> : null}
+  </div>;
 }
 
 function DetailSectionHeader({ title, description }: { title: string; description: string }) {
   return <div className="settings-search-section-header"><h4>{title}</h4><p>{description}</p></div>;
 }
 
-function BaseUrlField({ endpoint, children }: { endpoint: ReturnType<typeof useProviderEndpoint>; children?: ReactNode }) {
+function BaseUrlField({ endpoint }: { endpoint: ReturnType<typeof useProviderEndpoint> }) {
   return (
     <div className="settings-detail-field">
       <label className="settings-search-field-label" htmlFor="model-provider-base-url">Base URL</label>
       <div className="settings-detail-inline">
         <input id="model-provider-base-url" className="settings-search-input" value={endpoint.baseUrl} onChange={(event) => endpoint.setBaseUrl(event.target.value)} disabled={endpoint.loading || endpoint.saving} spellCheck={false} />
-        {children}
       </div>
-      <small className="settings-detail-hint">Requests go to this OpenAI-compatible URL. Change it to use a proxy.</small>
+      <small className="settings-detail-hint">The OpenAI-compatible API address or relay URL. Configure a Clash network proxy in Settings → Network.</small>
     </div>
   );
 }
@@ -523,10 +964,14 @@ function useProviderEndpoint(providerId: string) {
     }
   }
 
-  return { supported, baseUrl, setBaseUrl, dirty: baseUrl.trim() !== savedBaseUrl, loading, saving, error, save };
+  return { supported, baseUrl, savedBaseUrl, setBaseUrl, reset: () => setBaseUrl(savedBaseUrl), dirty: baseUrl.trim() !== savedBaseUrl, loading, saving, error, save };
 }
 
-function providerDescription(provider: Pick<ModelProviderSummary, "methods">): string {
+function providerDescription(provider: Pick<ProviderSummary, "id" | "methods" | "custom" | "preset" | "managed">): string {
+  if (provider.id === "hyper3d") return "Free daily credits or your API key";
+  if (provider.managed) return "Free cloud";
+  if (isLocalModelProvider(provider)) return "Local endpoint";
+  if (provider.custom) return "Custom endpoint";
   const oauth = provider.methods.some((method) => method.type === "oauth");
   const apiKey = provider.methods.some((method) => method.type === "api_key");
   if (oauth && apiKey) return "Browser sign-in or API key";

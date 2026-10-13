@@ -1,7 +1,7 @@
-import { ArrowDownToLine, MoreHorizontal, RefreshCw, UserRound, Wrench } from "./icons.js";
+import { ArrowDownToLine, Gamepad2, Globe2, InfoCircle, MoreHorizontal, RefreshCw, UserRound, Wrench } from "./icons.js";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useAuth } from "./auth.js";
-import type { AppNavigationTarget, SidebarPage } from "./routes.js";
+import { settingsHash, type AppNavigationTarget, type SidebarPage } from "./routes.js";
 import { UserAvatar } from "./user-avatar.js";
 import type { DesktopUpdateState } from "../shared/desktop-update.js";
 import brandMark from "../shared/assets/ohmygame-mark-v2.svg";
@@ -32,6 +32,12 @@ export function AppSidebar({ active, onNavigate }: AppSidebarProps) {
   }, [sidebarWidth]);
 
   useEffect(() => {
+    if (window.matchMedia("(max-width: 720px)").matches) {
+      sidebar.current?.querySelector('[aria-current="page"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+  }, [active]);
+
+  useEffect(() => {
     if (!accountMenuOpen) return;
     const close = (event: MouseEvent) => {
       if (!account.current?.contains(event.target as Node)) setAccountMenuOpen(false);
@@ -59,11 +65,20 @@ export function AppSidebar({ active, onNavigate }: AppSidebarProps) {
     ? { label: "Update", icon: <ArrowDownToLine size={15} />, action: () => void window.ohMyGameDesktop?.updates.download() }
     : updateStatus === "ready"
       ? { label: "Restart", icon: <RefreshCw size={14} />, action: () => void window.ohMyGameDesktop?.updates.install() }
-      : undefined;
+      : updateStatus === "error"
+        ? { label: "Issue", icon: <InfoCircle size={15} />, action: () => { window.location.hash = settingsHash("about"); } }
+        : undefined;
+
+  const updatePercent = updateStatus === "downloading" ? update!.status.percent : undefined;
   const updateButton = updateAction ? (
     <button className="home-sidebar-update" type="button" aria-label={updateAction.label} onClick={updateAction.action}>
       {updateAction.icon}<span>{updateAction.label}</span>
     </button>
+  ) : updatePercent !== undefined ? (
+    <div className="home-sidebar-update-progress" role="progressbar" aria-valuenow={updatePercent} aria-valuemin={0} aria-valuemax={100}>
+      <div className="home-sidebar-update-progress-fill" style={{ width: `${updatePercent}%` }} />
+      <span className="home-sidebar-update-progress-text">{updatePercent}%</span>
+    </div>
   ) : null;
 
   function resize(clientX: number): void {
@@ -111,11 +126,13 @@ export function AppSidebar({ active, onNavigate }: AppSidebarProps) {
         <NavigationItem active={active === "home"} icon="home" label="Home" onClick={() => onNavigate("home")} />
         <NavigationItem active={active === "projects"} icon="project" label="Projects" onClick={() => onNavigate("projects")} />
         <NavigationItem active={active === "library"} icon="library" label="Library" onClick={() => onNavigate("library")} />
-        <NavigationItem active={active === "plugins"} icon="plugins" label="Plugins" onClick={() => onNavigate("plugins")} />
         <NavigationItem active={active === "community"} icon="community" label="Community" onClick={() => onNavigate("community")} />
         <div className="home-nav-label home-nav-label-spaced">STUDIOS</div>
+        <NavigationItem active={active === "web-game"} icon="web-game" label="Web Game" onClick={() => onNavigate("web-game")} />
         <NavigationItem active={active === "interactive-story"} icon="interactive-story" label="Interactive Story" onClick={() => onNavigate("interactive-story")} />
+        <NavigationItem active={active === "godot"} icon="godot" label="Godot" onClick={() => onNavigate("godot")} />
         <NavigationItem active={active === "asset-canvas"} icon="asset-canvas" label="Asset Canvas" onClick={() => onNavigate("asset-canvas")} />
+        <NavigationItem active={active === "general"} icon="general" label="General Game" onClick={() => onNavigate("general")} />
       </nav>
       {auth.state.status === "signed-in" ? (
         <div className="home-sidebar-account" ref={account}>
@@ -126,6 +143,7 @@ export function AppSidebar({ active, onNavigate }: AppSidebarProps) {
             <span className="home-sidebar-account-name" title={auth.state.user.email}>{auth.state.user.name}</span>
           </button>
           {updateButton}
+          <button className="home-sidebar-account-menu" type="button" aria-label="Application menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((open) => !open)}><MoreHorizontal size={16} /></button>
           {accountMenuOpen ? (
             <div className="home-sidebar-account-popover" role="menu">
               <button type="button" role="menuitem" onClick={() => {
@@ -144,7 +162,8 @@ export function AppSidebar({ active, onNavigate }: AppSidebarProps) {
             <span className="home-sidebar-signed-out-icon" aria-hidden="true"><UserRound size={16} /></span>
             <span className="home-sidebar-account-name">{auth.state.status === "loading" ? "Loading account" : "Sign in"}</span>
           </button>
-          {updateButton ?? <button className="home-sidebar-account-menu" type="button" aria-label="Application menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((open) => !open)}><MoreHorizontal size={16} /></button>}
+          {updateButton}
+          <button className="home-sidebar-account-menu" type="button" aria-label="Application menu" aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((open) => !open)}><MoreHorizontal size={16} /></button>
           {accountMenuOpen ? (
             <div className="home-sidebar-account-popover" role="menu">
               <button type="button" role="menuitem" onClick={() => {
@@ -206,16 +225,18 @@ function NavigationItem({
   onClick,
 }: {
   active: boolean;
-  icon: "home" | "project" | "library" | "plugins" | "interactive-story" | "asset-canvas" | "community";
+  icon: "home" | "project" | "library" | "general" | "web-game" | "interactive-story" | "godot" | "asset-canvas" | "community";
   label: string;
   onClick: () => void;
 }) {
-  const content = <><span className={`home-nav-icon home-nav-icon-${icon}`} aria-hidden="true" /><span>{label}</span></>;
+  const content = <>{icon === "web-game" || icon === "general" ? <span className="home-nav-symbol" aria-hidden="true">{icon === "general" ? <Gamepad2 size={16} /> : <Globe2 size={16} />}</span> : <span className={`home-nav-icon home-nav-icon-${icon}`} aria-hidden="true" />}<span>{label}</span></>;
   return (
     <button
       className={`home-nav-item${active ? " home-nav-item-active" : ""}`}
       type="button"
       onClick={onClick}
+      title={label}
+      aria-label={label}
       aria-current={active ? "page" : undefined}
     >
       {content}

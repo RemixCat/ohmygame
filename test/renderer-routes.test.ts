@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { communityHash, conversationHash, DEFAULT_SETTINGS_SECTION, gameHash, parseAppRoute, playtestHash, projectHash, settingsHash, sidebarHash } from "../src/renderer/routes.js";
+import { communityHash, conversationHash, DEFAULT_SETTINGS_SECTION, gameHash, parseAppRoute, playtestHash, pluginHash, pluginBuilderHash, projectHash, projectsHash, settingsHash, sidebarHash } from "../src/renderer/routes.js";
 
 describe("renderer routes", () => {
   it("uses Home as the default route", () => {
     expect(parseAppRoute("")).toEqual({ page: "home" });
     expect(parseAppRoute("#/")).toEqual({ page: "home" });
     expect(parseAppRoute("#/unknown")).toEqual({ page: "home" });
-    for (const page of ["projects", "library", "plugins", "interactive-story", "asset-canvas"] as const) {
+    for (const page of ["projects", "library", "general", "web-game", "interactive-story", "godot", "asset-canvas"] as const) {
       expect(parseAppRoute(`#/${page}`)).toEqual({ page });
       expect(sidebarHash(page)).toBe(`#/${page}`);
     }
@@ -17,6 +17,33 @@ describe("renderer routes", () => {
     expect(parseAppRoute("#/community/images")).toEqual({ page: "home" });
     expect(communityHash()).toBe("#/community/games");
     expect(parseAppRoute("#/tools")).toEqual({ page: "home" });
+  });
+
+  it("opens a Studio's project list with its type selected", () => {
+    for (const type of ["general", "web-game", "interactive-story", "godot-game", "asset-canvas"] as const) {
+      expect(parseAppRoute(projectsHash(type))).toEqual({ page: "projects", projectType: type });
+    }
+    expect(parseAppRoute(projectsHash())).toEqual({ page: "projects" });
+    expect(parseAppRoute("#/projects?type=missing")).toEqual({ page: "projects" });
+    expect(parseAppRoute("#/projects?type=%")).toEqual({ page: "projects" });
+  });
+
+  it("opens plugins within Settings and keeps legacy links working", () => {
+    expect(pluginHash("personal:game tools")).toBe("#/settings/plugins/personal%3Agame%20tools");
+    expect(parseAppRoute(pluginHash("personal:game tools"))).toEqual({ page: "settings", section: "plugins", pluginId: "personal:game tools" });
+    expect(parseAppRoute("#/plugins/personal%3Agame%20tools")).toEqual({ page: "settings", section: "plugins", pluginId: "personal:game tools" });
+    expect(parseAppRoute("#/plugins")).toEqual({ page: "settings", section: "plugins" });
+    expect(parseAppRoute("#/plugins/%")).toEqual({ page: "settings", section: "plugins" });
+    expect(parseAppRoute("#/settings/plugins/%")).toEqual({ page: "settings", section: "plugins" });
+    expect(parseAppRoute("#/plugins/id/extra")).toEqual({ page: "home" });
+    expect(parseAppRoute("#/settings/plugins/id/extra")).toEqual({ page: "home" });
+  });
+
+  it("restores a builder workspace without treating it as a plugin or game project", () => {
+    const sessionId = "1bf8dbe0-438a-488a-b8ec-299829c79561";
+    expect(parseAppRoute(pluginBuilderHash(sessionId))).toEqual({ page: "plugin-builder", sessionId });
+    expect(parseAppRoute("#/plugins/builder/%")).toEqual({ page: "home" });
+    expect(parseAppRoute(`${pluginBuilderHash(sessionId)}/extra`)).toEqual({ page: "home" });
   });
 
   it("parses and formats project routes", () => {
@@ -38,10 +65,11 @@ describe("renderer routes", () => {
   it("parses and formats Settings routes", () => {
     expect(DEFAULT_SETTINGS_SECTION).toBe("providers");
     expect(parseAppRoute("#/settings")).toEqual({ page: "settings", section: "providers" });
-    for (const section of ["account", "billing", "appearance", "providers", "web-search", "connections", "about"] as const) {
+    for (const section of ["account", "billing", "appearance", "providers", "web-search", "network", "plugins", "about"] as const) {
       expect(parseAppRoute(`#/settings/${section}`)).toEqual({ page: "settings", section });
       expect(settingsHash(section)).toBe(`#/settings/${section}`);
     }
+    expect(parseAppRoute("#/settings/connections")).toEqual({ page: "settings", section: "plugins" });
     expect(parseAppRoute("#/settings/usage")).toEqual({ page: "home" });
     expect(parseAppRoute("#/settings/plans")).toEqual({ page: "home" });
     expect(parseAppRoute("#/settings/unknown")).toEqual({ page: "home" });

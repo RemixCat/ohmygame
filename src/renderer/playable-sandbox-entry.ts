@@ -8,7 +8,9 @@ import {
   NodeRuntime,
   type PlayableSave,
   type PlayableSaveStore,
+  type PlayableSeenStore,
 } from "../shared/playable-runtime.js";
+import type { PlayableSeen } from "../shared/playable-story-map.js";
 import { DocumentPlayableSurfaceHost } from "../shared/playable-sandbox.js";
 
 let session: SandboxSession | undefined;
@@ -64,6 +66,7 @@ async function startSession(
       graphSignature: message.definition.graphSignature,
       surfaceHost: host,
       saveStore,
+      seenStore: new ParentSeenStore(message.instanceId, message.seen),
       assetUrls,
       ...message.preview,
       onChange: () => scheduleSnapshot(message.instanceId),
@@ -103,6 +106,7 @@ function startPicking(instanceId: string, tool: PlayablePreviewTool): void {
   current.host.startPicking(tool, {
     onPick: (pick, additive) => post({ kind: "ohmygame:playable:picked", instanceId, pick, additive }),
     onTextEdit: (edit) => post({ kind: "ohmygame:playable:text-edited", instanceId, edit }),
+    onMove: (move) => post({ kind: "ohmygame:playable:moved", instanceId, move }),
     onCancel: () => post({ kind: "ohmygame:playable:pick-cancelled", instanceId }),
   });
 }
@@ -167,6 +171,21 @@ class ParentSaveStore implements PlayableSaveStore {
         new Error("Published Player closed before the save completed."),
       );
     this.#pending.clear();
+  }
+}
+
+class ParentSeenStore implements PlayableSeenStore {
+  constructor(
+    readonly instanceId: string,
+    readonly initialSeen: unknown,
+  ) {}
+
+  async load(): Promise<unknown> {
+    return this.initialSeen;
+  }
+
+  async save(seen: PlayableSeen): Promise<void> {
+    post({ kind: "ohmygame:playable:seen", instanceId: this.instanceId, seen });
   }
 }
 

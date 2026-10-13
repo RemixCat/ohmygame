@@ -1,3 +1,4 @@
+import { CanvasTableNode, type CanvasTables, type TableNodeRuntime } from "./canvas-table-node.js";
 import {
   ArrowUp,
   Box,
@@ -11,12 +12,11 @@ import {
   Folder,
   FolderPlus,
   Image as ImageIcon,
-  House,
   LoaderCircle,
   Maximize,
   Music2,
   Pause,
-  PanelToggle,
+  Pencil,
   Play,
   Plus,
   Search,
@@ -48,11 +48,14 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import { CANVAS_GRID_SIZE, snapCanvasPosition } from "./canvas-alignment.js";
-import { MAX_ASSET_CANVAS_NODES } from "../shared/asset-canvas-schema.js";
+import { RESIZABLE_CANVAS_NODE_SIZES, canvasNodeLayout, isResizableCanvasNodeType } from "../shared/canvas-node-layout.js";
+import { CanvasNodeResizer, CanvasNodeSizeActions, type CanvasNodeResizeRuntime } from "./canvas-node-resizer.js";
+import { MAX_ASSET_CANVAS_NODES, MAX_TEXT_NODE_REFERENCES } from "../shared/asset-canvas-schema.js";
 import { createCanvasClipboard, duplicateAssetCanvasNode, duplicateCanvasSelection, lastCanvasClipboard, parseCanvasClipboard, rememberCanvasClipboard, type CanvasClipboard } from "./asset-canvas-clipboard.js";
 import { clipboardFiles, hasTransferredFiles, pasteNativeFiles, transferredFiles, type TransferredFile } from "./file-transfer.js";
 import { CanvasContextMenu, EditorCanvas, isTextEntry, undoShortcut, useCanvasCenter, type CanvasContextMenuState } from "./editor-canvas.js";
 import {
+  IMAGE_MAX_REFERENCE_IMAGES,
   type AssetCanvasDocument,
   type AssetCanvasEditorLayout,
   type AssetCanvasNode,
@@ -62,6 +65,7 @@ import {
   type ImageAspectRatio,
   type AgentModel,
   type AgentModelRef,
+  type AgentReasoningLevel,
   type CreateLibraryImageRequest,
   type ImageModel,
   type MediaProviderStatus,
@@ -70,14 +74,12 @@ import {
   type ImageResolution,
   type LibraryUploadMediaType,
   type Model3DGenerationConfig,
+  type Model3DOptions,
+  type Model3DActionId,
+  type Model3DOperation,
   type Model3DModel,
   type Model3DAnimationAction,
-  type PromptImage,
   type ProjectState,
-  type RunImageToolRequest,
-  type Run3DToolRequest,
-  type RunAnimate3DToolRequest,
-  type RunVideoToolRequest,
   type ToolJob,
   type VideoAspectRatio,
   type VideoModel,
@@ -85,35 +87,47 @@ import {
   type VideoGenerationReference,
   type VideoResolution,
 } from "../shared/contracts.js";
-import { combineAssetCanvasPrompt, createAssetGenerationNode, preferredImageOption, resolveAssetCanvasAssetId, resolveAssetCanvasImageAssetId, validateAssetCanvasDocument } from "../shared/asset-canvas.js";
-import { cancelToolJob, createLibraryImage, generateAssetCanvasText, getAssetCanvas, getLibraryAsset, getProjectCover, listImageModelCatalog, listModel3DAnimations, listModel3DCatalog, listToolJobs, listVideoModelCatalog, setProjectCover, startToolJob, updateAssetCanvas, uploadLibraryAsset } from "./api.js";
-import { downloadLibraryAsset, loadLibraryAssets, type LibraryAsset } from "./library-assets.js";
+import { combineAssetCanvasPrompt, createAssetGenerationNode, isTextGenerationReferenceNode, preferredImageOption, validateAssetCanvasDocument } from "../shared/asset-canvas.js";
+import { createLibraryImage, getLibraryAsset, getWorkspaceAsset, getProjectCover, getProjectCoverState, listImageModelCatalog, listModel3DAnimations, listModel3DOperations, listModel3DCatalog, listVideoModelCatalog, MODELS_CHANGED_EVENT, setProjectCover, uploadLibraryAsset } from "./api.js";
+import { useAuth } from "./auth.js";
+import { accountCloudState, canAffordCloudModel, CloudQuotaStatus } from "./cloud-quota.js";
+import { downloadAssetBlob, loadLibraryAssets, type LibraryAsset } from "./library-assets.js";
 import { SendToProjectDialog } from "./send-to-project-dialog.js";
 import { useAgentModels, type AgentModelCatalogStatus } from "./model-selector.js";
+import { clampReasoningLevel } from "../shared/reasoning.js";
 import { CanvasChipSelect, type CanvasChipNote } from "./canvas-chip-select.js";
 import { settingsHash } from "./routes.js";
-import { useWorkspaceAssetUrl } from "./use-workspace-asset-url.js";
+import { useCanvasAssetSources, useWorkspaceAssetUrl } from "./use-workspace-asset-url.js";
+import { canvasNodeTitle } from "../shared/canvas-assets.js";
+import type { CanvasAssetCatalogEntry } from "../shared/canvas-assets.js";
 import { prepareVideoReferenceFile, readMediaFileDuration } from "./video-reference-files.js";
 import { findAssetCanvasCoverSource, type AssetCanvasCoverSource } from "../shared/asset-canvas-cover.js";
 import { ModelPreview } from "./model-preview.js";
 import { LibraryAssetPicker } from "./node-workbench.js";
 import { AssetDialogShell, AssetMedia, type AssetMediaType } from "./asset-gallery.js";
-import { DEFAULT_IMAGE_NODE_CONFIG, DEFAULT_MODEL_3D_CONFIG, DEFAULT_ANIMATION_ACTION_IDS, DEFAULT_CHARACTER_HEIGHT_METERS, DEFAULT_MODEL_3D, DEFAULT_VIDEO_NODE_CONFIG, MAX_ANIMATION_ACTIONS, MODEL_3D_MAX_REFERENCE_IMAGES, buildModel3DToolRequest, normalizeModel3DConfig, resolveModel3D } from "../shared/generation-config.js";
-import { mergeCanvasDocument } from "../shared/design-boards.js";
-import { DesignDocumentNode, type CanvasDesignDocuments, type DocumentNodeRuntime } from "./design-document-node.js";
-import { generateDesignText } from "./game-design-api.js";
+import { DEFAULT_IMAGE_NODE_CONFIG, DEFAULT_MODEL_3D_CONFIG, DEFAULT_ANIMATION_ACTION_IDS, DEFAULT_CHARACTER_HEIGHT_METERS, DEFAULT_VIDEO_NODE_CONFIG, MAX_ANIMATION_ACTIONS, MODEL_3D_MAX_REFERENCE_IMAGES, normalizeModel3DConfig, resolveModel3D, resolveModel3DConnection } from "../shared/generation-config.js";
+import { MODEL3D_CONNECTION_ID, remeshPolycount } from "../shared/model3d-operations.js";
+import { mergeCanvasDocument } from "../shared/canvas-workspace.js";
+import { CanvasDocumentNode, ExpandedCanvasDocument, type CanvasDocuments, type DocumentNodeRuntime } from "./canvas-document-node.js";
+import { CanvasNodeLabel, type CanvasNodeDetails } from "./canvas-node-label.js";
+import { exportCanvasAsset, generateCanvasText } from "./canvas-api.js";
+import type { CanvasBoardStorage } from "./canvas-board-storage.js";
+import { CanvasNotice } from "./canvas-notice.js";
+import { useDesktopClosing } from "./desktop-close-guard.js";
+import { isDesktopClosing } from "./desktop-save.js";
 import { CanvasTextarea, CanvasTextComposer } from "./canvas-text-composer.js";
-import "@xyflow/react/dist/style.css";
+import { VideoReferencePrompt } from "./video-reference-prompt.js";
+import { resolveVideoMentions, sameVideoReference, videoReferenceAliases, videoReferenceAspectRatios, videoReferenceLimit, videoReferenceMode } from "../shared/video-references.js";
+import { CanvasNodeReferenceStrip, CanvasReferenceThumbnail, type CanvasNodeReferencesRuntime } from "./canvas-node-references.js";
 
 const ASSET_EDGE_PREFIX = "asset:";
 const OUTPUT_HANDLE = "out";
-const STORY_ASSET_ACCEPT = "image/png,image/jpeg,image/webp,video/mp4,video/quicktime,video/webm,audio/mpeg,audio/wav,.mov,.mp3,.wav";
+const STORY_ASSET_ACCEPT = "image/png,image/jpeg,image/svg+xml,image/webp,video/mp4,video/quicktime,video/webm,audio/mpeg,audio/wav,.svg,.mov,.mp3,.wav";
 const MEDIA_NODE_MAX_WIDTH = 440;
 const MEDIA_NODE_MIN_WIDTH = 300;
 const MEDIA_NODE_MAX_HEIGHT = 360;
 const MEDIA_NODE_MIN_HEIGHT = 200;
-const IMAGE_REFERENCE_LIMIT = 14;
-type CanvasNodeCreationAction = { kind: "node"; type: Exclude<AssetCanvasNodeType, "asset">; documentId?: string };
+type CanvasNodeCreationAction = { kind: "node"; type: Exclude<AssetCanvasNodeType, "asset">; documentId?: string; tableId?: string };
 interface CanvasNodeCreationLeaf {
   label: string;
   description: string;
@@ -153,14 +167,21 @@ function isCanvasNodeCreationLeaf(item: CanvasNodeCreationItem): item is CanvasN
   return "action" in item;
 }
 
-function canvasCreationGroups(documents?: CanvasDesignDocuments): CanvasNodeCreationGroup[] {
-  if (!documents) return CANVAS_NODE_CREATION_GROUPS;
+function canvasCreationGroups(documents: CanvasDocuments, tables: CanvasTables): CanvasNodeCreationGroup[] {
   const items: CanvasNodeCreationItem[] = [{ label: "Document", description: "Markdown document", icon: FileText, action: { kind: "node", type: "document" } }];
   if (documents.documents.length) items.push({ label: "Existing document", description: "Add a document reference", icon: FileText, children: documents.documents.map((document) => ({ label: document.title || "Untitled document", description: "Markdown document", icon: FileText, action: { kind: "node", type: "document", documentId: document.id } })) });
-  return [{ label: "Design", items }, ...CANVAS_NODE_CREATION_GROUPS];
+  items.push({ label: "Table", description: "Editable game data", icon: FileText, action: { kind: "node", type: "table" } });
+  const existingTables = [...tables.storage.sessions.values()].filter((session) => !session.issue);
+  if (existingTables.length) items.push({ label: "Existing table", description: "Add a shared table reference", icon: FileText, children: existingTables.map(({ local: table }) => ({ label: table.title || "Untitled table", description: "Shared table", icon: FileText, action: { kind: "node", type: "table", tableId: table.id } })) });
+  return [{ label: "Documents", items }, ...CANVAS_NODE_CREATION_GROUPS];
 }
 
 type AssetCanvasFlowData = {
+  resizeRuntime?: CanvasNodeResizeRuntime;
+  nodeDetails?: CanvasNodeDetails;
+  panelOpen?: boolean;
+  tableId?: string;
+  tableRuntime?: TableNodeRuntime;
   documentId?: string;
   documentRuntime?: DocumentNodeRuntime;
   prompt?: string;
@@ -168,6 +189,7 @@ type AssetCanvasFlowData = {
   text?: string;
   instruction?: string;
   textModel?: AgentModelRef;
+  reasoningLevel?: AgentReasoningLevel;
   model?: ImageModelRef;
   resolution?: ImageResolution;
   aspectRatio?: ImageAspectRatio;
@@ -177,21 +199,31 @@ type AssetCanvasFlowData = {
   duration?: number;
   images?: AssetCanvasReference[];
   references?: AssetCanvasReference[];
+  referenceMode?: "frame" | "reference";
+  referenceMentions?: Record<string, AssetCanvasReference>;
   assetId?: string;
   mediaType?: "image" | "video" | "audio" | "model";
   model3DConfig?: Model3DGenerationConfig;
   heightMeters?: number;
-  actionIds?: number[];
+  actionIds?: Model3DActionId[];
+  animationModel?: ModelRef;
+  model3DOperation?: Exclude<Model3DOperation, "animate">;
+  model3DSource?: AssetCanvasReference;
+  model3DOptions?: Model3DOptions;
   contentType?: string;
   assetDuration?: number;
+  /** Width / height of the output media, known before it loads. */
+  assetAspectRatio?: number;
   name?: string;
+  assetOrigin?: "Project" | "Library";
+  assetError?: string;
   imageRuntime?: ImageNodeRuntime;
   videoRuntime?: VideoNodeRuntime;
   model3DRuntime?: Model3DNodeRuntime;
   animateRuntime?: Animate3DNodeRuntime;
   textRuntime?: TextNodeRuntime;
 };
-type AssetCanvasFlowNode = Node<AssetCanvasFlowData, AssetCanvasNodeType>;
+type AssetCanvasFlowNode = Node<AssetCanvasFlowData, AssetCanvasNodeType> & { title?: string; description?: string };
 
 interface MediaNodeRuntime {
   generating: boolean;
@@ -204,15 +236,16 @@ interface MediaNodeRuntime {
   onDisconnectPrompt?: () => void;
 }
 
-interface TextNodeRuntime {
+interface TextNodeRuntime extends CanvasNodeReferencesRuntime {
   models: AgentModel[];
   modelStatus: AgentModelCatalogStatus;
   defaultModel?: AgentModelRef;
+  defaultReasoningLevel?: AgentReasoningLevel;
   generating: boolean;
   busy: boolean;
   error?: string;
   onChange: (data: AssetCanvasFlowData) => void;
-  onGenerate: () => void;
+  onGenerate: (model: AgentModelRef, reasoningLevel: AgentReasoningLevel) => void;
 }
 
 interface ReferenceMediaNodeRuntime extends MediaNodeRuntime {
@@ -223,6 +256,7 @@ interface ReferenceMediaNodeRuntime extends MediaNodeRuntime {
   addLabel: string;
   /** Names each reference position (e.g. 3D views); the strip then shows every position as a labelled slot. */
   slotLabels?: readonly string[];
+  showEmptySlots?: boolean;
   onRemoveReference: (index: number) => void;
   /** Absent when references can only be connected, not uploaded. */
   onUploadReferences?: (files: File[]) => void;
@@ -230,6 +264,8 @@ interface ReferenceMediaNodeRuntime extends MediaNodeRuntime {
   libraryImages?: LibraryAsset[];
   onAddLibraryReference?: (asset: LibraryAsset) => void;
 }
+
+type ReferenceStripRuntime = Omit<ReferenceMediaNodeRuntime, "generating" | "error" | "onChange" | "onGenerate" | "onCancel">;
 
 interface ImageNodeRuntime extends ReferenceMediaNodeRuntime {
   models: ImageModel[];
@@ -242,16 +278,13 @@ interface VideoNodeRuntime extends ReferenceMediaNodeRuntime {
 }
 
 interface Model3DNodeRuntime extends ReferenceMediaNodeRuntime {
+  sourceRuntime?: ReferenceStripRuntime;
   models: Model3DModel[];
   providers: MediaProviderStatus[];
 }
 
 interface Animate3DNodeRuntime extends ReferenceMediaNodeRuntime {
-  actions: Model3DAnimationAction[];
-  actionsStatus: "loading" | "ready" | "error";
-  /** Whether a 3D provider is set up; without one the action library is empty. */
-  configured: boolean;
-  onReloadActions: () => void;
+  models: Model3DModel[];
 }
 
 interface MediaReferenceView {
@@ -264,7 +297,8 @@ interface MediaReferenceView {
 }
 
 const STORY_NODE_TYPES: NodeTypes = {
-  document: DesignDocumentNode,
+  table: CanvasTableNode,
+  document: CanvasDocumentNode,
   text: TextNode,
   image: ImageNode,
   video: VideoNode,
@@ -273,33 +307,36 @@ const STORY_NODE_TYPES: NodeTypes = {
   asset: AssetNode,
 };
 
-export interface CanvasBoardStorage {
-  key: string;
-  load(): Promise<AssetCanvasDocument>;
-  save(canvas: AssetCanvasDocument): Promise<AssetCanvasDocument>;
-  refresh?(canvas: AssetCanvasDocument): Promise<AssetCanvasDocument | undefined>;
-  jobs(): Promise<ToolJob[]>;
-  start(nodeId: string, toolId: "generate-image" | "generate-video" | "image-to-3d" | "animate-3d", input: RunImageToolRequest | RunVideoToolRequest | Run3DToolRequest | RunAnimate3DToolRequest): Promise<ToolJob>;
-  cancel(jobId: string): Promise<ToolJob>;
-}
-export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled, workspaceRevision = 0, chatOnRight = false, chatCollapsed = false, onHome, onToggleChat, storage, designDocuments, overlay, onSaveReady, onStatusChange }: {
+export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled, hidden = false, storage, documents, tables, assets: localAssets, conflicted = false, overlay, onSaveReady, onSyncReady, onResolveReady, onStatusChange, onSelectionChange, expandedDocument }: {
   project: ProjectState;
   initialNodeId?: string;
   onInitialNodeHandled?: () => void;
-  workspaceRevision?: number;
-  chatOnRight?: boolean;
-  chatCollapsed?: boolean;
-  onHome?: () => void;
-  onToggleChat?: () => void;
-  storage?: CanvasBoardStorage;
-  designDocuments?: CanvasDesignDocuments;
+  hidden?: boolean;
+  storage: CanvasBoardStorage;
+  documents: CanvasDocuments;
+  tables: CanvasTables;
+  assets: CanvasAssetCatalogEntry[];
+  conflicted?: boolean;
   overlay?: ReactNode;
   onSaveReady?: (save: (() => Promise<void>) | undefined) => void;
-  onStatusChange?: (status: "loading" | "saved" | "saving" | "error") => void;
+  onSyncReady?: (sync: (() => Promise<void>) | undefined) => void;
+  onResolveReady?: (resolve: ((version: "local" | "remote") => Promise<void>) | undefined) => void;
+  onStatusChange?: (status: "loading" | "saved" | "saving" | "error" | "sync-error" | "load-error") => void;
+  onSelectionChange?: (nodes: AssetCanvasNode[]) => void;
+  expandedDocument?: { id: string; nodeId?: string; busy?: boolean; onClose(): void };
 }) {
   const projectId = project.id;
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
-  const [notice, setNotice] = useState<string>();
+  const [notice, setNotice] = useState<{ kind: "save" | "action"; message: string }>();
+  const [loadError, setLoadError] = useState<string>();
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const closing = useDesktopClosing();
+  const syncFailed = useRef(false);
+  const saveFailed = useRef(false);
+  const [resolving, setResolving] = useState(false);
+  const resolvingRef = useRef(false);
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [transferError, setTransferError] = useState<string>();
   // The canvas file format still requires a viewport; nothing in Asset Canvas uses it, so it is only carried through saves.
   const [viewport, setViewport] = useState({ width: 1280, height: 720 });
@@ -311,8 +348,15 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     viewport: { x: 64, y: 32, zoom: 1 },
     view: "canvas",
   });
+  const finishInitialFit = useCallback((viewport: AssetCanvasEditorLayout["viewport"]) => {
+    setEditorLayout(({ fitView: _fitView, ...current }) => ({ ...current, viewport }));
+  }, []);
   const [selectedAssetEdgeId, setSelectedAssetEdgeId] = useState<string>();
   const [canvasContextMenu, setCanvasContextMenu] = useState<CanvasContextMenuState>();
+  const [expandedTextId, setExpandedTextId] = useState<string>();
+  // A marquee arranges nodes; explicitly activating a node opens its panel.
+  const [marqueeActive, setMarqueeActive] = useState(false);
+  const [marqueeSelectedIds, setMarqueeSelectedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [copiedSelection, setCopiedSelection] = useState(lastCanvasClipboard);
   const canvasElement = useRef<HTMLDivElement>(null);
   const flowInstance = useRef<ReactFlowInstance<AssetCanvasFlowNode, Edge>>(null);
@@ -321,27 +365,29 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   const dragDepth = useRef(0);
   const [fileDropActive, setFileDropActive] = useState(false);
   const pendingImport = useRef<Promise<void> | undefined>(undefined);
-  const [libraryAssets, setLibraryAssets] = useState<LibraryAsset[]>([]);
+  const [globalAssets, setLibraryAssets] = useState<LibraryAsset[]>([]);
+  const libraryAssets = useMemo<LibraryAsset[]>(() => {
+    const assets = new Map(globalAssets.map((asset) => [asset.id, asset]));
+    for (const asset of localAssets) assets.set(asset.id, { ...assets.get(asset.libraryAssetId ?? asset.id), ...asset, assetId: asset.id });
+    return [...assets.values()];
+  }, [globalAssets, localAssets]);
+  const assetPaths = useCanvasAssetSources();
+  const [nodeDetails, setNodeDetails] = useState<{ id: string; title: string; description: string }>();
   const libraryImages = useMemo(() => libraryAssets.filter((asset) => asset.mediaType === "image"), [libraryAssets]);
 
   const [imageModels, setImageModels] = useState<ImageModel[]>([]);
+  const [globalDefaultImageModel, setDefaultImageModel] = useState<ImageModelRef>();
   const [videoModels, setVideoModels] = useState<VideoModel[]>([]);
   const [imageProviders, setImageProviders] = useState<MediaProviderStatus[]>([]);
   const [videoProviders, setVideoProviders] = useState<MediaProviderStatus[]>([]);
+  const [globalDefaultVideoModel, setDefaultVideoModel] = useState<ModelRef>();
   const [model3DModels, setModel3DModels] = useState<Model3DModel[]>([]);
   const [model3DProviders, setModel3DProviders] = useState<MediaProviderStatus[]>([]);
-  const [animationActions, setAnimationActions] = useState<{ status: "idle" | "loading" | "ready" | "error"; actions: Model3DAnimationAction[] }>({ status: "idle", actions: [] });
-  const hasAnimateNode = nodes.some((node) => node.type === "animate-3d");
-  const meshyConfigured = model3DModels.length > 0;
-
-  // The move library is only needed once an Animate node exists and a 3D provider is set up.
-  useEffect(() => {
-    if (!hasAnimateNode || !meshyConfigured || animationActions.status !== "idle") return;
-    setAnimationActions({ status: "loading", actions: [] });
-    listModel3DAnimations()
-      .then((actions) => setAnimationActions({ status: "ready", actions }))
-      .catch(() => setAnimationActions({ status: "error", actions: [] }));
-  }, [hasAnimateNode, meshyConfigured, animationActions.status]);
+  const [globalDefaultModel3D, setDefaultModel3D] = useState<ModelRef>();
+  const defaultImageModel = project.mediaModelDefaults?.image ?? globalDefaultImageModel;
+  const defaultVideoModel = project.mediaModelDefaults?.video ?? globalDefaultVideoModel;
+  const defaultModel3D = project.mediaModelDefaults?.["3d"] ?? globalDefaultModel3D;
+  const [operationModels3D, setOperationModels3D] = useState<Model3DModel[]>([]);
   const textModelCatalog = useAgentModels();
   const defaultTextModel = textModelCatalog.defaultModel ?? textModelCatalog.models[0];
   const [canvasJobs, setCanvasJobs] = useState<Record<string, ToolJob>>({});
@@ -360,7 +406,10 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   const storageRef = useRef(storage);
   storageRef.current = storage;
   const queuedCanvas = useRef<string | undefined>(undefined);
-  const saveChain = useRef(Promise.resolve());
+  // Apply each result before the next operation reads the live canvas.
+  const operationChain = useRef(Promise.resolve());
+  // A failed background read must not turn an already successful save into a failure.
+  const lastSave = useRef(Promise.resolve());
   const initialNodeRequest = useRef({ nodeId: initialNodeId, onHandled: onInitialNodeHandled });
   const editorUndoHistory = useRef<AssetCanvasDocument[]>([]);
   const editorRedoHistory = useRef<AssetCanvasDocument[]>([]);
@@ -370,20 +419,20 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   const historyTimer = useRef<number | undefined>(undefined);
   const historyGestureBase = useRef<AssetCanvasDocument | undefined>(undefined);
   const [, setHistoryRevision] = useState(0);
+  const selectedNodes = nodes.filter((node) => node.selected);
+  const selectedNodeIdsJson = JSON.stringify(selectedNodes.map((node) => node.id));
+  const selection = JSON.stringify(selectedNodes.map((node) => toAssetCanvasNode(node, model3DModels)));
+  useEffect(() => { onSelectionChange?.(JSON.parse(selection) as AssetCanvasNode[]); }, [selection, onSelectionChange]);
 
   useEffect(() => {
     let disposed = false;
     setPhase("loading");
-    window.clearTimeout(historyTimer.current);
-    editorUndoHistory.current = [];
-    editorRedoHistory.current = [];
-    historyObserved.current = undefined;
-    historyObservedJson.current = undefined;
-    historyPendingBase.current = undefined;
-    historyGestureBase.current = undefined;
+    setLoadError(undefined);
+    onStatusChange?.("loading");
+    resetHistory();
     setCanvasContextMenu(undefined);
-    const emptyCatalog = { models: [], providers: [] };
-    void Promise.all([storageRef.current ? storageRef.current.load() : getAssetCanvas(projectId), loadLibraryAssets(), listImageModelCatalog().catch(() => emptyCatalog), listVideoModelCatalog().catch(() => emptyCatalog), listModel3DCatalog().catch(() => emptyCatalog)]).then(([story, assets, imageCatalog, videoCatalog, model3DCatalog]) => {
+    const emptyCatalog = { models: [], providers: [], defaultModel: undefined };
+    void Promise.all([storage.load(), loadLibraryAssets().catch(() => []), listImageModelCatalog().catch(() => emptyCatalog), listVideoModelCatalog().catch(() => emptyCatalog), listModel3DCatalog().catch(() => emptyCatalog), listModel3DOperations().catch(() => [])]).then(([story, assets, imageCatalog, videoCatalog, model3DCatalog, operationModels]) => {
       const models = imageCatalog.models;
       const loadedVideoModels = videoCatalog.models;
       if (disposed) return;
@@ -396,34 +445,74 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
       if (request.nodeId) {
         request.onHandled?.();
       }
-      const loadedLayout = story.editorLayout ?? { version: 1 as const, nodes: {}, viewport: { x: 64, y: 32, zoom: 1 }, view: "canvas" as const };
-      setEditorLayout(loadedLayout);
+      setEditorLayout(story.editorLayout);
       setEdges(story.edges);
-      queuedCanvas.current = storageRef.current ? undefined : JSON.stringify(story);
+      queuedCanvas.current = undefined;
+      lastSave.current = Promise.resolve();
+      syncFailed.current = false;
+      saveFailed.current = false;
       setLibraryAssets(assets);
       setImageModels(models);
+      setDefaultImageModel(imageCatalog.defaultModel);
       setVideoModels(loadedVideoModels);
       setImageProviders(imageCatalog.providers);
       setVideoProviders(videoCatalog.providers);
+      setDefaultVideoModel(videoCatalog.defaultModel);
       setModel3DModels(model3DCatalog.models);
+      setOperationModels3D(operationModels);
       setModel3DProviders(model3DCatalog.providers);
+      setDefaultModel3D(model3DCatalog.defaultModel);
+      setNotice(undefined);
       setPhase("ready");
       onStatusChange?.("saved");
     }).catch((error) => {
       if (disposed) return;
-      setNotice(errorMessage(error));
+      setLoadError(errorMessage(error));
       setPhase("error");
+      onStatusChange?.("load-error");
     });
     return () => { disposed = true; };
-  }, [projectId, workspaceRevision, storage?.key]);
+  }, [projectId, storage, loadAttempt]);
 
   useEffect(() => {
-    if (phase !== "ready") return;
+    if (closing) return;
+    let active = true;
+    let revision = 0;
+    let model3DRevision = 0;
+    const refresh3D = () => {
+      const current = ++model3DRevision;
+      void Promise.all([listModel3DCatalog(), listModel3DOperations()]).then(([catalog, operationModels]) => {
+        if (!active || current !== model3DRevision) return;
+        setOperationModels3D(operationModels);
+        setModel3DModels(catalog.models); setModel3DProviders(catalog.providers); setDefaultModel3D(catalog.defaultModel);
+      }).catch(() => undefined);
+    };
+    const refresh = () => {
+      const current = ++revision;
+      void listImageModelCatalog().then((catalog) => {
+        if (!active || current !== revision) return;
+        setImageModels(catalog.models);
+        setDefaultImageModel(catalog.defaultModel);
+        setImageProviders(catalog.providers);
+      }).catch(() => undefined);
+      void listVideoModelCatalog().then((catalog) => {
+        if (!active || current !== revision) return;
+        setVideoModels(catalog.models); setVideoProviders(catalog.providers); setDefaultVideoModel(catalog.defaultModel);
+      }).catch(() => undefined);
+      refresh3D();
+    };
+    window.addEventListener(MODELS_CHANGED_EVENT, refresh);
+    const timer = setInterval(refresh3D, 30_000);
+    return () => { active = false; clearInterval(timer); window.removeEventListener(MODELS_CHANGED_EVENT, refresh); };
+  }, [projectId, closing]);
+
+  useEffect(() => {
+    if (phase !== "ready" || closing) return;
     let stopped = false;
     let timer: number | undefined;
     const poll = async () => {
       try {
-        const jobs = storageRef.current ? await storageRef.current.jobs() : (await listToolJobs()).filter((job) => job.context?.projectId === projectId);
+        const jobs = await storageRef.current.jobs();
         if (stopped) return;
         const latestJobs = new Map<string, ToolJob>();
         for (const job of jobs) {
@@ -433,21 +522,12 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
         setCanvasJobs(Object.fromEntries(latestJobs));
         const completedAssetIds: string[] = [];
         let completedCover: AssetCanvasCoverSource | undefined;
-        // Jobs arrive newest first; only the latest job per node may set its asset, or older results overwrite newer ones on reopen.
+        // Jobs arrive newest first; the daemon persists outputs to the current board.
         for (const job of latestJobs.values()) {
           const nodeId = job.context?.nodeId;
           const file = job.run?.files[0];
           if (job.status !== "succeeded" || !nodeId || !file?.assetId || hydratedJobRuns.current.has(job.id)) continue;
           hydratedJobRuns.current.add(job.id);
-          const hydrate = (canvas: AssetCanvasDocument): AssetCanvasDocument => ({ ...canvas, nodes: canvas.nodes.map((node) => node.id === nodeId && (node.type === "image" || node.type === "video" || node.type === "model-3d" || node.type === "animate-3d") ? { ...node, data: { ...node.data, assetId: file.assetId } } as AssetCanvasNode : node) });
-          if (storageRef.current) {
-            editorUndoHistory.current = editorUndoHistory.current.map(hydrate);
-            editorRedoHistory.current = editorRedoHistory.current.map(hydrate);
-            if (historyPendingBase.current) historyPendingBase.current = hydrate(historyPendingBase.current);
-            if (historyGestureBase.current) historyGestureBase.current = hydrate(historyGestureBase.current);
-            if (historyObserved.current) observeHistoryDocument(hydrate(historyObserved.current));
-          }
-          setNodes((current) => current.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, assetId: file.assetId } } : node));
           completedAssetIds.push(file.assetId);
           if (!completedCover) {
             const mediaType = file.mediaType.startsWith("image/") ? "image" : file.mediaType.startsWith("video/") ? "video" : undefined;
@@ -456,10 +536,12 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
         }
         if (completedAssetIds.length) {
           const assets = await loadLibraryAssets();
-          if (completedCover && !stopped && !storageRef.current) {
+          if (completedCover && !stopped && project.type === "asset-canvas") {
             try {
-              const cover = await projectCoverBlob(completedCover, assets);
-              if (!stopped && cover) await setProjectCover(projectId, cover);
+              if ((await getProjectCoverState(projectId)).mode === "auto") {
+                const cover = await projectCoverBlob(completedCover, assets);
+                if (!stopped && cover) await setProjectCover(projectId, cover, "auto");
+              }
             } catch { /* Cover generation is best-effort. */ }
           }
           if (!stopped) setLibraryAssets(assets);
@@ -469,34 +551,45 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     };
     void poll();
     return () => { stopped = true; window.clearTimeout(timer); };
-  }, [phase, projectId]);
+  }, [phase, projectId, project.type, closing]);
 
   const document = useMemo(
     () => assetCanvasDocument(viewport, nodes, edges, {
       ...editorLayout,
       nodes: {
-        ...Object.fromEntries(nodes.map((node) => [node.id, node.position])),
+        ...Object.fromEntries(nodes.map((node) => [node.id, canvasNodeLayout(node)])),
       },
       view: "canvas",
-    }),
-    [edges, editorLayout, nodes, viewport],
+    }, model3DModels),
+    [edges, editorLayout, nodes, viewport, model3DModels],
   );
   latestCanvas.current = document;
 
   useEffect(() => {
-    if (storage || phase !== "ready" || !document || libraryAssets.length === 0) return;
+    if (project.type !== "asset-canvas" || phase !== "ready" || !document || libraryAssets.length === 0) return;
     let disposed = false;
     void (async () => {
       const source = findAssetCanvasCoverSource(document);
       if (!source || await getProjectCover(projectId)) return;
-      const cover = await projectCoverBlob(source, libraryAssets);
-      if (!disposed && cover && !(await getProjectCover(projectId))) await setProjectCover(projectId, cover);
+      const cover = await projectCoverBlob(source, libraryAssets, assetBlob);
+      if (!disposed && cover && !(await getProjectCover(projectId))) await setProjectCover(projectId, cover, "auto");
     })().catch(() => {});
     return () => { disposed = true; };
-  }, [document, libraryAssets, phase, projectId]);
+  }, [document, libraryAssets, phase, projectId, project.type]);
 
   function updateHistoryControls(): void {
     setHistoryRevision((revision) => revision + 1);
+  }
+
+  // Whole-board snapshots must not restore a version from before an external edit.
+  function resetHistory(): void {
+    window.clearTimeout(historyTimer.current);
+    editorUndoHistory.current = [];
+    editorRedoHistory.current = [];
+    historyObserved.current = undefined;
+    historyObservedJson.current = undefined;
+    historyPendingBase.current = undefined;
+    historyGestureBase.current = undefined;
   }
 
   function pushUndoSnapshot(snapshot: AssetCanvasDocument): void {
@@ -516,7 +609,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
 
   function observeHistoryDocument(next: AssetCanvasDocument): void {
     historyObserved.current = structuredClone(next);
-    historyObservedJson.current = JSON.stringify(next);
+    historyObservedJson.current = canvasHistoryKey(next);
   }
 
   function undoEditorChange(): boolean {
@@ -556,7 +649,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
       const base = historyGestureBase.current;
       const current = latestCanvas.current;
       historyGestureBase.current = undefined;
-      if (!base || !current || JSON.stringify(base) === JSON.stringify(current)) return;
+      if (!base || !current || canvasHistoryKey(base) === canvasHistoryKey(current)) return;
       pushUndoSnapshot(base);
       editorRedoHistory.current = [];
       observeHistoryDocument(current);
@@ -566,7 +659,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
 
   useEffect(() => {
     if (phase !== "ready" || !document) return;
-    const serialized = JSON.stringify(document);
+    const serialized = canvasHistoryKey(document);
     if (!historyObserved.current || historyObservedJson.current === undefined) {
       observeHistoryDocument(document);
       updateHistoryControls();
@@ -592,7 +685,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
       if (event.isComposing || event.keyCode === 229 || isTextEntry(event.target) || eventWithin(event, ".nokey") || !canvasElement.current?.contains(event.target as globalThis.Node)) return;
       if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "d") {
         event.preventDefault();
-        const selected = nodes.filter((node) => node.selected).map(toAssetCanvasNode);
+        const selected = nodes.filter((node) => node.selected).map((node) => toAssetCanvasNode(node, model3DModels));
         if (selected.length) pasteSelection(createCanvasClipboard(projectId, selected, document.edges), { x: Math.min(...selected.map((node) => node.position.x)) + 40, y: Math.min(...selected.map((node) => node.position.y)) + 40 });
         return;
       }
@@ -604,7 +697,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [document]);
+  }, [document, model3DModels]);
   const assetEdges = useMemo(() => nodes.flatMap((node): Edge[] => {
     const derived: Edge[] = [];
     if (node.type === "image" || node.type === "model-3d" || node.type === "animate-3d") derived.push(...(node.data.images ?? []).flatMap((image) => image.type === "node" ? [{
@@ -615,15 +708,21 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
       selected: selectedAssetEdgeId === assetEdgeId("image", node.id, image.nodeId),
       data: { relation: "media-image", referenceId: image.nodeId },
     }] : []));
-    if (node.type === "video") derived.push(...(node.data.references ?? []).flatMap((reference) => reference.type === "node" ? [{
+    if (node.type === "model-3d" && node.data.model3DSource?.type === "node") derived.push({
+      id: assetEdgeId("model", node.id, node.data.model3DSource.nodeId), source: node.data.model3DSource.nodeId, target: node.id,
+      sourceHandle: OUTPUT_HANDLE, selected: selectedAssetEdgeId === assetEdgeId("model", node.id, node.data.model3DSource.nodeId),
+      data: { relation: "media-model", referenceId: node.data.model3DSource.nodeId },
+    });
+    if (node.type === "video" || node.type === "text" || node.type === "document") derived.push(...(node.data.references ?? []).flatMap((reference) => reference.type === "node" ? [{
       id: assetEdgeId("reference", node.id, reference.nodeId),
       source: reference.nodeId,
       target: node.id,
       sourceHandle: OUTPUT_HANDLE,
+      ...((node.type === "text" || node.type === "document") ? { targetHandle: "references" } : {}),
       selected: selectedAssetEdgeId === assetEdgeId("reference", node.id, reference.nodeId),
-      data: { relation: "video-reference", referenceId: reference.nodeId },
+      data: { relation: node.type === "video" ? "video-reference" : "text-reference", referenceId: reference.nodeId },
     }] : []));
-    if ((node.type === "image" || node.type === "video") && node.data.promptSource) derived.push({
+    if ((node.type === "image" || node.type === "video" || node.type === "model-3d") && node.data.promptSource) derived.push({
       id: assetEdgeId("prompt", node.id, node.data.promptSource.nodeId),
       source: node.data.promptSource.nodeId,
       target: node.id,
@@ -635,75 +734,140 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   }), [nodes, selectedAssetEdgeId]);
 
   const save = useCallback((story: AssetCanvasDocument): Promise<void> => {
+    if (resolvingRef.current) return operationChain.current;
     const serialized = JSON.stringify(story);
-    if (serialized === queuedCanvas.current) return saveChain.current;
+    if (serialized === queuedCanvas.current) return lastSave.current;
     queuedCanvas.current = serialized;
     onStatusChange?.("saving");
-    const operation = saveChain.current
+    const operation = operationChain.current
       .catch(() => undefined)
       .then(async () => {
-        const adapter = storageRef.current;
-        if (!adapter) { await updateAssetCanvas(projectId, story); return; }
         const submitted = latestCanvas.current ?? story;
-        const saved = await adapter.save(submitted);
-        reconcileCanvas(submitted, saved);
+        const saved = await storage.save(submitted);
+        if (mounted.current) reconcileCanvas(submitted, saved);
       });
-    saveChain.current = operation;
+    operationChain.current = operation;
+    lastSave.current = operation;
     void operation.then(
-      () => { setNotice(undefined); onStatusChange?.("saved"); },
+      () => { if (mounted.current) { saveFailed.current = false; setNotice((current) => current?.kind === "save" ? undefined : current); onStatusChange?.(syncFailed.current ? "sync-error" : "saved"); } },
       (error) => {
+        if (!mounted.current) return;
+        saveFailed.current = true;
         if (queuedCanvas.current === serialized) queuedCanvas.current = undefined;
-        setNotice(`Could not save canvas: ${errorMessage(error)}`);
+        setNotice({ kind: "save", message: `Could not save canvas: ${errorMessage(error)}` });
         onStatusChange?.("error");
       },
     );
     return operation;
-  }, [projectId, onStatusChange]);
+  }, [storage, onStatusChange]);
 
   const nodesRef = useRef(nodes); nodesRef.current = nodes;
+  useEffect(() => {
+    const selected = new Set<string>(JSON.parse(selectedNodeIdsJson));
+    setMarqueeSelectedIds((current) => {
+      if (!current.size) return current;
+      const next = new Set([...current].filter((id) => selected.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [selectedNodeIdsJson]);
   const imageModelsRef = useRef(imageModels); imageModelsRef.current = imageModels;
   const videoModelsRef = useRef(videoModels); videoModelsRef.current = videoModels;
   function reconcileCanvas(submitted: AssetCanvasDocument, saved: AssetCanvasDocument) {
     const current = latestCanvas.current ?? submitted;
-    const merged = mergeCanvasDocument(submitted, current, saved);
-    if (!merged) throw new Error("The canvas changed while saving. Review the current board before saving again.");
+    const merged = storage.reconcile(submitted, current, saved);
     if (JSON.stringify(current) === JSON.stringify(merged)) return;
-    const updateSnapshots = (snapshots: AssetCanvasDocument[]) => snapshots.flatMap((snapshot) => { const updated = mergeCanvasDocument(submitted, snapshot, saved); return updated ? [updated] : []; });
-    editorUndoHistory.current = updateSnapshots(editorUndoHistory.current);
-    editorRedoHistory.current = updateSnapshots(editorRedoHistory.current);
-    if (historyPendingBase.current) historyPendingBase.current = mergeCanvasDocument(submitted, historyPendingBase.current, saved);
+    if (canvasHistoryKey(current) !== canvasHistoryKey(merged)) resetHistory();
     if (historyGestureBase.current) historyGestureBase.current = mergeCanvasDocument(submitted, historyGestureBase.current, saved);
     const selected = new Set(nodesRef.current.filter((node) => node.selected).map((node) => node.id));
     latestCanvas.current = merged;
     observeHistoryDocument(merged);
     setNodes(merged.nodes.map((node) => ({ ...toFlowNode(node, imageModelsRef.current, videoModelsRef.current), selected: selected.has(node.id) })));
     setEdges(merged.edges); setViewport(merged.viewport); setEditorLayout(merged.editorLayout);
+    updateHistoryControls();
   }
   const flush = useCallback(async () => {
     await pendingImport.current;
-    if (latestCanvas.current && phase === "ready") await save(latestCanvas.current);
+    await operationChain.current.catch(() => {});
+    // A close can precede React Flow's delayed onMoveEnd callback.
+    const current = latestCanvas.current;
+    const viewport = flowInstance.current?.getViewport();
+    if (current && viewport && phase === "ready") {
+      const editorLayout = { ...current.editorLayout, viewport };
+      latestCanvas.current = { ...current, editorLayout };
+      setEditorLayout(editorLayout);
+    }
+    while (latestCanvas.current && phase === "ready") {
+      const submitted = latestCanvas.current;
+      await save(submitted);
+      if (JSON.stringify(latestCanvas.current) === JSON.stringify(submitted)) break;
+    }
   }, [save, phase]);
   useEffect(() => { onSaveReady?.(flush); return () => onSaveReady?.(undefined); }, [onSaveReady, flush]);
+  const resolveConflict = useCallback(async (version: "local" | "remote") => {
+    resolvingRef.current = true;
+    setResolving(true);
+    try {
+      await operationChain.current.catch(() => {});
+      const submitted = latestCanvas.current;
+      if (!submitted) return;
+      const operation = storage.resolveConflict(version, submitted);
+      operationChain.current = operation.then(() => {}, () => {});
+      const selected = await operation;
+      if (version === "local") reconcileCanvas(submitted, selected);
+      else {
+        resetHistory();
+        latestCanvas.current = selected; observeHistoryDocument(selected); applyEditorCanvas(selected); updateHistoryControls();
+      }
+      queuedCanvas.current = JSON.stringify(selected);
+      lastSave.current = Promise.resolve();
+      saveFailed.current = false;
+      syncFailed.current = false;
+      setNotice(undefined);
+      onStatusChange?.("saved");
+    } finally { resolvingRef.current = false; setResolving(false); }
+  }, [storage, onStatusChange]);
+  useEffect(() => { onResolveReady?.(phase === "ready" ? resolveConflict : undefined); return () => onResolveReady?.(undefined); }, [onResolveReady, resolveConflict, phase]);
+  const sync = useCallback(() => {
+    if (resolvingRef.current || isDesktopClosing()) return Promise.resolve();
+    const operation = operationChain.current.catch(() => {}).then(async () => {
+      if (!mounted.current || !latestCanvas.current || isDesktopClosing()) return;
+      const submitted = latestCanvas.current;
+      const wasSaved = queuedCanvas.current === JSON.stringify(submitted);
+      const refreshed = await storage.refresh(submitted);
+      if (!mounted.current) return;
+      if (refreshed) {
+        queuedCanvas.current = wasSaved ? JSON.stringify(refreshed) : undefined;
+        reconcileCanvas(submitted, refreshed);
+      }
+      syncFailed.current = false;
+      if (saveFailed.current) onStatusChange?.("error");
+      else if (queuedCanvas.current === JSON.stringify(latestCanvas.current)) onStatusChange?.("saved");
+    });
+    operationChain.current = operation;
+    void operation.catch((cause) => {
+      if (!mounted.current || isDesktopClosing()) return;
+      syncFailed.current = true;
+      if (!saveFailed.current) onStatusChange?.("sync-error");
+    });
+    return operation;
+  }, [storage, onStatusChange]);
+  useEffect(() => { onSyncReady?.(sync); return () => onSyncReady?.(undefined); }, [onSyncReady, sync]);
   useEffect(() => {
-    if (!storage?.refresh || phase !== "ready") return;
-    let stopped = false;
+    if (phase !== "ready" || conflicted || resolving || closing) return;
+    let pending = false;
     const timer = window.setInterval(() => {
-      const operation = saveChain.current.catch(() => {}).then(async () => {
-        if (stopped || !latestCanvas.current) return;
-        const submitted = latestCanvas.current, refreshed = await storage.refresh!(submitted);
-        if (!stopped && refreshed) reconcileCanvas(submitted, refreshed);
-      });
-      saveChain.current = operation;
-      void operation.catch((cause) => { if (!stopped) { setNotice(errorMessage(cause)); onStatusChange?.("error"); } });
+      if (pending) return;
+      pending = true;
+      void sync().catch(() => {}).finally(() => { pending = false; });
     }, 2500);
-    return () => { stopped = true; window.clearInterval(timer); };
-  }, [storage?.key, phase]);
+    return () => window.clearInterval(timer);
+  }, [sync, phase, conflicted, resolving, closing]);
 
   useEffect(() => {
-    if (phase !== "ready" || !document) return;
-    const timeout = window.setTimeout(() => { void save(document).catch(() => {}); }, 350);
+    if (phase !== "ready" || !document || resolving || closing) return;
+    const timeout = window.setTimeout(() => { if (!isDesktopClosing()) void save(document).catch(() => {}); }, 350);
     return () => window.clearTimeout(timeout);
-  }, [document, phase, save]);
+  }, [document, phase, save, resolving, closing]);
 
   useEffect(() => () => {
     const story = latestCanvas.current;
@@ -727,10 +891,11 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
           if (relation === "media-image" && node.id === edge.target && (node.type === "image" || node.type === "model-3d" || node.type === "animate-3d")) {
             return { ...node, data: { ...node.data, images: (node.data.images ?? []).filter((image) => image.type !== "node" || image.nodeId !== referenceId) } };
           }
-          if (relation === "video-reference" && node.id === edge.target && node.type === "video") {
+          if (node.id === edge.target && ((relation === "video-reference" && node.type === "video") || (relation === "text-reference" && (node.type === "text" || node.type === "document")))) {
             return { ...node, data: { ...node.data, references: (node.data.references ?? []).filter((reference) => reference.type !== "node" || reference.nodeId !== referenceId) } };
           }
-          if (relation === "media-prompt" && node.id === edge.target && (node.type === "image" || node.type === "video")) {
+          if (relation === "media-model" && node.id === edge.target && node.type === "model-3d") return { ...node, data: { ...node.data, model3DSource: undefined } };
+          if (relation === "media-prompt" && node.id === edge.target && (node.type === "image" || node.type === "video" || node.type === "model-3d")) {
             return { ...node, data: { ...node.data, promptSource: undefined } };
           }
           return node;
@@ -747,15 +912,15 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     const target = nodes.find((node) => node.id === connection.target);
     const source = nodes.find((node) => node.id === connection.source);
     if (!source || !target) return;
-    const relation = connectionRelation(source, target, connection.sourceHandle, nodes, libraryAssets, imageModels);
-    if (relation === "document-image" && target.data.documentId && source.data.assetId) {
-      designDocuments?.insertImage(target.data.documentId, source.data.assetId);
-      return;
-    }
+    const relation = connectionRelation(source, target, connection.sourceHandle, nodes, libraryAssets, imageModels, model3DModels);
     if (relation === "image-reference" && (target.type === "image" || target.type === "model-3d")) {
       setNodes((current) => current.map((node) => node.id === target.id && (node.type === "image" || node.type === "model-3d")
         ? { ...node, data: { ...node.data, images: [...(node.data.images ?? []), { type: "node", nodeId: source.id }] } }
         : node));
+      return;
+    }
+    if (relation === "model-reference" && target.type === "model-3d") {
+      setNodes((current) => current.map((node) => node.id === target.id ? { ...node, data: { ...node.data, model3DSource: { type: "node", nodeId: source.id } } } : node));
       return;
     }
     if (relation === "model-reference" && target.type === "animate-3d") {
@@ -765,13 +930,13 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
         : node));
       return;
     }
-    if (relation === "video-reference" && target.type === "video") {
-      setNodes((current) => current.map((node) => node.id === target.id && node.type === "video"
+    if ((relation === "video-reference" && target.type === "video") || (relation === "text-reference" && (target.type === "text" || target.type === "document"))) {
+      setNodes((current) => current.map((node) => node.id === target.id
         ? { ...node, data: { ...node.data, references: [...(node.data.references ?? []), { type: "node", nodeId: source.id }] } }
         : node));
       return;
     }
-    if (relation === "prompt" && (target.type === "image" || target.type === "video")) {
+    if (relation === "prompt" && (target.type === "image" || target.type === "video" || target.type === "model-3d")) {
       setNodes((current) => current.map((node) => node.id === target.id
         ? { ...node, data: { ...node.data, promptSource: { type: "node", nodeId: source.id } } }
         : node));
@@ -785,16 +950,16 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   const canUndo = Boolean(historyPendingBase.current || editorUndoHistory.current.length);
   const canRedo = !historyPendingBase.current && editorRedoHistory.current.length > 0;
 
-  function addNode(type: Exclude<AssetCanvasNodeType, "asset">, position: { x: number; y: number }, existingDocumentId?: string): void {
-    if (type === "document") {
-      void (existingDocumentId ? Promise.resolve(existingDocumentId) : designDocuments?.add())?.then((documentId) => {
-        if (!documentId) return;
-        setNodes((current) => [...current.map((node) => ({ ...node, selected: false })), { id: crypto.randomUUID(), type: "document", position, selected: true, data: { documentId } }]);
-      });
+  function addNode(type: Exclude<AssetCanvasNodeType, "asset">, position: { x: number; y: number }, existingResourceId?: string): void {
+    if (type === "document" || type === "table") {
+      void (existingResourceId ? Promise.resolve(existingResourceId) : type === "document" ? documents.add() : tables.add()).then((id) => {
+        if (!id || !mounted.current) return;
+        setNodes((current) => [...current.map((node) => ({ ...node, selected: false })), { id: crypto.randomUUID(), type, position, selected: true, data: type === "document" ? { documentId: id } : { tableId: id } }]);
+      }).catch((cause) => setNotice({ kind: "action", message: errorMessage(cause) }));
       return;
     }
     const created = createFlowNode(type, position, imageModels, videoModels, defaultTextModel);
-    const node = { ...applyRememberedSettings(created, rememberedSettings.current[type], { imageModels, videoModels, textModels: textModelCatalog.models }), selected: true };
+    const node = { ...applyRememberedSettings(created, rememberedSettings.current[type], { imageModels, defaultImageModel, videoModels, defaultVideoModel, model3DModels, defaultModel3D, textModels: textModelCatalog.models }), selected: true };
     setNodes((current) => [...current.map((candidate) => candidate.selected ? { ...candidate, selected: false } : candidate), node]);
   }
 
@@ -817,7 +982,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
 
   async function uploadAssetFile(file: File): Promise<LibraryAsset> {
     const mediaType = libraryUploadMediaType(file);
-    if (!mediaType) throw new Error("Upload a PNG, JPEG, WebP, MP4, MOV, WebM, MP3, or WAV file.");
+    if (!mediaType) throw new Error("Upload a PNG, JPEG, SVG, WebP, MP4, MOV, WebM, MP3, or WAV file.");
     if (file.size > 200 * 1024 * 1024) throw new Error("The upload must be no larger than 200 MB.");
     const kind = mediaType.startsWith("video/") ? "video" : mediaType.startsWith("audio/") ? "audio" : undefined;
     const duration = kind ? await readMediaFileDuration(file, kind) : undefined;
@@ -856,16 +1021,10 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
           if (/\.(?:md|markdown|txt)$/i.test(file.name)) {
             if (file.size > 1_000_000) throw new Error("Text documents cannot exceed 1 MB.");
             const text = await file.text();
-            if (designDocuments) {
-              const id = await designDocuments.add();
-              if (!id) throw new Error("Could not create a document.");
-              designDocuments.update(id, { title: file.name.replace(/\.[^.]+$/, "").slice(0, 200), markdown: text });
-              imported.push({ id: crypto.randomUUID(), type: "document", position: at, selected: true, data: { documentId: id } });
-            } else {
-              const node = createFlowNode("text", at, imageModels, videoModels, defaultTextModel);
-              node.data.text = text;
-              imported.push({ ...node, selected: true });
-            }
+            const id = await documents.add();
+            if (!id) throw new Error("Could not create a document.");
+            documents.update(id, { title: file.name.replace(/\.[^.]+$/, "").slice(0, 200), markdown: text });
+            imported.push({ id: crypto.randomUUID(), type: "document", position: at, selected: true, data: { documentId: id } });
           } else imported.push(assetFlowNode(await uploadAssetFile(file), at));
         } catch (cause) { failures.push(`${file.name}: ${errorMessage(cause)}`); }
       }
@@ -899,8 +1058,8 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     if (nodesRef.current.length + value.nodes.length > MAX_ASSET_CANVAS_NODES) {
       setTransferError("A canvas can contain at most 2,000 nodes."); return;
     }
-    if (value.nodes.some((node) => node.type === "document") && (!designDocuments || value.projectId !== projectId)) {
-      setTransferError("Document references can only be pasted into Design boards in the same project."); return;
+    if (value.nodes.some((node) => (node.type === "document" || node.type === "table")) && value.projectId !== projectId) {
+      setTransferError("Document and table references can only be pasted into boards in the same project."); return;
     }
     commitPendingHistory();
     setTransferError(undefined);
@@ -912,7 +1071,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
 
   function copySelection(event: ClipboardEvent<HTMLDivElement>, cut = false): void {
     if (isTextEntry(event.target) || eventWithin(event, ".nokey")) return;
-    const selected = nodes.filter((node) => node.selected).map(toAssetCanvasNode);
+    const selected = nodes.filter((node) => node.selected).map((node) => toAssetCanvasNode(node, model3DModels));
     if (!selected.length) return;
     const value = createCanvasClipboard(projectId, selected, document.edges);
     event.preventDefault(); event.clipboardData.setData("text/plain", JSON.stringify(value));
@@ -934,7 +1093,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   }
 
   function addCanvasNode(item: CanvasNodeCreationLeaf, position: { x: number; y: number }): void {
-    addNode(item.action.type, position, item.action.documentId);
+    addNode(item.action.type, position, item.action.documentId ?? item.action.tableId);
   }
 
   function insertNodeCopy(source: AssetCanvasNode, position: { x: number; y: number }): void {
@@ -946,7 +1105,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   function copyCanvasNode(nodeId: string): void {
     const source = nodes.find((node) => node.id === nodeId);
     if (!source) return;
-    const value = createCanvasClipboard(projectId, [toAssetCanvasNode(source)], []);
+    const value = createCanvasClipboard(projectId, [toAssetCanvasNode(source, model3DModels)], []);
     rememberCanvasClipboard(value); setCopiedSelection(value);
     void navigator.clipboard?.writeText(JSON.stringify(value)).catch(() => {});
   }
@@ -954,7 +1113,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   function duplicateCanvasNode(nodeId: string): void {
     const source = nodes.find((node) => node.id === nodeId);
     if (!source) return;
-    const canonical = toAssetCanvasNode(source);
+    const canonical = toAssetCanvasNode(source, model3DModels);
     insertNodeCopy(canonical, { x: source.position.x + CANVAS_GRID_SIZE * 2, y: source.position.y + CANVAS_GRID_SIZE * 2 });
   }
 
@@ -974,12 +1133,20 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
 
   function downloadAsset(assetId: string, fallbackName: string): void {
     const name = libraryAssets.find((candidate) => candidate.id === assetId)?.name ?? fallbackName;
-    void downloadLibraryAsset(assetId, name).catch((cause) => setNotice(`Could not download: ${errorMessage(cause)}`));
+    void assetBlob(assetId).then((blob) => downloadAssetBlob(blob, name)).catch((cause) => setNotice({ kind: "action", message: `Could not download: ${errorMessage(cause)}` }));
+  }
+
+  function assetBlob(assetId: string): Promise<Blob> {
+    const local = assetPaths.get(assetId);
+    return local ? getWorkspaceAsset(local.projectId, local.path) : getLibraryAsset(assetId);
   }
 
   function sendAssetToProject(assetId: string, fallbackName: string): void {
     setViewedAsset(undefined);
-    setSentAsset({ assetId, name: libraryAssets.find((candidate) => candidate.id === assetId)?.name ?? fallbackName });
+    const name = libraryAssets.find((candidate) => candidate.id === assetId)?.name ?? fallbackName;
+    void (assetPaths.has(assetId) ? exportCanvasAsset(projectId, assetId) : Promise.resolve({ assetId }))
+      .then((asset) => setSentAsset({ assetId: asset.assetId, name }))
+      .catch((cause) => setNotice({ kind: "action", message: `Could not send asset: ${errorMessage(cause)}` }));
   }
 
   function clearSelection(): void {
@@ -987,27 +1154,18 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     setNodes((current) => current.map((node) => node.selected ? { ...node, selected: false } : node));
   }
 
-  async function generateImage(node: AssetCanvasFlowNode): Promise<void> {
-    if (node.type !== "image") return;
-    const prompt = resolveNodePrompt(node, nodes, designDocuments).trim();
-    if (!prompt) { setGenerationError({ nodeId: node.id, message: "Add a prompt before generating." }); return; }
-    if (!node.data.model) { setGenerationError({ nodeId: node.id, message: "Select an image model before generating." }); return; }
-    try {
-      const images = await resolveReferenceImages(node);
-      await generateMedia(node, "generate-image", {
-        prompt,
-        imageModel: node.data.model,
-        resolution: node.data.resolution ?? DEFAULT_IMAGE_NODE_CONFIG.resolution,
-        aspectRatio: node.data.aspectRatio ?? DEFAULT_IMAGE_NODE_CONFIG.aspectRatio,
-        outputs: 1,
-        ...(images.length ? { images } : {}),
-      }, "Image");
-    } catch (error) {
-      setGenerationError({ nodeId: node.id, message: errorMessage(error) });
-    }
+  function activateNode(nodeId: string): void {
+    setCanvasContextMenu(undefined);
+    setSelectedAssetEdgeId(undefined);
+    setMarqueeSelectedIds((current) => {
+      if (!current.has(nodeId)) return current;
+      const next = new Set(current);
+      next.delete(nodeId);
+      return next;
+    });
   }
 
-  async function generateTextNode(node: AssetCanvasFlowNode): Promise<void> {
+  async function generateTextNode(node: AssetCanvasFlowNode, model: AgentModelRef, reasoningLevel: AgentReasoningLevel): Promise<void> {
     if (node.type !== "text" || generatingTextNodeId) return;
     const instruction = node.data.instruction?.trim();
     if (!instruction) {
@@ -1017,14 +1175,11 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     setGeneratingTextNodeId(node.id);
     setGenerationError(undefined);
     try {
-      const model = node.data.textModel ?? defaultTextModel;
-      if (!model) {
-        setGenerationError({ nodeId: node.id, message: "No language model is available." });
-        return;
-      }
-      const result = designDocuments ? await generateDesignText(projectId, instruction, model) : await generateAssetCanvasText(projectId, { instruction, model });
+      const referenceSource = { boardId: storage.boardId, nodeId: node.id };
+      await documents.flush();
+      const result = await generateCanvasText(projectId, instruction, model, reasoningLevel, referenceSource);
       setNodes((current) => current.map((candidate) => candidate.id === node.id
-        ? { ...candidate, data: { ...candidate.data, text: result.text, textModel: result.model } }
+        ? { ...candidate, data: { ...candidate.data, text: result.text, textModel: result.model, reasoningLevel } }
         : candidate));
     } catch (error) {
       setGenerationError({ nodeId: node.id, message: errorMessage(error) });
@@ -1033,91 +1188,9 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     }
   }
 
-  async function generateVideo(node: AssetCanvasFlowNode): Promise<void> {
-    if (node.type !== "video") return;
-    const prompt = resolveNodePrompt(node, nodes, designDocuments).trim();
-    if (!prompt) { setGenerationError({ nodeId: node.id, message: "Add a prompt before generating." }); return; }
-    if (!node.data.videoModel) { setGenerationError({ nodeId: node.id, message: "Select a video model before generating." }); return; }
-    try {
-      const references = resolveVideoReferences(node);
-      await generateMedia(node, "generate-video", {
-        prompt,
-        model: node.data.videoModel,
-        ...(references.length ? { references } : {}),
-        duration: node.data.duration ?? DEFAULT_VIDEO_NODE_CONFIG.duration,
-        aspectRatio: node.data.videoAspectRatio ?? DEFAULT_VIDEO_NODE_CONFIG.aspectRatio,
-        resolution: node.data.videoResolution ?? DEFAULT_VIDEO_NODE_CONFIG.resolution,
-      }, "Video");
-    } catch (error) {
-      setGenerationError({ nodeId: node.id, message: errorMessage(error) });
-    }
-  }
-
-  async function generateAnimation(node: AssetCanvasFlowNode): Promise<void> {
-    if (node.type !== "animate-3d") return;
-    const source = node.data.images?.[0];
-    const assetId = source?.type === "library" ? source.assetId : nodes.find((candidate) => candidate.id === source?.nodeId)?.data.assetId;
-    if (!assetId) {
-      setGenerationError({ nodeId: node.id, message: source ? "Generate the connected 3D model before animating it." : "Connect a 3D model before animating." });
-      return;
-    }
-    const actionIds = node.data.actionIds ?? [];
-    if (!actionIds.length) { setGenerationError({ nodeId: node.id, message: "Choose at least one move before animating." }); return; }
-    await generateMedia(node, "animate-3d", { assetId, actionIds, heightMeters: node.data.heightMeters ?? DEFAULT_CHARACTER_HEIGHT_METERS }, "Animated 3D model");
-  }
-
-  async function generateModel3D(node: AssetCanvasFlowNode): Promise<void> {
-    if (node.type !== "model-3d") return;
-    const config = nodeModel3DConfig(node);
-    const model = selectedModel3D(config, model3DModels);
-    if (!model) { setGenerationError({ nodeId: node.id, message: "Select a 3D model before generating." }); return; }
-    try {
-      const images = await resolveModelReferenceImages(node);
-      if (images.length === 0) throw new Error("Add a reference image before generating.");
-      if (images.length > model.maxReferenceImages) {
-        throw new Error(`${model.name} takes ${model.maxReferenceImages === 1 ? "one reference image" : `up to ${model.maxReferenceImages} reference images`}. Remove the extra ones.`);
-      }
-      await generateMedia(node, "image-to-3d", buildModel3DToolRequest({ ...config, model: modelRef(model) }, images), "3D model");
-    } catch (error) {
-      setGenerationError({ nodeId: node.id, message: errorMessage(error) });
-    }
-  }
-
-  async function resolveModelReferenceImages(node: AssetCanvasFlowNode): Promise<PromptImage[]> {
-    if (node.type !== "model-3d") return [];
-    return Promise.all((node.data.images ?? []).map(async (reference) => {
-      const assetId = resolveAssetCanvasImageAssetId(document?.nodes ?? [], reference);
-      if (!assetId) throw new Error("Generate every connected image before running this node.");
-      return modelPromptImage(await getLibraryAsset(assetId));
-    }));
-  }
-
-  function resolveVideoReferences(node: AssetCanvasFlowNode): VideoGenerationReference[] {
-    if (node.type !== "video") return [];
-    const references = (node.data.references ?? []).map((reference) => {
-      const assetId = resolveAssetCanvasAssetId(document?.nodes ?? [], reference);
-      if (!assetId) throw new Error("Generate every connected media node before running this node.");
-      const asset = libraryAssets.find((candidate) => candidate.id === assetId);
-      if (!asset || asset.mediaType !== "image") {
-        throw new Error("A connected reference is missing from Library.");
-      }
-      return { type: asset.mediaType, assetId, duration: asset.duration };
-    });
-    return references.map(({ type, assetId }) => ({ type, assetId }));
-  }
-
-  async function resolveReferenceImages(node: AssetCanvasFlowNode): Promise<PromptImage[]> {
-    if (node.type !== "image") return [];
-    return Promise.all((node.data.images ?? []).map(async (reference) => {
-      const assetId = resolveAssetCanvasImageAssetId(document?.nodes ?? [], reference);
-      if (!assetId) throw new Error("Generate every connected image before running this node.");
-      return promptImage(await getLibraryAsset(assetId));
-    }));
-  }
-
   async function uploadReferenceImages(node: AssetCanvasFlowNode, files: File[]): Promise<void> {
     if ((node.type !== "image" && node.type !== "model-3d") || files.length === 0 || uploadingNodeId) return;
-    const available = (node.type === "image" ? imageReferenceLimit(node, imageModels) : nodeModel3D(node).maxReferenceImages) - (node.data.images?.length ?? 0);
+    const available = (node.type === "image" ? imageReferenceLimit(node, imageModels) : (nodeModel3D(node, model3DModels)?.maxReferenceImages ?? MODEL_3D_MAX_REFERENCE_IMAGES)) - (node.data.images?.length ?? 0);
     if (available <= 0) {
       setGenerationError({ nodeId: node.id, message: "This node cannot accept more reference images." });
       return;
@@ -1130,7 +1203,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     setGenerationError(undefined);
     try {
       const images = await Promise.all(files.map(readUploadImage));
-      const assets = await Promise.all(images.map(({ name, image }) => createLibraryImage({ name, image })));
+      const assets = await Promise.all(images.map(({ name, image }) => createLibraryImage({ name, image, purpose: "reference" })));
       setNodes((current) => current.map((candidate) => candidate.id === node.id && (candidate.type === "image" || candidate.type === "model-3d")
         ? {
             ...candidate,
@@ -1161,12 +1234,17 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
 
   async function uploadVideoReferences(node: AssetCanvasFlowNode, files: File[]): Promise<void> {
     if (node.type !== "video" || files.length === 0 || uploadingNodeId) return;
+    const remaining = videoReferenceLimit(selectedVideoModel(node, videoModels), node.data.referenceMode) - (node.data.references?.length ?? 0);
+    if (files.length > remaining) {
+      setGenerationError({ nodeId: node.id, message: `This mode can accept ${Math.max(0, remaining)} more reference images.` });
+      return;
+    }
     setUploadingNodeId(node.id);
     setGenerationError(undefined);
     try {
       const uploads = await Promise.all(files.map(prepareVideoReferenceFile));
       for (const upload of uploads) {
-        const asset = await uploadLibraryAsset(upload.file, upload.mediaType);
+        const asset = await uploadLibraryAsset(upload.file, upload.mediaType, undefined, "reference");
         setLibraryAssets((current) => [{ ...asset, assetId: asset.id, path: asset.name }, ...current.filter((candidate) => candidate.id !== asset.id)]);
         setNodes((current) => current.map((candidate) => candidate.id === node.id && candidate.type === "video"
           ? { ...candidate, data: { ...candidate.data, references: [...(candidate.data.references ?? []), { type: "library", assetId: asset.id }] } }
@@ -1179,19 +1257,14 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     }
   }
 
-  async function generateMedia(
-    node: AssetCanvasFlowNode,
-    toolId: "generate-image" | "generate-video" | "image-to-3d" | "animate-3d",
-    input: RunImageToolRequest | RunVideoToolRequest | Run3DToolRequest | RunAnimate3DToolRequest,
-    label: string,
-  ): Promise<void> {
+  async function generateMedia(node: AssetCanvasFlowNode): Promise<void> {
     if (canvasJobs[node.id]?.status === "running" || startingCanvasNodesRef.current.has(node.id)) return;
     startingCanvasNodesRef.current.add(node.id);
     setStartingCanvasNodes((current) => new Set(current).add(node.id));
     setGenerationError(undefined);
     try {
       await flush();
-      const job = storageRef.current ? await storageRef.current.start(node.id, toolId, input) : await startToolJob(toolId, input, label, { projectId, nodeId: node.id });
+      const job = await storageRef.current.generate(node.id);
       setCanvasJobs((current) => ({ ...current, [node.id]: job }));
     } catch (error) {
       setGenerationError({ nodeId: node.id, message: errorMessage(error) });
@@ -1210,7 +1283,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     if (!job) return;
     try {
       setCanvasJobs((current) => ({ ...current, [nodeId]: { ...job, status: "cancelled" } }));
-      const next = storageRef.current ? await storageRef.current.cancel(job.id) : await cancelToolJob(job.id);
+      const next = await storageRef.current.cancel(job.id);
       setCanvasJobs((current) => ({ ...current, [nodeId]: next }));
     } catch (error) {
       setGenerationError({ nodeId, message: errorMessage(error) });
@@ -1223,15 +1296,56 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     rememberedSettings.current[node.type] = next;
   }
 
-  const renderedNodes = nodes.map((node) => {
-    if (node.type === "document") return { ...node, data: { ...node.data, documentRuntime: designDocuments ? { design: designDocuments, document: designDocuments.documents.find((doc) => doc.id === node.data.documentId), models: textModelCatalog.models, modelStatus: textModelCatalog.status, defaultModel: defaultTextModel } : undefined } };
+  function nodeReferencesRuntime(node: AssetCanvasFlowNode): CanvasNodeReferencesRuntime {
+    return {
+      references: (node.data.references ?? []).flatMap((reference) => {
+        if (reference.type !== "node") return [];
+        const source = nodes.find((candidate) => candidate.id === reference.nodeId);
+        const doc = source?.type === "document" ? documents.documents.find((document) => document.id === source.data.documentId) : undefined;
+        return [{
+          nodeId: reference.nodeId,
+          name: source ? canvasNodeTitle(toAssetCanvasNode(source), documents.documents, libraryAssets) : "Missing node",
+          type: source?.type === "text" ? "text" as const : source?.type === "document" ? "document" as const : "image" as const,
+          text: source?.type === "text" ? source.data.text : doc?.markdown,
+          assetId: source?.data.assetId,
+        }];
+      }),
+      onRemoveReference: (index) => setNodes((current) => current.map((candidate) => candidate.id === node.id
+        ? { ...candidate, data: { ...candidate.data, references: (candidate.data.references ?? []).filter((_, candidateIndex) => candidateIndex !== index) } }
+        : candidate)),
+    };
+  }
+
+  const expanded = documents.documents.find((doc) => doc.id === expandedDocument?.id);
+  const expandedNode = nodes.find((node) => node.id === expandedDocument?.nodeId && node.type === "document");
+
+  const tableContents = [...tables.storage.sessions.values()].map((session) => session.local);
+  const renderedNodes = nodes.map((original) => {
+    const size = isResizableCanvasNodeType(original.type) ? RESIZABLE_CANVAS_NODE_SIZES[original.type] : undefined;
+    const node = { ...original, ...(size ? { style: { ...original.style, width: original.width ?? size.width, height: original.height ?? size.height } } : {}), data: { ...original.data,
+      ...(size ? { resizeRuntime: {
+        start: beginHistoryGesture, end: finishHistoryGesture,
+        reset: () => { beginHistoryGesture(); setNodes((current) => current.map((node) => { if (node.id !== original.id) return node; const { width: _width, height: _height, ...rest } = node; return rest; })); finishHistoryGesture(); },
+        ...(original.type === "text" ? { open: () => setExpandedTextId(original.id) } : {}),
+      } } : {}), assetAspectRatio: mediaAspectRatio(libraryAssets.find((asset) => asset.id === original.data.assetId)), panelOpen: original.selected === true && !marqueeActive && !marqueeSelectedIds.has(original.id), nodeDetails: {
+      title: original.title?.trim(), label: canvasNodeTitle(toAssetCanvasNode(original, model3DModels), documents.documents, libraryAssets, tableContents), description: original.description,
+      edit: () => setNodeDetails({ id: original.id, title: original.title ?? "", description: original.description ?? "" }),
+    } } };
+    if (node.type === "table") {
+      const session = tables.storage.sessions.get(node.data.tableId ?? "");
+      return { ...node, data: { ...node.data, tableRuntime: { tables, table: session?.local, issue: session?.issue ?? tables.issues?.find((issue) => issue.id === node.data.tableId)?.message, models: textModelCatalog.models, modelStatus: textModelCatalog.status, defaultModel: defaultTextModel, defaultReasoningLevel: textModelCatalog.defaultReasoningLevel } } };
+    }
+    if (node.type === "document") return { ...node, data: { ...node.data, documentRuntime: { ...nodeReferencesRuntime(node), referenceSource: { boardId: storage.boardId, nodeId: node.id }, design: documents, document: documents.documents.find((doc) => doc.id === node.data.documentId), models: textModelCatalog.models, modelStatus: textModelCatalog.status, defaultModel: defaultTextModel, defaultReasoningLevel: textModelCatalog.defaultReasoningLevel } } };
     if (node.type === "asset") return {
       ...node,
       data: (() => {
         const asset = libraryAssets.find((candidate) => candidate.id === node.data.assetId);
+        const local = assetPaths.get(node.data.assetId ?? "");
         return {
           ...node.data,
-          name: asset?.name ?? "Missing asset",
+          name: asset?.name ?? local?.name ?? "Missing asset",
+          assetError: local?.error,
+          assetOrigin: local ? "Project" as const : "Library" as const,
           contentType: asset?.contentType,
           assetDuration: asset?.duration,
         };
@@ -1242,9 +1356,11 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
       data: {
           ...node.data,
         textRuntime: {
+          ...nodeReferencesRuntime(node),
           models: textModelCatalog.models,
           modelStatus: textModelCatalog.status,
           ...(defaultTextModel ? { defaultModel: defaultTextModel } : {}),
+          defaultReasoningLevel: textModelCatalog.defaultReasoningLevel,
           generating: generatingTextNodeId === node.id,
           busy: Boolean(generatingTextNodeId),
           ...(generationError?.nodeId === node.id ? { error: generationError.message } : {}),
@@ -1253,12 +1369,15 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
             setGenerationError((error) => error?.nodeId === node.id ? undefined : error);
             setNodes((current) => current.map((candidate) => candidate.id === node.id ? { ...candidate, data } : candidate));
           },
-          onGenerate: () => void generateTextNode(node),
+          onGenerate: (model: AgentModelRef, reasoningLevel: AgentReasoningLevel) => void generateTextNode(node, model, reasoningLevel),
         },
       },
     };
     if (node.type === "model-3d") {
       const nodeJob = canvasJobs[node.id];
+      const operation = node.data.model3DOperation ?? "image";
+      const availableModels = (operation === "image" || operation === "text" ? model3DModels : operationModels3D).filter((model) => (model.operations ?? ["image"]).includes(operation));
+      const model = nodeModel3D(node, availableModels);
       return {
         ...node,
         data: {
@@ -1273,10 +1392,11 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
               setGenerationError((error) => error?.nodeId === node.id ? undefined : error);
               setNodes((current) => current.map((candidate) => candidate.id === node.id ? { ...candidate, data } : candidate));
             },
-            onGenerate: () => void generateModel3D(node),
-            references: imageReferenceViews(node, nodes, libraryAssets),
-            maxReferences: nodeModel3D(node).maxReferenceImages,
-            slotLabels: MODEL_3D_VIEW_LABELS.slice(0, nodeModel3D(node).maxReferenceImages),
+            onGenerate: () => void generateMedia(node),
+            references: imageReferenceViews(node, nodes, libraryAssets, model3DModels),
+            maxReferences: operation === "text" || operation === "remesh" ? 0 : operation === "retexture" ? 1 : model?.maxReferenceImages ?? MODEL_3D_MAX_REFERENCE_IMAGES,
+            slotLabels: operation === "image" ? model3DViewLabels(model) : undefined,
+            showEmptySlots: operation === "image" && Boolean(model?.referenceImageLabels),
             uploading: uploadingNodeId === node.id,
             accept: "image/png,image/jpeg,image/webp",
             addLabel: "Add reference images",
@@ -1286,7 +1406,14 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
             onUploadReferences: (files: File[]) => void uploadReferenceImages(node, files),
             libraryImages,
             onAddLibraryReference: (asset: LibraryAsset) => addLibraryReference(node, asset),
-            models: model3DModels,
+            models: availableModels,
+            linkedPrompt: resolveLinkedPrompt(node, nodes, documents),
+            onDisconnectPrompt: () => setNodes((current) => current.map((candidate) => candidate.id === node.id ? { ...candidate, data: { ...candidate.data, promptSource: undefined } } : candidate)),
+            sourceRuntime: {
+              busy: nodeJob?.status === "running",
+              references: modelReferenceViews(node, nodes, libraryAssets), maxReferences: 1, slotLabels: ["Source model"], uploading: false, accept: "", addLabel: "Connect a source GLB model",
+              onRemoveReference: () => setNodes((current) => current.map((candidate) => candidate.id === node.id ? { ...candidate, data: { ...candidate.data, model3DSource: undefined } } : candidate)),
+            },
             providers: model3DProviders,
           },
         },
@@ -1307,7 +1434,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
               setGenerationError((error) => error?.nodeId === node.id ? undefined : error);
               setNodes((current) => current.map((candidate) => candidate.id === node.id ? { ...candidate, data } : candidate));
             },
-            onGenerate: () => void generateAnimation(node),
+            onGenerate: () => void generateMedia(node),
             references: modelReferenceViews(node, nodes, libraryAssets),
             maxReferences: 1,
             slotLabels: ["Model"],
@@ -1317,16 +1444,13 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
             onRemoveReference: () => setNodes((current) => current.map((candidate) => candidate.id === node.id
               ? { ...candidate, data: { ...candidate.data, images: [] } }
               : candidate)),
-            actions: animationActions.actions,
-            actionsStatus: animationActions.status === "ready" || animationActions.status === "error" ? animationActions.status : "loading",
-            configured: model3DModels.length > 0,
-            onReloadActions: () => setAnimationActions({ status: "idle", actions: [] }),
+            models: operationModels3D.filter((model) => model.operations?.includes("animate")),
           } satisfies Animate3DNodeRuntime,
         },
       };
     }
     if (!isMediaNodeType(node.type)) return node;
-    const linkedPrompt = resolveLinkedPrompt(node, nodes, designDocuments);
+    const linkedPrompt = resolveLinkedPrompt(node, nodes, documents);
     const nodeJob = canvasJobs[node.id];
     const runtime: MediaNodeRuntime = {
       generating: nodeJob?.status === "running",
@@ -1338,7 +1462,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
         setGenerationError((error) => error?.nodeId === node.id ? undefined : error);
         setNodes((current) => current.map((candidate) => candidate.id === node.id ? { ...candidate, data } : candidate));
       },
-      onGenerate: node.type === "image" ? () => void generateImage(node) : () => void generateVideo(node),
+      onGenerate: () => void generateMedia(node),
       ...(linkedPrompt !== undefined ? { linkedPrompt } : {}),
       onDisconnectPrompt: () => {
         setSelectedAssetEdgeId(undefined);
@@ -1350,7 +1474,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     const referenceRuntime: ReferenceMediaNodeRuntime = {
       ...runtime,
       references: node.type === "image" ? imageReferenceViews(node, nodes, libraryAssets) : videoReferenceViews(node, nodes, libraryAssets),
-      maxReferences: node.type === "image" ? imageReferenceLimit(node, imageModels) : selectedVideoModel(node, videoModels)?.maxImageReferences ?? 0,
+      maxReferences: node.type === "image" ? imageReferenceLimit(node, imageModels) : videoReferenceLimit(selectedVideoModel(node, videoModels), node.data.referenceMode),
       uploading: uploadingNodeId === node.id,
       accept: "image/png,image/jpeg,image/webp",
       addLabel: "Add reference images",
@@ -1375,6 +1499,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   });
 
   function applyEditorCanvas(next: AssetCanvasDocument): void {
+    next = { ...next, editorLayout: { ...next.editorLayout, viewport: latestCanvas.current?.editorLayout.viewport ?? next.editorLayout.viewport } };
     validateAssetCanvasDocument(next);
     observeHistoryDocument(next);
     setViewport(next.viewport);
@@ -1384,28 +1509,23 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   }
 
   return (
-    <section className="viewer-pane interactive-story-workspace" aria-label="Asset Canvas workspace">
-      {!storage ? <header className="interactive-story-header window-drag-handle">
-        <span className="workspace-navigation-drag-exclusion" aria-hidden="true" />
-        <div className="interactive-story-project-tools">
-          {chatOnRight && onHome ? (
-            <button className="interactive-story-home-button" type="button" onClick={onHome} title="Home" aria-label="Home"><House size={14} /></button>
-          ) : null}
-        </div>
-        <div className="interactive-story-header-actions">
-          {chatOnRight && chatCollapsed && onToggleChat ? (
-            <button className="interactive-story-action" type="button" title="Show chat" aria-label="Show chat" onClick={onToggleChat}>
-              <PanelToggle size={14} />
-            </button>
-          ) : null}
-        </div>
-      </header> : null}
+    <section className="viewer-pane interactive-story-workspace" hidden={hidden} aria-label="Asset Canvas workspace">
+      {expandedTextId && nodes.find((node) => node.id === expandedTextId)?.type === "text" ? <div className="design-expanded-document" role="dialog" aria-modal="true" aria-label="Expanded text">
+        <header className="design-expanded-toolbar"><FileText size={16} /><strong>Text</strong></header>
+        <div className="design-expanded-body"><CanvasTextarea autoFocus aria-label="Expanded text" value={nodes.find((node) => node.id === expandedTextId)?.data.text ?? ""} onChange={(text) => setNodes((current) => current.map((node) => node.id === expandedTextId ? { ...node, data: { ...node.data, text } } : node))} /></div>
+        <button type="button" className="design-expanded-close" title="Back to canvas" aria-label="Back to canvas" onClick={() => setExpandedTextId(undefined)}><X size={16} /></button>
+      </div> : null}
       <div className="interactive-story-body">
-        <div ref={canvasElement} tabIndex={0} className={`interactive-story-canvas${fileDropActive ? " is-file-drop-active" : ""}`} onPointerMoveCapture={(event) => { pointer.current = { x: event.clientX, y: event.clientY }; }}
+        <div ref={canvasElement} tabIndex={0} inert={resolving || undefined} aria-busy={resolving || undefined} className={`interactive-story-canvas${selectedNodes.length === 1 ? " has-single-selection" : ""}${fileDropActive ? " is-file-drop-active" : ""}`} onPointerMoveCapture={(event) => { pointer.current = { x: event.clientX, y: event.clientY }; }}
           onPointerDownCapture={(event) => { if (!isTextEntry(event.target) && !eventWithin(event, "button, a, .nokey")) event.currentTarget.focus({ preventScroll: true }); }}
           onCopy={copySelection} onCut={(event) => copySelection(event, true)} onPaste={pasteFromClipboard}
           onKeyDown={(event) => {
             if (phase !== "ready" || isTextEntry(event.target) || eventWithin(event, ".nokey")) return;
+            // React Flow's keyboard activation does not emit onNodeClick.
+            if ((event.key === "Enter" || event.key === " ") && event.target instanceof HTMLElement && event.target.matches(".react-flow__node")) {
+              const nodeId = event.target.dataset.id;
+              if (nodeId) activateNode(nodeId);
+            }
             pasteNativeFiles(event, (files) => { void importCanvasFiles(files, transferPosition()); }, (cause) => setTransferError(errorMessage(cause)));
           }}
           onDragEnter={(event) => { if (!hasTransferredFiles(event.dataTransfer)) return; event.preventDefault(); dragDepth.current++; setFileDropActive(true); }}
@@ -1421,7 +1541,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
           {overlay}
           {fileDropActive ? <div className="canvas-file-drop-overlay"><Upload size={18} /><span>Drop files</span></div> : importingAssets ? <div className="canvas-file-import-status" role="status"><LoaderCircle size={13} className="spin" /><span>Importing files</span></div> : null}
           {phase === "loading" ? <div className="story-canvas-state">Loading canvas...</div> : null}
-          {phase === "error" ? <div className="story-canvas-state story-canvas-state-error">{notice}</div> : null}
+          {phase === "error" ? <div className="story-canvas-state story-canvas-state-error" role="alert"><span>Could not load canvas. {loadError}</span><button type="button" onClick={() => setLoadAttempt((value) => value + 1)}>Reload canvas</button></div> : null}
           {phase === "ready" ? (
             <EditorCanvas<AssetCanvasFlowNode>
               nodes={renderedNodes}
@@ -1429,7 +1549,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
               nodeTypes={STORY_NODE_TYPES}
               onInit={(instance) => { flowInstance.current = instance; }}
               addControl={<AssetCanvasAddControl
-                documents={designDocuments}
+                documents={documents} tables={tables}
                 libraryAssets={libraryAssets.filter((asset) => asset.mediaType === "image" || asset.mediaType === "video" || asset.mediaType === "audio" || asset.mediaType === "model")}
                 importing={importingAssets}
                 onAdd={addNode}
@@ -1437,6 +1557,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
                 onUpload={(file, position) => void importAssetFile(file, position)}
               />}
               onOpenMenu={setCanvasContextMenu}
+              addOnDoubleClick
               deleteKeyCode={["Backspace", "Delete"]}
               onNodesChange={onNodesChange}
               onNodeDragStart={() => { setCanvasContextMenu(undefined); beginHistoryGesture(); }}
@@ -1446,16 +1567,20 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
               onConnect={onConnect}
               onMoveEnd={(_event, viewport) => setEditorLayout((current) => ({ ...current, viewport }))}
               onEdgeClick={(_event, edge) => setSelectedAssetEdgeId(edge.id.startsWith(ASSET_EDGE_PREFIX) ? edge.id : undefined)}
+              onSelectionStart={() => setMarqueeActive(true)}
+              onSelectionEnd={() => {
+                setMarqueeActive(false);
+                setMarqueeSelectedIds(new Set(nodesRef.current.filter((node) => node.selected).map((node) => node.id)));
+              }}
               onNodeClick={(event, node) => {
-                setCanvasContextMenu(undefined);
-                setSelectedAssetEdgeId(undefined);
+                activateNode(node.id);
                 if (eventWithin(event, ".story-media-view-button")) openViewer(node);
               }}
               // Only the preview opens the viewer; the prompt, chips, and video controls below keep their own double-click.
               onNodeDoubleClick={(event, node) => { if (eventWithin(event, ".story-media-stage")) openViewer(node); }}
               onPaneClick={() => { setCanvasContextMenu(undefined); clearSelection(); }}
               onNodeContextMenu={(_event, node) => {
-                setSelectedAssetEdgeId(undefined);
+                activateNode(node.id);
                 setNodes((current) => current.map((candidate) => ({ ...candidate, selected: candidate.id === node.id })));
               }}
               onNodesDelete={(deleted) => {
@@ -1464,14 +1589,16 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
               isValidConnection={(connection) => {
                 const target = nodes.find((node) => node.id === connection.target);
                 const source = nodes.find((node) => node.id === connection.source);
-                return Boolean(source && target && connectionRelation(source, target, connection.sourceHandle, nodes, libraryAssets, imageModels));
+                return Boolean(source && target && connectionRelation(source, target, connection.sourceHandle, nodes, libraryAssets, imageModels, model3DModels));
               }}
               defaultViewport={editorLayout.viewport}
+              fitViewOnLoad={editorLayout.fitView === true}
+              onInitialFit={finishInitialFit}
             />
           ) : null}
           {canvasContextMenu ? <AssetCanvasContextMenu
-            documents={designDocuments}
-            onUseInDocument={contextMenuNode?.type === "text" && contextMenuNode.data.text ? () => designDocuments?.appendText(contextMenuNode.data.text!) : contextMenuNode?.data.assetId && (contextMenuNode.type === "image" || contextMenuNode.data.mediaType === "image") ? () => designDocuments?.appendImage(contextMenuNode.data.assetId!) : undefined}
+            documents={documents} tables={tables}
+            onUseInDocument={contextMenuNode?.type === "text" && contextMenuNode.data.text ? () => documents.appendText(contextMenuNode.data.text!) : contextMenuNode?.data.assetId && (contextMenuNode.type === "image" || contextMenuNode.data.mediaType === "image") ? () => documents.appendImage(contextMenuNode.data.assetId!) : undefined}
             menu={canvasContextMenu}
             canUndo={canUndo}
             canRedo={canRedo}
@@ -1483,6 +1610,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
             nodeActionsDisabled={Boolean(contextMenuNodeMissing)}
             importing={importingAssets}
             onClose={() => setCanvasContextMenu(undefined)}
+            onDetails={contextMenuNode ? () => setNodeDetails({ id: contextMenuNode.id, title: contextMenuNode.title ?? "", description: contextMenuNode.description ?? "" }) : undefined}
             onUndo={undoEditorChange}
             onRedo={redoEditorChange}
             onPaste={() => { const value = lastCanvasClipboard(); if (value) pasteSelection(value, canvasContextMenu.flowPosition); }}
@@ -1495,10 +1623,16 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
             onDuplicate={() => { if (canvasContextMenu.nodeId) duplicateCanvasNode(canvasContextMenu.nodeId); }}
             onDelete={() => { if (canvasContextMenu.nodeId) removeCanvasNodes(new Set([canvasContextMenu.nodeId])); }}
           /> : null}
-          {notice && phase === "ready" ? <div className="story-save-notice" role="alert">{notice}<button type="button" onClick={() => void flush().catch(() => {})}>Retry</button></div> : null}
-          {!notice && transferError && phase === "ready" ? <div className="story-save-notice canvas-transfer-error" role="alert"><span>{transferError}</span><button type="button" title="Dismiss error" aria-label="Dismiss error" onClick={() => setTransferError(undefined)}><X size={13} /></button></div> : null}
+          {notice && phase === "ready" && !conflicted ? <CanvasNotice className="story-save-notice" tone={notice.kind === "save" ? "error" : "neutral"} message={notice.kind === "save" ? "Could not save canvas. Your draft is kept." : "Could not complete this action."} detail={notice.message} actionLabel="Retry save" onAction={notice.kind === "save" ? flush : undefined} onDismiss={() => setNotice(undefined)} /> : null}
+          {!notice && transferError && phase === "ready" ? <CanvasNotice className="story-save-notice canvas-transfer-error" message="Could not import or paste some items." detail={transferError} onDismiss={() => setTransferError(undefined)} /> : null}
         </div>
       </div>
+      {expanded && expandedDocument ? <div className="design-expanded-document" role="dialog" aria-modal="true" aria-label={expanded.title}>
+        <ExpandedCanvasDocument design={documents} document={expanded}
+          references={expandedNode ? nodeReferencesRuntime(expandedNode) : undefined}
+          referenceSource={expandedNode ? { boardId: storage.boardId, nodeId: expandedNode.id } : undefined} />
+        <button className="design-expanded-close" type="button" title="Back to canvas" aria-label="Back to canvas" disabled={expandedDocument.busy} onClick={expandedDocument.onClose}><X size={16} /></button>
+      </div> : null}
       {viewedAsset ? <CanvasAssetViewer
         asset={viewedAsset}
         name={libraryAssets.find((candidate) => candidate.id === viewedAsset.assetId)?.name ?? titleCase(viewedAsset.mediaType)}
@@ -1507,18 +1641,31 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
         onClose={() => setViewedAsset(undefined)}
       /> : null}
       {sentAsset ? <SendToProjectDialog assetId={sentAsset.assetId} name={sentAsset.name} onClose={() => setSentAsset(undefined)} /> : null}
+      {nodeDetails ? createPortal(<div className="design-modal-backdrop nokey" onPointerDown={(event) => { if (event.target === event.currentTarget) setNodeDetails(undefined); }}><section className="design-modal" role="dialog" aria-modal="true" aria-label="Node details" onKeyDown={(event) => { if (event.key === "Escape") setNodeDetails(undefined); }}>
+        <header><h2>Node details</h2><button type="button" title="Close" aria-label="Close" onClick={() => setNodeDetails(undefined)}><X size={16} /></button></header>
+        <form onSubmit={(event) => { event.preventDefault(); setNodes((current) => current.map((node) => node.id === nodeDetails.id ? { ...node, title: nodeDetails.title.trim() || undefined, description: nodeDetails.description.trim() || undefined } : node)); setNodeDetails(undefined); }}>
+          <label>Name<input autoFocus maxLength={200} value={nodeDetails.title} placeholder="Automatic name" onChange={(event) => setNodeDetails({ ...nodeDetails, title: event.target.value })} /></label>
+          <label>Description<textarea rows={3} maxLength={2000} value={nodeDetails.description} onChange={(event) => setNodeDetails({ ...nodeDetails, description: event.target.value })} /></label>
+          <code className="canvas-node-id">{nodeDetails.id}</code>
+          <footer><button type="button" onClick={() => setNodeDetails(undefined)}>Cancel</button><button type="submit">Save</button></footer>
+        </form>
+      </section></div>, window.document.body) : null}
     </section>
   );
 }
 
-export const AssetCanvasWorkspace = CanvasBoardEditor;
+export function canvasHistoryKey(canvas: AssetCanvasDocument): string {
+  return JSON.stringify({ viewport: canvas.viewport, nodes: canvas.nodes, edges: canvas.edges }, (_key, value) =>
+    value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right))) : value);
+}
 
 function TextNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, "data" | "selected">) {
   const runtime = data.textRuntime;
   return (
     <div className={`story-node story-text-node${selected ? " is-selected" : ""}`}>
+      <CanvasNodeResizer selected={selected} runtime={data.resizeRuntime} />
       <div data-alignment-frame className="story-text-output">
-        <div className="story-media-node-label"><FileText size={14} /><span>Text</span></div>
+        <CanvasNodeLabel icon={FileText} label="Text" details={data.nodeDetails} />
         <CanvasTextarea
           className="nodrag nowheel"
           aria-label="Text output"
@@ -1529,14 +1676,20 @@ function TextNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, "data
           placeholder="Generated or manually written text"
           onChange={(text) => runtime?.onChange({ ...data, textRuntime: undefined, text })}
         />
+        <footer className={`design-document-node-footer nodrag nowheel${selected ? "" : " is-hidden"}`}><span /><div className="design-document-node-actions"><CanvasNodeSizeActions runtime={data.resizeRuntime} /></div></footer>
       </div>
-      {selected ? (
-        <CanvasTextComposer models={runtime?.models ?? []} modelStatus={runtime?.modelStatus ?? "loading"} defaultModel={runtime?.defaultModel}
-          model={data.textModel} instruction={data.instruction ?? ""} generating={runtime?.generating} busy={runtime?.busy} error={runtime?.error}
+      {data.panelOpen ? (
+        <div className="canvas-node-auxiliary">
+        <CanvasTextComposer models={runtime?.models ?? []} modelStatus={runtime?.modelStatus ?? "loading"} defaultModel={runtime?.defaultModel} defaultReasoningLevel={runtime?.defaultReasoningLevel}
+          references={runtime ? <CanvasNodeReferenceStrip {...runtime} /> : null}
+          model={data.textModel} reasoningLevel={data.reasoningLevel} instruction={data.instruction ?? ""} generating={runtime?.generating} busy={runtime?.busy} error={runtime?.error}
           onInstruction={(instruction) => runtime?.onChange({ ...data, textRuntime: undefined, instruction })}
-          onModel={(textModel) => runtime?.onChange({ ...data, textRuntime: undefined, textModel })}
-          onGenerate={() => runtime?.onGenerate()} />
+          onModel={(textModel, reasoningLevel) => runtime?.onChange({ ...data, textRuntime: undefined, textModel, reasoningLevel })}
+          onReasoningChange={(reasoningLevel) => runtime?.onChange({ ...data, textRuntime: undefined, textModel: data.textModel ?? runtime.defaultModel, reasoningLevel })}
+          onGenerate={(model, reasoningLevel) => runtime?.onGenerate(model, reasoningLevel)} />
+        </div>
       ) : null}
+      <Handle className="story-text-output-handle" id="references" type="target" position={Position.Left} />
       <Handle className="story-text-output-handle" id={OUTPUT_HANDLE} type="source" position={Position.Right} />
     </div>
   );
@@ -1553,7 +1706,8 @@ function ImageNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, "dat
 
   function selectModel(key: string): void {
     const model = runtime?.models.find((candidate) => modelRefKey(candidate) === key);
-    const option = preferredImageOption(model);
+    const option = model?.generationOptions.find((candidate) => candidate.resolution === data.resolution && candidate.aspectRatio === data.aspectRatio)
+      ?? preferredImageOption(model, data.aspectRatio);
     if (!model || !option || !runtime) return;
     runtime.onChange({ ...data, imageRuntime: undefined, model: { provider: model.provider, id: model.id }, resolution: option.resolution, aspectRatio: option.aspectRatio });
   }
@@ -1566,7 +1720,7 @@ function ImageNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, "dat
   }
 
   return (
-    <MediaNodeShell kind="image" selected={selected} assetId={data.assetId} aspectRatio={data.aspectRatio} runtime={runtime}>
+    <MediaNodeShell kind="image" selected={selected} panelOpen={data.panelOpen} assetId={data.assetId} assetAspectRatio={data.assetAspectRatio} aspectRatio={data.aspectRatio} runtime={runtime} details={data.nodeDetails}>
       <MediaReferenceStrip runtime={runtime} />
       <MediaPrompt
         kind="image"
@@ -1610,30 +1764,54 @@ function ImageNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, "dat
 function VideoNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, "data" | "selected">) {
   const runtime = data.videoRuntime;
   const selectedModel = runtime?.models.find((model) => sameModel(model, data.videoModel));
+  const aspectRatios = videoAspectRatios(selectedModel, data.references?.length ?? 0, data.referenceMode);
+  const mode = videoReferenceMode(selectedModel, data.referenceMode);
+  const references = data.references ?? [];
+  const aliases = videoReferenceAliases(references, data.referenceMentions);
+  const mentionOptions = references.map((reference, index) => ({
+    alias: Object.keys(aliases).find((alias) => sameVideoReference(aliases[alias]!, reference))!,
+    name: runtime?.references[index]?.name ?? `Image ${index + 1}`,
+    assetId: runtime?.references[index]?.assetId,
+  }));
+  let referenceError: string | undefined;
+  try { resolveVideoMentions(effectivePrompt(data, runtime), references, aliases); }
+  catch (cause) { referenceError = errorMessage(cause); }
+  const limit = videoReferenceLimit(selectedModel, data.referenceMode);
+  if (selectedModel && references.length > limit) referenceError = `This mode supports up to ${limit} images. Remove extra images or switch reference mode.`;
+
+  useEffect(() => {
+    if (!runtime || !selectedModel || !aspectRatios.length || aspectRatios.includes(data.videoAspectRatio as VideoAspectRatio)) return;
+    runtime.onChange({ ...data, videoRuntime: undefined, videoAspectRatio: aspectRatios[0] });
+  }, [aspectRatios, data, runtime, selectedModel]);
 
   function selectModel(key: string): void {
     const model = runtime?.models.find((candidate) => modelKey(candidate) === key);
     if (!model || !runtime) return;
+    const referenceMode = model.referenceModes?.includes(data.referenceMode!) ? data.referenceMode : model.imageReferenceMode;
     runtime.onChange({
       ...data,
       videoRuntime: undefined,
       videoModel: { provider: model.provider, id: model.id },
       videoResolution: model.resolutions.includes(data.videoResolution as VideoResolution) ? data.videoResolution : model.resolutions[0],
-      videoAspectRatio: model.aspectRatios.includes(data.videoAspectRatio as VideoAspectRatio) ? data.videoAspectRatio : model.aspectRatios[0],
+      videoAspectRatio: videoAspectRatios(model, data.references?.length ?? 0, referenceMode).includes(data.videoAspectRatio as VideoAspectRatio)
+        ? data.videoAspectRatio
+        : videoAspectRatios(model, data.references?.length ?? 0, referenceMode)[0],
       duration: model.durations.includes(data.duration ?? 0) ? data.duration : model.durations[0],
-      references: (data.references ?? []).slice(0, model.maxImageReferences),
+      referenceMode,
+      references: data.references ?? [],
     });
   }
 
   return (
-    <MediaNodeShell kind="video" selected={selected} assetId={data.assetId} aspectRatio={data.videoAspectRatio} runtime={runtime}>
-      <MediaReferenceStrip runtime={runtime} />
-      <MediaPrompt
-        kind="video"
+    <MediaNodeShell kind="video" selected={selected} panelOpen={data.panelOpen} assetId={data.assetId} assetAspectRatio={data.assetAspectRatio} aspectRatio={data.videoAspectRatio} runtime={runtime} details={data.nodeDetails}>
+      <MediaReferenceStrip runtime={runtime ? { ...runtime, slotLabels: mode === "frame" ? ["First frame", "Last frame"] : mentionOptions.map((option) => `@${option.alias}`) } : undefined} />
+      <VideoReferencePrompt
         value={data.prompt ?? ""}
-        runtime={runtime}
-        onChange={(prompt) => runtime?.onChange({ ...data, videoRuntime: undefined, prompt })}
+        disabled={runtime?.busy}
+        options={mentionOptions}
+        onChange={(prompt) => runtime?.onChange({ ...data, videoRuntime: undefined, prompt, referenceMentions: aliases })}
       />
+      {referenceError ? <p role="alert">{referenceError}</p> : null}
       {runtime?.error ? <p role="alert">{runtime.error}</p> : null}
       <div className="story-media-controls">
         <CanvasChipSelect
@@ -1647,10 +1825,16 @@ function VideoNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, "dat
           disabled={runtime?.busy}
           onChange={selectModel}
         />
+        {selectedModel?.referenceModes?.length ? <CanvasChipSelect
+          label="Video reference mode" value={mode}
+          options={selectedModel.referenceModes.map((value) => ({ value, label: value === "reference" ? "Image references" : "First / last frame" }))}
+          disabled={runtime?.busy}
+          onChange={(referenceMode) => runtime?.onChange({ ...data, videoRuntime: undefined, referenceMode: referenceMode as "frame" | "reference" })}
+        /> : null}
         <CanvasChipSelect
           label="Video aspect ratio"
           value={data.videoAspectRatio}
-          options={(selectedModel?.aspectRatios ?? []).map((ratio) => ({ value: ratio, label: ratio }))}
+          options={aspectRatios.map((ratio) => ({ value: ratio, label: ratio }))}
           disabled={!selectedModel || runtime?.busy}
           onChange={(videoAspectRatio) => runtime?.onChange({ ...data, videoRuntime: undefined, videoAspectRatio })}
         />
@@ -1668,58 +1852,85 @@ function VideoNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, "dat
           disabled={!selectedModel || runtime?.busy}
           onChange={(duration) => runtime?.onChange({ ...data, videoRuntime: undefined, duration: Number(duration) })}
         />
-        <GenerateMediaButton kind="video" assetId={data.assetId} runtime={runtime} disabled={!effectivePrompt(data, runtime).trim() || !selectedModel} />
+        <GenerateMediaButton kind="video" assetId={data.assetId} runtime={runtime} disabled={!effectivePrompt(data, runtime).trim() || !selectedModel || Boolean(referenceError)} />
       </div>
     </MediaNodeShell>
   );
 }
 
+function videoAspectRatios(model: VideoModel | undefined, referenceCount: number, mode?: "frame" | "reference"): readonly VideoAspectRatio[] {
+  return videoReferenceAspectRatios(model, referenceCount, mode);
+}
+
 function Model3DNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, "data" | "selected">) {
+  const auth = useAuth();
   const runtime = data.model3DRuntime;
   const config = nodeModel3DConfig({ type: "model-3d", data });
-  const selectedModel = selectedModel3D(config, runtime?.models ?? []);
-  const { polycount } = nodeModel3D({ type: "model-3d", data });
-  const hasImages = Boolean(data.images?.length);
+  const selectedModel = nodeModel3D({ type: "model-3d", data }, runtime?.models ?? []);
+  const provider = runtime?.providers?.find((provider) => provider.provider === (selectedModel?.provider ?? config.model?.provider))
+    ?? (!selectedModel && !config.model ? runtime?.providers?.find((provider) => provider.cloud) : undefined);
+  const cloud = accountCloudState(provider?.cloud, auth.state.status === "signed-in" ? auth.state.user.id : undefined);
+  const operation = data.model3DOperation ?? "image";
+  const polycount = operation === "remesh" ? remeshPolycount(selectedModel?.protocol) : selectedModel?.polycount;
+  const processing = operation === "retexture" || operation === "remesh";
+  const hasInput = operation === "image" ? Boolean(data.images?.length) : operation === "text" ? Boolean(data.prompt?.trim() || runtime?.linkedPrompt?.trim())
+    : Boolean(data.model3DSource) && (operation === "remesh" || (selectedModel?.protocol === "hyper3d" ? Boolean(data.images?.length) : Boolean(data.images?.length || data.prompt?.trim() || runtime?.linkedPrompt?.trim())));
+  const changeOperation = (operation: Exclude<Model3DOperation, "animate">) => runtime?.onChange({ ...data, model3DOperation: operation, images: [], prompt: "", promptSource: undefined, model3DSource: undefined, model3DOptions: undefined });
   const updateConfig = (next: Partial<Model3DGenerationConfig>) => runtime?.onChange({
     ...data,
     model3DRuntime: undefined,
-    model3DConfig: normalizeModel3DConfig({ ...config, ...next }),
+    model3DConfig: normalizeModel3DConfig({ ...config, ...next }, processing
+      ? resolveModel3DConnection(next.model ?? config.model, runtime.models) : resolveModel3D(next.model ?? config.model, runtime.models), operation),
   });
   return (
     <MediaNodeShell
       kind="model"
       selected={selected}
+      panelOpen={data.panelOpen}
       assetId={data.assetId}
       runtime={runtime}
+      details={data.nodeDetails}
+      emptyHint={operation === "text" ? "Describe a 3D model below, then generate" : operation === "retexture" ? "Connect a source model and describe or reference its new texture" : operation === "remesh" ? "Connect a source model and choose a face count" : undefined}
     >
-      <MediaReferenceStrip runtime={runtime} large />
+      {processing ? <MediaReferenceStrip runtime={runtime?.sourceRuntime} large /> : null}
+      {operation !== "remesh" ? <MediaReferenceStrip runtime={runtime} large /> : null}
+      {operation === "text" || operation === "retexture" ? <MediaPrompt kind="model" value={data.prompt ?? ""} runtime={runtime} onChange={(prompt) => runtime?.onChange({ ...data, prompt })} /> : null}
       {runtime?.error ? <p role="alert">{runtime.error}</p> : null}
-      <div className="story-media-controls">
+      <div className="story-media-controls is-3d">
+        <CanvasChipSelect label="3D operation" value={operation} options={[
+          { value: "image", label: "Image to 3D" }, { value: "text", label: "Text to 3D" }, { value: "retexture", label: "Retexture" }, { value: "remesh", label: "Remesh" },
+        ]} disabled={runtime?.busy} onChange={(value) => changeOperation(value as Exclude<Model3DOperation, "animate">)} />
         <CanvasChipSelect
-          label="3D model"
+          label={processing ? "Processing connection" : "3D model"}
           wide
           value={selectedModel ? modelRefKey(selectedModel) : undefined}
-          placeholder={runtime?.models.length ? "Select model" : "No 3D model"}
-          options={(runtime?.models ?? []).map((model) => ({ value: modelRefKey(model), label: model.name, group: model.providerName }))}
+          placeholder={processing ? "Select connection" : runtime?.models.length ? "Select model" : "No 3D model"}
+          options={(runtime?.models ?? []).map((model) => ({ value: modelRefKey(model), label: model.name, group: model.id === MODEL3D_CONNECTION_ID ? undefined : model.providerName }))}
           notes={providerNotes(runtime?.providers)}
           action={MANAGE_PROVIDERS}
           disabled={runtime?.busy}
           onChange={(key) => {
             const model = runtime?.models.find((candidate) => modelRefKey(candidate) === key);
-            if (model) updateConfig({ model: modelRef(model), targetPolycount: model.polycount.default });
+            if (model) { runtime?.onChange({ ...data, model3DOptions: undefined, model3DConfig: normalizeModel3DConfig({ ...config, model: modelRef(model), targetPolycount: model.polycount.default,
+              texture: model.defaults?.texture ?? model.supportsTexture !== false, pbr: model.defaults?.pbr ?? false }, model, operation) }); }
           }}
         />
-        <CanvasChipSelect
+        {operation !== "retexture" ? <CanvasChipSelect
           label="Polycount"
           value={String(config.targetPolycount)}
-          options={polycountOptions(polycount.presets, config.targetPolycount)}
-          disabled={runtime?.busy}
+          options={polycountOptions(polycount?.presets ?? [], config.targetPolycount)}
+          disabled={runtime?.busy || !selectedModel}
           onChange={(value) => updateConfig({ targetPolycount: Number(value) })}
-        />
-        <CanvasChipToggle label="Texture" pressed={config.texture} disabled={runtime?.busy} onChange={(texture) => updateConfig({ texture, ...(!texture ? { pbr: false } : {}) })} />
-        <CanvasChipToggle label="PBR" pressed={config.pbr} disabled={runtime?.busy || !config.texture} onChange={(pbr) => updateConfig({ pbr })} />
-        <GenerateMediaButton kind="model" assetId={data.assetId} runtime={runtime} disabled={!hasImages || !selectedModel} />
+        /> : null}
+        {operation === "image" || operation === "text" ? <CanvasChipToggle label="Texture" pressed={config.texture} disabled={runtime?.busy || !selectedModel || selectedModel.supportsTexture === false} onChange={(texture) => updateConfig({ texture, ...(!texture ? { pbr: false } : {}) })} /> : null}
+        {operation !== "remesh" ? <CanvasChipToggle label="PBR" pressed={config.pbr} disabled={runtime?.busy || !selectedModel || !config.texture || selectedModel.supportsPbr === false} onChange={(pbr) => updateConfig({ pbr })} /> : null}
+        {(operation === "image" || operation === "text") && (selectedModel?.protocol === "meshy" || selectedModel?.protocol === "hyper3d") ? <CanvasChipSelect label="Character pose" value={data.model3DOptions?.pose ?? "default"} options={[{ value: "default", label: "Default pose" }, { value: "t-pose", label: selectedModel.protocol === "hyper3d" ? "A / T pose" : "T pose" }, ...(selectedModel.protocol === "meshy" ? [{ value: "a-pose", label: "A pose" }] : [])]} onChange={(pose) => runtime?.onChange({ ...data, model3DOptions: { ...data.model3DOptions, pose: pose === "default" ? undefined : pose as Model3DOptions["pose"] } })} disabled={runtime?.busy} /> : null}
+        {operation === "retexture" && selectedModel?.protocol !== "hyper3d" ? <CanvasChipSelect label="Texture version" value={data.model3DOptions?.textureModel ?? (selectedModel?.protocol === "tripo" ? "v3.5-20260815" : "latest")} options={(selectedModel?.protocol === "tripo" ? ["v3.5-20260815", "v3.0-20250812", "v2.5-20250123"] : ["latest", "meshy-7", "meshy-6", "meshy-6-lite"]).map((version) => ({ value: version, label: version }))} disabled={runtime?.busy} onChange={(textureModel) => runtime?.onChange({ ...data, model3DOptions: { ...data.model3DOptions, textureModel } })} /> : null}
+        {operation === "retexture" && selectedModel?.protocol === "tripo" ? <CanvasChipSelect label="Texture quality" value={data.model3DOptions?.textureQuality ?? "standard"} options={["fast", "standard", "detailed", "extreme"].map((value) => ({ value, label: titleCase(value) }))} disabled={runtime?.busy} onChange={(textureQuality) => runtime?.onChange({ ...data, model3DOptions: { ...data.model3DOptions, textureQuality: textureQuality as Model3DOptions["textureQuality"] } })} /> : null}
+        <GenerateMediaButton kind="model" assetId={data.assetId} runtime={runtime} disabled={!hasInput || !selectedModel || Boolean(cloud && !canAffordCloudModel(cloud, selectedModel?.estimatedCredits))} />
       </div>
+      {selectedModel?.protocol === "hyper3d" && operation === "retexture" ? <small>Requires one reference image and a source GLB.</small> : null}
+      {cloud ? <CloudQuotaStatus cloud={cloud} estimatedCredits={selectedModel?.estimatedCredits} onSignIn={auth.openSignIn} /> : operation === "image" && selectedModel?.estimatedCredits !== undefined ? <div className="canvas-model-generation-label">API key · {selectedModel.estimatedCredits} credits / generation</div> : null}
     </MediaNodeShell>
   );
 }
@@ -1728,18 +1939,18 @@ function AssetNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, "dat
   const kind = data.mediaType ?? "image";
   const preview = useWorkspaceAssetUrl(undefined, "", 0, kind === "audio" ? undefined : data.assetId);
   const Icon = kind === "video" ? Film : kind === "audio" ? Music2 : kind === "model" ? Box : ImageIcon;
-  const mediaLayout = useMediaNodeLayout(kind === "audio" || kind === "model" ? undefined : preview.url);
+  const mediaLayout = useMediaNodeLayout(kind === "audio" || kind === "model" ? undefined : preview.url, data.assetAspectRatio);
   const style = kind === "audio" ? { "--story-media-width": "300px", "--story-media-height": "92px" } as CSSProperties : mediaLayout.style;
   return (
     <div className={`story-node story-media-node story-library-asset-node story-library-${kind}-node${selected ? " is-selected" : ""}`} style={style}>
-      <div className="story-media-node-label"><Icon size={14} /><span>{data.name || titleCase(kind)}</span><small>Library</small></div>
+      <CanvasNodeLabel icon={Icon} label={data.name || titleCase(kind)} details={data.nodeDetails} trailing={<small>{data.assetOrigin ?? "Library"}</small>} />
       <div data-alignment-frame className="story-media-stage">
         {preview.url && kind !== "audio" ? <MediaViewButton /> : null}
         {preview.url && kind === "image" ? <img src={preview.url} alt={data.name || "Library image"} onLoad={mediaLayout.onImageLoad} /> : null}
         {preview.url && kind === "video" ? <CanvasVideo src={preview.url} onLoadedMetadata={mediaLayout.onVideoMetadata} /> : null}
         {preview.url && kind === "model" ? <ModelPreview source={preview.url} label={data.name || "3D model"} minHeight={220} interactive={false} /> : null}
-        {kind === "audio" ? <div className="story-audio-asset"><Music2 size={25} /><strong>{preview.error ? "Asset unavailable" : "Audio"}</strong>{data.assetDuration ? <span>{formatMediaTime(data.assetDuration)}</span> : null}</div> : null}
-        {!preview.url && kind !== "audio" ? <div className="story-media-empty"><Icon size={34} /><strong>{preview.error ? "Asset unavailable" : "Loading asset..."}</strong></div> : null}
+        {kind === "audio" ? <div className="story-audio-asset"><Music2 size={25} /><strong>{data.assetError ? "Asset unavailable" : "Audio"}</strong>{data.assetError ? <span>{data.assetError}</span> : data.assetDuration ? <span>{formatMediaTime(data.assetDuration)}</span> : null}</div> : null}
+        {!preview.url && kind !== "audio" ? <div className="story-media-empty"><Icon size={34} /><strong>{preview.error ? "Asset unavailable" : "Loading asset..."}</strong><CanvasAssetRecovery preview={preview} /></div> : null}
       </div>
       <Handle className="story-media-output-handle" id={OUTPUT_HANDLE} type="source" position={Position.Right} />
     </div>
@@ -1750,31 +1961,42 @@ const CHARACTER_HEIGHTS = [1, 1.2, 1.5, 1.7, 1.8, 2];
 
 function Animate3DNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, "data" | "selected">) {
   const runtime = data.animateRuntime;
+  const selectedModel = data.animationModel ? resolveModel3DConnection(data.animationModel, runtime?.models ?? []) : runtime?.models.find((model) => model.provider === "meshy");
   const [pickerOpen, setPickerOpen] = useState(false);
   const actionIds = data.actionIds ?? [];
   const height = data.heightMeters ?? DEFAULT_CHARACTER_HEIGHT_METERS;
   const heights = CHARACTER_HEIGHTS.includes(height) ? CHARACTER_HEIGHTS : [...CHARACTER_HEIGHTS, height].sort((a, b) => a - b);
   const update = (next: Partial<AssetCanvasFlowData>) => runtime?.onChange({ ...data, animateRuntime: undefined, ...next });
   return (
-    <MediaNodeShell kind="animation" selected={selected} assetId={data.assetId} runtime={runtime}>
+    <MediaNodeShell kind="animation" selected={selected} panelOpen={data.panelOpen} assetId={data.assetId} runtime={runtime} details={data.nodeDetails} emptyHint="Connect a 3D model, pick moves, then animate">
       <MediaReferenceStrip runtime={runtime} large />
       {runtime?.error ? <p role="alert">{runtime.error}</p> : null}
-      <div className="story-media-controls">
+      <div className="story-media-controls is-3d">
+        <CanvasChipSelect label="Animation provider" value={selectedModel ? modelRefKey(selectedModel) : undefined} placeholder="Select animation provider" options={(runtime?.models ?? []).map((model) => ({ value: modelRefKey(model), label: model.name, group: model.id === MODEL3D_CONNECTION_ID ? undefined : model.providerName }))} disabled={runtime?.busy} action={MANAGE_PROVIDERS} onChange={(value) => {
+          const model = runtime?.models.find((model) => modelRefKey(model) === value);
+          if (model) update({ animationModel: modelRef(model), actionIds: [], model3DOptions: undefined });
+        }} />
+        {selectedModel?.protocol === "tripo" ? <>
+          <CanvasChipSelect label="Rig version" value={data.model3DOptions?.rigModel ?? "v1.0-20240301"} options={[{ value: "v1.0-20240301", label: "Humanoid v1" }, { value: "v2.5-20260210", label: "Creature v2.5" }]} disabled={runtime?.busy} onChange={(rigModel) => update({ model3DOptions: { ...data.model3DOptions, rigModel: rigModel as Model3DOptions["rigModel"], rigType: "biped" }, actionIds: [] })} />
+          {data.model3DOptions?.rigModel === "v2.5-20260210" ? <CanvasChipSelect label="Rig type" value={data.model3DOptions.rigType ?? "biped"} options={["biped", "quadruped", "hexapod", "octopod", "serpentine", "aquatic"].map((value) => ({ value, label: titleCase(value) }))} disabled={runtime?.busy} onChange={(rigType) => update({ model3DOptions: { ...data.model3DOptions, rigType: rigType as Model3DOptions["rigType"] }, actionIds: [] })} /> : null}
+          <CanvasChipToggle label="In place" pressed={data.model3DOptions?.animateInPlace ?? false} disabled={runtime?.busy} onChange={(animateInPlace) => update({ model3DOptions: { ...data.model3DOptions, animateInPlace } })} />
+        </> : null}
         <button className="canvas-chip" type="button" disabled={runtime?.busy} onClick={() => setPickerOpen(true)}>
           <WandSparkles size={12} /><span>{actionIds.length === 1 ? "1 move" : `${actionIds.length} moves`}</span>
         </button>
-        <CanvasChipSelect
+        {selectedModel?.protocol !== "tripo" ? <CanvasChipSelect
           label="Character height"
           value={String(height)}
           options={heights.map((value) => ({ value: String(value), label: `${value} m` }))}
           disabled={runtime?.busy}
           onChange={(value) => update({ heightMeters: Number(value) })}
-        />
-        <GenerateMediaButton kind="animation" assetId={data.assetId} runtime={runtime} disabled={!runtime?.configured || !data.images?.length || actionIds.length === 0} />
+        /> : null}
+        <GenerateMediaButton kind="animation" assetId={data.assetId} runtime={runtime} disabled={!selectedModel || !data.images?.length || actionIds.length === 0} />
       </div>
       {pickerOpen && runtime ? (
         <AnimationActionPicker
-          runtime={runtime}
+          model={selectedModel}
+          options={data.model3DOptions}
           selectedIds={actionIds}
           onChange={(next) => update({ actionIds: next })}
           onClose={() => setPickerOpen(false)}
@@ -1784,12 +2006,28 @@ function Animate3DNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, 
   );
 }
 
-function AnimationActionPicker({ runtime, selectedIds, onChange, onClose }: {
-  runtime: Animate3DNodeRuntime;
-  selectedIds: number[];
-  onChange: (actionIds: number[]) => void;
+function AnimationActionPicker({ model, options, selectedIds, onChange, onClose }: {
+  model?: Model3DModel;
+  options?: Model3DOptions;
+  selectedIds: Model3DActionId[];
+  onChange: (actionIds: Model3DActionId[]) => void;
   onClose: () => void;
 }) {
+  const [state, setState] = useState<{ key: string; actions: Model3DAnimationAction[]; status: "loading" | "ready" | "error" }>({ key: "", actions: [], status: "loading" });
+  const [reload, setReload] = useState(0);
+  const key = JSON.stringify([model?.provider, model?.id, options?.rigModel, options?.rigType]);
+  const actions = state.key === key ? state.actions : [];
+  const status = state.key === key ? state.status : "loading";
+  const hasPreviews = actions.some((action) => action.previewUrl);
+  useEffect(() => {
+    let active = true;
+    if (!model) return;
+    setState({ key, actions: [], status: "loading" });
+    void listModel3DAnimations(modelRef(model), options)
+      .then((actions) => { if (active) setState({ key, actions, status: "ready" }); })
+      .catch(() => { if (active) setState({ key, actions: [], status: "error" }); });
+    return () => { active = false; };
+  }, [key, reload, model]);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>();
   const dialog = useRef<HTMLElement>(null);
@@ -1805,15 +2043,15 @@ function AnimationActionPicker({ runtime, selectedIds, onChange, onClose }: {
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, []);
 
-  const categories = useMemo(() => [...new Set(runtime.actions.map((action) => action.category))], [runtime.actions]);
+  const categories = useMemo(() => [...new Set(actions.map((action) => action.category))], [actions]);
   const visible = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    return runtime.actions.filter((action) => (!category || action.category === category)
+    return actions.filter((action) => (!category || action.category === category)
       && (!normalized || `${action.name} ${action.subCategory}`.toLowerCase().includes(normalized)));
-  }, [runtime.actions, category, query]);
-  const byId = useMemo(() => new Map(runtime.actions.map((action) => [action.id, action])), [runtime.actions]);
+  }, [actions, category, query]);
+  const byId = useMemo(() => new Map(actions.map((action) => [action.id, action])), [actions]);
   const full = selectedIds.length >= MAX_ANIMATION_ACTIONS;
-  const toggle = (id: number) => onChange(selectedIds.includes(id) ? selectedIds.filter((candidate) => candidate !== id) : [...selectedIds, id]);
+  const toggle = (id: Model3DActionId) => onChange(selectedIds.includes(id) ? selectedIds.filter((candidate) => candidate !== id) : [...selectedIds, id]);
 
   return createPortal(
     // Keys typed here (search, Backspace) must not reach React Flow's delete shortcut.
@@ -1821,32 +2059,36 @@ function AnimationActionPicker({ runtime, selectedIds, onChange, onClose }: {
       <section className="story-video-picker story-animation-picker" ref={dialog} role="dialog" aria-modal="true" aria-labelledby="story-animation-picker-title" tabIndex={-1}>
         <header><h2 id="story-animation-picker-title">Choose moves</h2><button type="button" aria-label="Close move picker" onClick={onClose}><X size={16} /></button></header>
         <label><Search size={14} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search moves" /></label>
-        <div className="story-animation-picker-categories" role="group" aria-label="Move categories">
-          <button className="canvas-chip is-toggle" type="button" aria-pressed={!category} onClick={() => setCategory(undefined)}>All</button>
-          {categories.map((name) => (
-            <button className="canvas-chip is-toggle" type="button" key={name} aria-pressed={category === name} onClick={() => setCategory(name)}>{splitCamelCase(name)}</button>
-          ))}
+        <div className="story-animation-picker-filters">
+          {status === "ready" && actions.length > 0 && !hasPreviews ? <p className="story-animation-picker-note">{model?.providerName ?? "This provider"} provides preset moves without visual previews.</p> : null}
+          {categories.length > 1 || category ? <div className="story-animation-picker-categories" role="group" aria-label="Move categories">
+            <button className="canvas-chip is-toggle" type="button" aria-pressed={!category} onClick={() => setCategory(undefined)}>All</button>
+            {categories.map((name) => (
+              <button className="canvas-chip is-toggle" type="button" key={name} aria-pressed={category === name} onClick={() => setCategory(name)}>{splitCamelCase(name)}</button>
+            ))}
+          </div> : null}
         </div>
-        <div className="story-animation-picker-grid">
-          {!runtime.configured ? <p>Set up Meshy in <button type="button" onClick={MANAGE_PROVIDERS.onSelect}>Manage providers</button> to browse moves.</p>
-            : runtime.actionsStatus === "loading" ? <p><LoaderCircle className="spin" size={16} /> Loading moves...</p>
-            : runtime.actionsStatus === "error" ? <p>Could not load moves. <button type="button" onClick={runtime.onReloadActions}>Try again</button></p>
+        <div className={`story-animation-picker-grid${!hasPreviews ? " is-list" : ""}`}>
+          {!model ? <p>Set up an animation provider in <button type="button" onClick={MANAGE_PROVIDERS.onSelect}>Manage providers</button> to browse moves.</p>
+            : status === "loading" ? <p><LoaderCircle className="spin" size={16} /> Loading moves...</p>
+            : status === "error" ? <p>Could not load moves. <button type="button" onClick={() => setReload((value) => value + 1)}>Try again</button></p>
             : visible.length === 0 ? <p>No moves match your search</p>
             : visible.map((action) => {
               const chosen = selectedIds.includes(action.id);
               return (
-                <button type="button" key={action.id} aria-pressed={chosen} disabled={!chosen && full} onClick={() => toggle(action.id)} title={`${action.name} · ${splitCamelCase(action.subCategory)}`}>
-                  <span className="story-animation-picker-preview">
-                    {action.previewUrl ? <img src={action.previewUrl} alt="" loading="lazy" /> : <WandSparkles size={20} />}
+                <button type="button" key={action.id} className={!action.previewUrl ? "story-animation-picker-text-move" : undefined} aria-pressed={chosen} disabled={!chosen && full} onClick={() => toggle(action.id)} title={`${action.name} · ${splitCamelCase(action.subCategory)}`}>
+                  {action.previewUrl ? <span className="story-animation-picker-preview">
+                    <img src={action.previewUrl} alt="" loading="lazy" />
                     {chosen ? <span className="story-animation-picker-check"><Check size={12} /></span> : null}
-                  </span>
+                  </span> : null}
                   <strong>{action.name}</strong>
+                  {!action.previewUrl ? <span className="story-animation-picker-selection" aria-hidden="true">{chosen ? <Check size={12} /> : null}</span> : null}
                 </button>
               );
             })}
         </div>
         <footer>
-          <span>{selectedIds.length}/{MAX_ANIMATION_ACTIONS} selected · Meshy bills each move</span>
+          <span>{selectedIds.length}/{MAX_ANIMATION_ACTIONS} selected · Rigging and animation use provider credits</span>
           <div className="story-animation-picker-selected" aria-label="Selected moves, in clip order">
             {selectedIds.length === 0 ? <span>No moves selected</span> : selectedIds.map((id) => (
               <button className="canvas-chip" type="button" key={id} title="Remove move" onClick={() => toggle(id)}>
@@ -1885,19 +2127,19 @@ function MediaPrompt({ kind, value, runtime, onChange }: {
   );
 }
 
-function MediaReferenceStrip({ runtime, large = false }: { runtime?: ReferenceMediaNodeRuntime; large?: boolean }) {
+function MediaReferenceStrip({ runtime, large = false }: { runtime?: ReferenceStripRuntime; large?: boolean }) {
   const input = useRef<HTMLInputElement>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const references = runtime?.references ?? [];
   if (!runtime || (runtime.linkedPrompt === undefined && references.length === 0 && runtime.maxReferences === 0)) return null;
   // References fill positions in order, so only the next open slot takes an upload; later slots just show what can follow.
   const [nextSlot, ...laterSlots] = runtime.slotLabels?.slice(references.length) ?? [];
-  const addLabel = nextSlot ? `Add ${nextSlot.toLowerCase()} view` : runtime.addLabel;
+  const addLabel = nextSlot ? `Add ${nextSlot.toLowerCase()}` : runtime.addLabel;
   return (
     <div className={`story-media-references${large ? " is-large" : ""}`} aria-label="References">
       {runtime?.linkedPrompt !== undefined ? <TextReferenceThumbnail runtime={runtime} /> : null}
       {references.map((reference, index) => (
-        <MediaReferenceThumbnail
+        <CanvasReferenceThumbnail
           key={reference.key}
           reference={reference}
           caption={runtime.slotLabels?.[index]}
@@ -1936,6 +2178,7 @@ function MediaReferenceStrip({ runtime, large = false }: { runtime?: ReferenceMe
           />
           {libraryOpen && runtime.onAddLibraryReference ? <LibraryAssetPicker
             title={addLabel}
+            includeReferences
             assets={runtime.libraryImages ?? []}
             uploading={runtime.uploading}
             onUpload={() => input.current?.click()}
@@ -1944,12 +2187,12 @@ function MediaReferenceStrip({ runtime, large = false }: { runtime?: ReferenceMe
           /> : null}
         </>
       ) : null}
-      {laterSlots.map((label) => <div className="story-media-reference-slot" key={label} aria-hidden="true"><span>{label}</span></div>)}
+      {runtime.showEmptySlots !== false ? laterSlots.map((label) => <div className="story-media-reference-slot" key={label} aria-hidden="true"><span>{label}</span></div>) : null}
     </div>
   );
 }
 
-function TextReferenceThumbnail({ runtime }: { runtime: MediaNodeRuntime }) {
+function TextReferenceThumbnail({ runtime }: { runtime: Pick<MediaNodeRuntime, "busy" | "linkedPrompt" | "onDisconnectPrompt"> }) {
   const text = runtime.linkedPrompt?.trim() ?? "";
   return (
     <div className="story-media-reference story-text-reference" title={text || "Connected Text node is empty"}>
@@ -1959,44 +2202,26 @@ function TextReferenceThumbnail({ runtime }: { runtime: MediaNodeRuntime }) {
   );
 }
 
-function MediaReferenceThumbnail({ reference, caption, disabled, onRemove }: {
-  reference: MediaReferenceView;
-  caption?: string;
-  disabled?: boolean;
-  onRemove: () => void;
-}) {
-  const preview = useWorkspaceAssetUrl(undefined, "", 0, reference.type === "audio" || reference.type === "model" ? undefined : reference.assetId);
-  return (
-    <div className="story-media-reference" title={`${reference.label}: ${reference.name}`}>
-      {preview.url && reference.type === "image" ? <img src={preview.url} alt={reference.name} /> : null}
-      {preview.url && reference.type === "video" ? <video src={preview.url} muted playsInline preload="metadata" /> : null}
-      {reference.type === "audio" || reference.type === "model" || !preview.url
-        ? reference.type === "audio" ? <Music2 size={18} /> : reference.type === "model" ? <Box size={18} /> : reference.type === "video" ? <Film size={18} /> : <ImageIcon size={18} />
-        : null}
-      {caption ? <small>{caption}</small> : null}
-      <button type="button" title={`Remove ${reference.name}`} aria-label={`Remove ${reference.name}`} disabled={disabled} onClick={onRemove}>
-        <X size={11} />
-      </button>
-    </div>
-  );
-}
-
-function MediaNodeShell({ kind, selected, assetId, aspectRatio, runtime, children }: {
+function MediaNodeShell({ kind, selected, panelOpen, assetId, assetAspectRatio, aspectRatio, runtime, details, emptyHint, children }: {
   kind: "image" | "video" | "model" | "animation";
   selected: boolean;
+  panelOpen?: boolean;
   assetId?: string;
+  assetAspectRatio?: number;
   aspectRatio?: ImageAspectRatio | VideoAspectRatio;
   runtime?: MediaNodeRuntime;
+  details?: CanvasNodeDetails;
+  emptyHint?: string;
   children: React.ReactNode;
 }) {
   const preview = useWorkspaceAssetUrl(undefined, "", 0, assetId);
   const Icon = kind === "image" ? ImageIcon : kind === "video" ? Film : kind === "animation" ? WandSparkles : Box;
   const label = kind === "image" ? "Image" : kind === "video" ? "Video" : kind === "animation" ? "Animate 3D" : "Model 3D";
   const threeD = kind === "model" || kind === "animation";
-  const mediaLayout = useMediaNodeLayout(threeD ? undefined : preview.url, aspectRatio);
+  const mediaLayout = useMediaNodeLayout(threeD ? undefined : preview.url, assetAspectRatio ?? parseAspectRatio(aspectRatio));
   return (
     <div className={`story-node story-media-node story-generation-media-node${selected ? " is-selected" : ""}`} style={mediaLayout.style}>
-      <div className="story-media-node-label"><Icon size={14} /><span>{label}</span></div>
+      <CanvasNodeLabel icon={Icon} label={label} details={details} />
       <div data-alignment-frame className={`story-media-stage${runtime?.generating ? " is-generating" : ""}`}>
         {preview.url ? <MediaViewButton /> : null}
         {preview.url && kind === "image" ? <img src={preview.url} alt="Generated image" onLoad={mediaLayout.onImageLoad} /> : null}
@@ -2005,10 +2230,10 @@ function MediaNodeShell({ kind, selected, assetId, aspectRatio, runtime, childre
         {!preview.url && !runtime?.generating ? (
           <div className="story-media-empty">
             <Icon size={34} />
-            <strong>No {kind} yet</strong>
-            <span>{kind === "model" ? "Add a reference image below, then generate"
+            <strong>{assetId ? preview.error ? "Asset unavailable" : "Loading asset..." : `No ${kind} yet`}</strong>
+            {assetId ? <CanvasAssetRecovery preview={preview} /> : <span>{emptyHint ?? (kind === "model" ? "Add a reference image below, then generate"
               : kind === "animation" ? "Connect a humanoid 3D model, pick moves, then animate"
-              : `Describe a ${kind} below, then generate`}</span>
+              : `Describe a ${kind} below, then generate`)}</span>}
           </div>
         ) : null}
         {runtime?.generating ? (
@@ -2021,9 +2246,13 @@ function MediaNodeShell({ kind, selected, assetId, aspectRatio, runtime, childre
       </div>
       <Handle className="story-media-input-handle" type="target" position={Position.Left} />
       <Handle className="story-media-output-handle" id={OUTPUT_HANDLE} type="source" position={Position.Right} />
-      {selected ? <div className="story-media-composer nodrag nowheel">{children}</div> : null}
+      {panelOpen ? <div className="canvas-node-auxiliary"><div className="story-media-composer nodrag nowheel">{children}</div></div> : null}
     </div>
   );
+}
+
+function CanvasAssetRecovery({ preview }: { preview: ReturnType<typeof useWorkspaceAssetUrl> }) {
+  return preview.error ? <><span role="status">{preview.error}</span><button className="canvas-asset-retry nodrag" type="button" disabled={preview.loading} onClick={preview.retry}>{preview.loading ? "Checking…" : "Check again"}</button></> : null;
 }
 
 function CanvasVideo({ src, onLoadedMetadata }: {
@@ -2126,14 +2355,14 @@ function formatMediaTime(seconds: number): string {
   return `${minutes}:${String(wholeSeconds % 60).padStart(2, "0")}`;
 }
 
-function useMediaNodeLayout(source?: string, fallbackAspectRatio?: ImageAspectRatio | VideoAspectRatio): {
+/** Sizes a media card from the loaded media, else from the ratio known in advance. */
+function useMediaNodeLayout(source?: string, knownAspectRatio?: number): {
   style: CSSProperties;
   onImageLoad: (event: SyntheticEvent<HTMLImageElement>) => void;
   onVideoMetadata: (event: SyntheticEvent<HTMLVideoElement>) => void;
 } {
   const [intrinsic, setIntrinsic] = useState<{ source?: string; ratio: number }>();
-  const fallback = parseAspectRatio(fallbackAspectRatio);
-  const size = fitMediaNode(intrinsic && intrinsic.source === source ? intrinsic.ratio : fallback);
+  const size = fitMediaNode(intrinsic && intrinsic.source === source ? intrinsic.ratio : knownAspectRatio);
 
   function remember(width: number, height: number): void {
     if (width > 0 && height > 0) setIntrinsic({ source, ratio: width / height });
@@ -2147,6 +2376,10 @@ function useMediaNodeLayout(source?: string, fallbackAspectRatio?: ImageAspectRa
     onImageLoad: (event) => remember(event.currentTarget.naturalWidth, event.currentTarget.naturalHeight),
     onVideoMetadata: (event) => remember(event.currentTarget.videoWidth, event.currentTarget.videoHeight),
   };
+}
+
+function mediaAspectRatio(asset?: Pick<LibraryAsset, "width" | "height">): number | undefined {
+  return asset?.width && asset.height ? asset.width / asset.height : undefined;
 }
 
 function parseAspectRatio(value?: ImageAspectRatio | VideoAspectRatio): number | undefined {
@@ -2211,20 +2444,22 @@ function formatPreviewTime(timeMs: number): string {
 
 function AssetCanvasAddControl({
   documents,
+  tables,
   libraryAssets,
   importing,
   onAdd,
   onAddAsset,
   onUpload,
 }: {
-  documents?: CanvasDesignDocuments;
+  documents: CanvasDocuments;
+  tables: CanvasTables;
   libraryAssets: LibraryAsset[];
   importing: boolean;
   onAdd: (type: Exclude<AssetCanvasNodeType, "asset">, position: { x: number; y: number }, documentId?: string) => void;
   onAddAsset: (asset: LibraryAsset, position: { x: number; y: number }) => void;
   onUpload: (file: File, position: { x: number; y: number }) => void;
 }) {
-  const creationGroups = canvasCreationGroups(documents);
+  const creationGroups = canvasCreationGroups(documents, tables);
   const [addOpen, setAddOpen] = useState(false);
   const [openCreationBranch, setOpenCreationBranch] = useState<OpenCanvasNodeCreationBranch>();
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -2253,7 +2488,7 @@ function AssetCanvasAddControl({
   function addItem(item: CanvasNodeCreationLeaf): void {
     const position = placementPosition();
     if (!position) return;
-    onAdd(item.action.type, position, item.action.documentId);
+    onAdd(item.action.type, position, item.action.documentId ?? item.action.tableId);
     setAddOpen(false);
   }
 
@@ -2367,6 +2602,7 @@ function CanvasAssetViewer({ asset, name, onDownload, onSendToProject, onClose }
 
 function AssetCanvasContextMenu({
   documents,
+  tables,
   onUseInDocument,
   menu,
   canUndo,
@@ -2390,8 +2626,10 @@ function AssetCanvasContextMenu({
   onCopy,
   onDuplicate,
   onDelete,
+  onDetails,
 }: {
-  documents?: CanvasDesignDocuments;
+  documents: CanvasDocuments;
+  tables: CanvasTables;
   onUseInDocument?: () => void;
   menu: CanvasContextMenuState;
   canUndo: boolean;
@@ -2415,8 +2653,9 @@ function AssetCanvasContextMenu({
   onCopy: () => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  onDetails?: () => void;
 }) {
-  const creationGroups = canvasCreationGroups(documents);
+  const creationGroups = canvasCreationGroups(documents, tables);
   const uploadInput = useRef<HTMLInputElement>(null);
   const [addOpen, setAddOpen] = useState(false);
   const [openCreationBranch, setOpenCreationBranch] = useState<OpenCanvasNodeCreationBranch>();
@@ -2424,38 +2663,46 @@ function AssetCanvasContextMenu({
     action();
     onClose();
   };
+  const creationItems = <>
+    {creationGroups.map((group) => <Fragment key={group.label}>
+      <span className="story-canvas-context-menu-label">{group.label}</span>
+      {group.items.map((item) => {
+        const Icon = item.icon;
+        if (!isCanvasNodeCreationLeaf(item)) return <button
+          type="button"
+          role="menuitem"
+          key={item.label}
+          aria-haspopup="menu"
+          aria-expanded={openCreationBranch?.branch === item}
+          onPointerEnter={(event) => setOpenCreationBranch({ branch: item, top: event.currentTarget.offsetTop })}
+          onClick={(event) => setOpenCreationBranch({ branch: item, top: event.currentTarget.offsetTop })}
+        ><Icon size={15} /><span>{item.label}</span><ChevronRight size={13} /></button>;
+        return <button type="button" role="menuitem" key={item.label} onPointerEnter={() => setOpenCreationBranch(undefined)} onClick={() => run(() => onAdd(item))}><Icon size={15} /><span>{item.label}</span></button>;
+      })}
+    </Fragment>)}
+  </>;
+  const creationBranch = openCreationBranch ? <div className="story-canvas-context-branch-menu" role="menu" aria-label={openCreationBranch.branch.label} style={{ top: openCreationBranch.top }}>
+    {openCreationBranch.branch.children.map((child) => { const ChildIcon = child.icon; return <button type="button" role="menuitem" key={child.label} onClick={() => run(() => onAdd(child))}><ChildIcon size={15} /><span>{child.label}</span></button>; })}
+  </div> : null;
+
+  // A double-click on the canvas opens just the Add node list.
+  if (menu.kind === "add") return (
+    <CanvasContextMenu screenPosition={menu.screenPosition} label="Add node" onClose={onClose}>
+      {creationItems}
+      {creationBranch}
+    </CanvasContextMenu>
+  );
 
   return (
     <CanvasContextMenu screenPosition={menu.screenPosition} label={menu.kind === "pane" ? "Canvas actions" : "Node actions"} onClose={onClose}>
-      {documents && onUseInDocument ? <button type="button" role="menuitem" onClick={() => run(onUseInDocument)}><FileText size={15} /><span>Add to document</span></button> : null}
+      {onDetails ? <button type="button" role="menuitem" onClick={() => run(onDetails)}><Pencil size={15} /><span>Node details</span></button> : null}
+      {onUseInDocument ? <button type="button" role="menuitem" onClick={() => run(onUseInDocument)}><FileText size={15} /><span>Add to document</span></button> : null}
       {menu.kind === "pane" ? <>
-        <button type="button" role="menuitem" disabled={!canUndo} onClick={() => run(onUndo)}><Undo2 size={15} /><span>Undo</span></button>
-        <button type="button" role="menuitem" disabled={!canRedo} onClick={() => run(onRedo)}><Redo2 size={15} /><span>Redo</span></button>
-        <button type="button" role="menuitem" disabled={!canPaste} onClick={() => run(onPaste)}><Clipboard size={15} /><span>Paste</span></button>
         <div className="story-canvas-context-submenu-root" onPointerEnter={() => setAddOpen(true)}>
           <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={addOpen} onClick={() => setAddOpen(true)}><Plus size={15} /><span>Add node</span><ChevronRight size={13} /></button>
           {addOpen ? <div className="story-canvas-context-add-menu">
-            <div className="story-canvas-context-submenu" role="menu" aria-label="Add node">
-              {creationGroups.map((group) => <Fragment key={group.label}>
-                <span className="story-canvas-context-menu-label">{group.label}</span>
-                {group.items.map((item) => {
-                  const Icon = item.icon;
-                  if (!isCanvasNodeCreationLeaf(item)) return <button
-                    type="button"
-                    role="menuitem"
-                    key={item.label}
-                    aria-haspopup="menu"
-                    aria-expanded={openCreationBranch?.branch === item}
-                    onPointerEnter={(event) => setOpenCreationBranch({ branch: item, top: event.currentTarget.offsetTop })}
-                    onClick={(event) => setOpenCreationBranch({ branch: item, top: event.currentTarget.offsetTop })}
-                  ><Icon size={15} /><span>{item.label}</span><ChevronRight size={13} /></button>;
-                  return <button type="button" role="menuitem" key={item.label} onPointerEnter={() => setOpenCreationBranch(undefined)} onClick={() => run(() => onAdd(item))}><Icon size={15} /><span>{item.label}</span></button>;
-                })}
-              </Fragment>)}
-            </div>
-            {openCreationBranch ? <div className="story-canvas-context-branch-menu" role="menu" aria-label={openCreationBranch.branch.label} style={{ top: openCreationBranch.top }}>
-              {openCreationBranch.branch.children.map((child) => { const ChildIcon = child.icon; return <button type="button" role="menuitem" key={child.label} onClick={() => run(() => onAdd(child))}><ChildIcon size={15} /><span>{child.label}</span></button>; })}
-            </div> : null}
+            <div className="story-canvas-context-submenu" role="menu" aria-label="Add node">{creationItems}</div>
+            {creationBranch}
           </div> : null}
         </div>
         <button type="button" role="menuitem" disabled={importing} onClick={() => uploadInput.current?.click()}><Upload size={15} /><span>{importing ? "Uploading..." : "Upload"}</span></button>
@@ -2471,6 +2718,10 @@ function AssetCanvasContextMenu({
             onClose();
           }}
         />
+        <div className="playable-project-menu-separator" role="separator" />
+        <button type="button" role="menuitem" disabled={!canUndo} onClick={() => run(onUndo)}><Undo2 size={15} /><span>Undo</span></button>
+        <button type="button" role="menuitem" disabled={!canRedo} onClick={() => run(onRedo)}><Redo2 size={15} /><span>Redo</span></button>
+        <button type="button" role="menuitem" disabled={!canPaste} onClick={() => run(onPaste)}><Clipboard size={15} /><span>Paste</span></button>
       </> : <>
         {canView ? <button type="button" role="menuitem" disabled={nodeActionsDisabled} onClick={() => run(onView)}><Maximize size={15} /><span>View</span></button> : null}
         {canDownload ? <button type="button" role="menuitem" disabled={nodeActionsDisabled} onClick={() => run(onDownload)}><Download size={15} /><span>Download</span></button> : null}
@@ -2484,6 +2735,9 @@ function AssetCanvasContextMenu({
 }
 
 function toFlowNode(node: AssetCanvasNode, imageModels: ImageModel[], videoModels: VideoModel[]): AssetCanvasFlowNode {
+  return { ...flowNodeData(node, imageModels, videoModels), ...(node.width !== undefined ? { width: node.width } : {}), ...(node.height !== undefined ? { height: node.height } : {}), ...(node.title !== undefined ? { title: node.title } : {}), ...(node.description !== undefined ? { description: node.description } : {}) };
+}
+function flowNodeData(node: AssetCanvasNode, imageModels: ImageModel[], videoModels: VideoModel[]): AssetCanvasFlowNode {
   if (node.type === "asset") return { ...node, deletable: true };
   if (node.type === "text") return {
     id: node.id,
@@ -2493,7 +2747,9 @@ function toFlowNode(node: AssetCanvasNode, imageModels: ImageModel[], videoModel
     data: {
       text: node.data.text,
       instruction: node.data.instruction,
+      ...(node.data.references ? { references: node.data.references } : {}),
       ...(node.data.model ? { textModel: node.data.model } : {}),
+      ...(node.data.reasoningLevel ? { reasoningLevel: node.data.reasoningLevel } : {}),
     },
   };
   if (node.type === "video") {
@@ -2510,7 +2766,9 @@ function toFlowNode(node: AssetCanvasNode, imageModels: ImageModel[], videoModel
         videoResolution: model?.resolutions.includes(node.data.resolution) ? node.data.resolution : model?.resolutions[0] ?? node.data.resolution,
         videoAspectRatio: model?.aspectRatios.includes(node.data.aspectRatio) ? node.data.aspectRatio : model?.aspectRatios[0] ?? node.data.aspectRatio,
         duration: model?.durations.includes(node.data.duration) ? node.data.duration : model?.durations[0] ?? node.data.duration,
-        references: node.data.references.slice(0, model?.maxImageReferences ?? node.data.references.length),
+        references: node.data.references,
+        referenceMode: node.data.referenceMode,
+        referenceMentions: node.data.referenceMentions,
         ...(node.data.assetId ? { assetId: node.data.assetId } : {}),
       },
     };
@@ -2523,6 +2781,8 @@ function toFlowNode(node: AssetCanvasNode, imageModels: ImageModel[], videoModel
     // The flow keeps the source in `images` so connections, edges, and removal share the reference code paths.
     data: {
       images: node.data.source ? [node.data.source] : [],
+      animationModel: node.data.model,
+      model3DOptions: node.data.options,
       heightMeters: node.data.heightMeters,
       actionIds: node.data.actionIds,
       ...(node.data.assetId ? { assetId: node.data.assetId } : {}),
@@ -2534,13 +2794,17 @@ function toFlowNode(node: AssetCanvasNode, imageModels: ImageModel[], videoModel
     position: node.position,
     deletable: true,
     data: {
-      prompt: "",
+      prompt: node.data.prompt ?? "",
+      promptSource: node.data.promptSource,
+      model3DOperation: node.data.operation,
+      model3DSource: node.data.source,
+      model3DOptions: node.data.options,
       model3DConfig: normalizeModel3DConfig({
         model: node.data.model,
         targetPolycount: node.data.targetPolycount,
         texture: node.data.texture,
         pbr: node.data.pbr,
-      }),
+      }, undefined, node.data.operation),
       images: node.data.images.slice(0, MODEL_3D_MAX_REFERENCE_IMAGES),
       ...(node.data.assetId ? { assetId: node.data.assetId } : {}),
     },
@@ -2571,7 +2835,7 @@ function createFlowNode(type: Exclude<AssetCanvasNodeType, "asset">, position: {
   if (type === "video") {
     const model = videoModels[0];
     const aspectRatio = model?.aspectRatios[0] ?? DEFAULT_VIDEO_NODE_CONFIG.aspectRatio;
-    return toFlowNode(createAssetGenerationNode(type, position, { ...(model ? { videoModel: { provider: model.provider, id: model.id } } : {}), videoAspectRatio: aspectRatio }), imageModels, videoModels);
+    return toFlowNode(createAssetGenerationNode(type, position, { ...(model ? { videoModel: { provider: model.provider, id: model.id }, videoReferenceMode: model.imageReferenceMode } : {}), videoAspectRatio: aspectRatio }), imageModels, videoModels);
   }
   if (type === "model-3d") return toFlowNode(createAssetGenerationNode(type, position), imageModels, videoModels);
   if (type === "animate-3d") {
@@ -2582,48 +2846,69 @@ function createFlowNode(type: Exclude<AssetCanvasNodeType, "asset">, position: {
 }
 
 /** The generation settings a node passes on to the next node of its type. */
-type NodeGenerationSettings = Pick<AssetCanvasFlowData, "textModel" | "model" | "resolution" | "aspectRatio" | "videoModel" | "videoResolution" | "videoAspectRatio" | "duration" | "model3DConfig">;
+type NodeGenerationSettings = Pick<AssetCanvasFlowData, "textModel" | "reasoningLevel" | "model" | "resolution" | "aspectRatio" | "videoModel" | "videoResolution" | "videoAspectRatio" | "duration" | "model3DConfig">;
 type RememberedSettings = Partial<Record<AssetCanvasNodeType, NodeGenerationSettings>>;
 
 export function nodeGenerationSettings(node: Pick<AssetCanvasFlowNode, "type" | "data">): NodeGenerationSettings | undefined {
   const { data } = node;
-  if (node.type === "text") return data.textModel ? { textModel: { provider: data.textModel.provider, id: data.textModel.id } } : {};
+  if (node.type === "text") return { ...(data.textModel ? { textModel: { provider: data.textModel.provider, id: data.textModel.id } } : {}), ...(data.reasoningLevel ? { reasoningLevel: data.reasoningLevel } : {}) };
   if (node.type === "image") return { model: data.model, resolution: data.resolution, aspectRatio: data.aspectRatio };
   if (node.type === "video") return { videoModel: data.videoModel, videoResolution: data.videoResolution, videoAspectRatio: data.videoAspectRatio, duration: data.duration };
   if (node.type === "model-3d") return { model3DConfig: data.model3DConfig };
   return undefined;
 }
 
-/** Starts a new node with remembered settings, dropping any the current catalogs no longer offer. */
+/** Starts a new node with supported remembered options and configured media defaults. */
 export function applyRememberedSettings(
   node: AssetCanvasFlowNode,
   settings: NodeGenerationSettings | undefined,
-  catalogs: { imageModels: readonly ImageModel[]; videoModels: readonly VideoModel[]; textModels: readonly AgentModel[] },
+  catalogs: { imageModels: readonly ImageModel[]; defaultImageModel?: ImageModelRef; videoModels: readonly VideoModel[]; defaultVideoModel?: ModelRef; model3DModels?: readonly Model3DModel[]; defaultModel3D?: ModelRef; textModels: readonly AgentModel[] },
 ): AssetCanvasFlowNode {
-  if (!settings) return node;
   if (node.type === "image") {
-    const model = catalogs.imageModels.find((candidate) => sameImageModel(candidate, settings.model));
-    if (!model) return node;
-    const option = model.generationOptions.find((candidate) => candidate.resolution === settings.resolution && candidate.aspectRatio === settings.aspectRatio)
-      ?? preferredImageOption(model);
+    const reference = catalogs.defaultImageModel ?? settings?.model;
+    if (!reference) return node;
+    const model = catalogs.imageModels.find((candidate) => sameImageModel(candidate, reference));
+    if (!model) return catalogs.defaultImageModel ? { ...node, data: { ...node.data, model: reference } } : node;
+    const options = settings ?? node.data;
+    const option = model.generationOptions.find((candidate) => candidate.resolution === options.resolution && candidate.aspectRatio === options.aspectRatio)
+      ?? preferredImageOption(model, options.aspectRatio);
     return { ...node, data: { ...node.data, model: { provider: model.provider, id: model.id }, ...(option ? { resolution: option.resolution, aspectRatio: option.aspectRatio } : {}) } };
   }
   if (node.type === "video") {
-    const model = catalogs.videoModels.find((candidate) => sameModel(candidate, settings.videoModel));
+    const reference = catalogs.defaultVideoModel ?? settings?.videoModel ?? node.data.videoModel;
+    const model = catalogs.videoModels.find((candidate) => sameModel(candidate, reference));
+    if (!model && catalogs.defaultVideoModel) return { ...node, data: { ...node.data, videoModel: catalogs.defaultVideoModel } };
     if (!model) return node;
+    const options = settings ?? node.data;
     return {
       ...node,
       data: {
         ...node.data,
         videoModel: { provider: model.provider, id: model.id },
-        videoResolution: settings.videoResolution && model.resolutions.includes(settings.videoResolution) ? settings.videoResolution : model.resolutions[0],
-        videoAspectRatio: settings.videoAspectRatio && model.aspectRatios.includes(settings.videoAspectRatio) ? settings.videoAspectRatio : model.aspectRatios[0],
-        duration: settings.duration !== undefined && model.durations.includes(settings.duration) ? settings.duration : model.durations[0],
+        videoResolution: options.videoResolution && model.resolutions.includes(options.videoResolution) ? options.videoResolution : model.resolutions[0],
+        videoAspectRatio: options.videoAspectRatio && model.aspectRatios.includes(options.videoAspectRatio) ? options.videoAspectRatio : model.aspectRatios[0],
+        duration: options.duration !== undefined && model.durations.includes(options.duration) ? options.duration : model.durations[0],
+        referenceMode: model.referenceModes?.includes(node.data.referenceMode ?? model.imageReferenceMode ?? "reference") ? node.data.referenceMode ?? model.imageReferenceMode : model.referenceModes?.[0],
       },
     };
   }
-  if (node.type === "model-3d" && settings.model3DConfig) return { ...node, data: { ...node.data, model3DConfig: normalizeModel3DConfig(settings.model3DConfig) } };
-  if (node.type === "text" && catalogs.textModels.some((model) => sameModel(model, settings.textModel))) return { ...node, data: { ...node.data, textModel: settings.textModel } };
+  if (node.type === "model-3d") {
+    const reference = catalogs.defaultModel3D ?? settings?.model3DConfig?.model;
+    const model = reference ? catalogs.model3DModels?.find((candidate) => sameModel(candidate, reference)) : catalogs.model3DModels?.[0];
+    if (reference && !model) return { ...node, data: { ...node.data, model3DConfig: normalizeModel3DConfig({ ...settings?.model3DConfig, model: reference }) } };
+    if (model) {
+      const options = settings?.model3DConfig;
+      return { ...node, data: { ...node.data, model3DConfig: normalizeModel3DConfig({ ...options, model: modelRef(model),
+        targetPolycount: options && options.targetPolycount >= model.polycount.min && options.targetPolycount <= model.polycount.max ? options.targetPolycount : model.polycount.default,
+        texture: options?.texture, pbr: options?.pbr }, model) } };
+    }
+    if (settings?.model3DConfig) return { ...node, data: { ...node.data, model3DConfig: normalizeModel3DConfig(settings.model3DConfig) } };
+  }
+  if (!settings) return node;
+  if (node.type === "text") {
+    const model = catalogs.textModels.find((candidate) => sameModel(candidate, settings.textModel));
+    if (model) return { ...node, data: { ...node.data, textModel: settings.textModel, ...(settings.reasoningLevel ? { reasoningLevel: clampReasoningLevel(settings.reasoningLevel, model.reasoningLevels) } : {}) } };
+  }
   return node;
 }
 
@@ -2632,17 +2917,21 @@ function assetCanvasDocument(
   nodes: AssetCanvasFlowNode[],
   edges: Edge[],
   editorLayout: AssetCanvasEditorLayout,
+  model3DModels: readonly Model3DModel[],
 ): AssetCanvasDocument {
   return {
     version: 1,
     editorLayout,
     viewport,
-    nodes: nodes.map(toAssetCanvasNode),
+    nodes: nodes.map((node) => toAssetCanvasNode(node, model3DModels)),
     edges: edges.map(({ id, source, target, sourceHandle }) => ({ id, source, target, ...(sourceHandle ? { sourceHandle } : {}) })),
   };
 }
 
-export function toAssetCanvasNode(node: AssetCanvasFlowNode): AssetCanvasNode {
+export function toAssetCanvasNode(node: AssetCanvasFlowNode, model3DModels?: readonly Model3DModel[]): AssetCanvasNode {
+  return { ...assetCanvasNodeData(node, model3DModels), ...(node.width !== undefined ? { width: node.width } : {}), ...(node.height !== undefined ? { height: node.height } : {}), ...(node.title !== undefined ? { title: node.title } : {}), ...(node.description !== undefined ? { description: node.description } : {}) };
+}
+function assetCanvasNodeData(node: AssetCanvasFlowNode, model3DModels?: readonly Model3DModel[]): AssetCanvasNode {
   if (node.type === "animate-3d") {
     const source = node.data.images?.[0];
     return {
@@ -2651,13 +2940,16 @@ export function toAssetCanvasNode(node: AssetCanvasFlowNode): AssetCanvasNode {
       position: node.position,
       data: {
         ...(source ? { source } : {}),
+        ...(node.data.animationModel ? { model: node.data.animationModel } : {}),
+        ...(node.data.model3DOptions ? { options: node.data.model3DOptions } : {}),
         heightMeters: node.data.heightMeters ?? DEFAULT_CHARACTER_HEIGHT_METERS,
         actionIds: node.data.actionIds ?? [],
         ...(node.data.assetId ? { assetId: node.data.assetId } : {}),
       },
     };
   }
-  if (node.type === "document") return { id: node.id, type: "document", position: node.position, data: { documentId: node.data.documentId ?? "" } };
+  if (node.type === "table") return { id: node.id, type: "table", position: node.position, data: { tableId: node.data.tableId ?? "" } };
+  if (node.type === "document") return { id: node.id, type: "document", position: node.position, data: { documentId: node.data.documentId ?? "", ...(node.data.references ? { references: textNodeReferences(node) } : {}) } };
   if (node.type === "asset") return {
     id: node.id,
     type: "asset",
@@ -2671,7 +2963,9 @@ export function toAssetCanvasNode(node: AssetCanvasFlowNode): AssetCanvasNode {
     data: {
       text: node.data.text ?? "",
       instruction: node.data.instruction ?? "",
+      ...(node.data.references ? { references: textNodeReferences(node) } : {}),
       ...(node.data.textModel ? { model: modelRef(node.data.textModel) } : {}),
+      ...(node.data.reasoningLevel ? { reasoningLevel: node.data.reasoningLevel } : {}),
     },
   };
   if (node.type === "image") return {
@@ -2700,16 +2994,23 @@ export function toAssetCanvasNode(node: AssetCanvasFlowNode): AssetCanvasNode {
       aspectRatio: node.data.videoAspectRatio ?? DEFAULT_VIDEO_NODE_CONFIG.aspectRatio,
       duration: node.data.duration ?? DEFAULT_VIDEO_NODE_CONFIG.duration,
       references: node.data.references ?? [],
+      ...(node.data.referenceMode ? { referenceMode: node.data.referenceMode } : {}),
+      ...(node.data.referenceMentions ? { referenceMentions: node.data.referenceMentions } : {}),
       ...(node.data.assetId ? { assetId: node.data.assetId } : {}),
     },
   };
   if (node.type === "model-3d") {
-    const config = nodeModel3DConfig(node);
+    const config = nodeModel3DConfig(node, model3DModels);
     return {
       id: node.id,
       type: "model-3d",
       position: node.position,
       data: {
+        ...(node.data.model3DOperation ? { operation: node.data.model3DOperation } : {}),
+        ...(node.data.prompt ? { prompt: node.data.prompt } : {}),
+        ...(node.data.promptSource ? { promptSource: node.data.promptSource } : {}),
+        ...(node.data.model3DSource ? { source: node.data.model3DSource } : {}),
+        ...(node.data.model3DOptions ? { options: node.data.model3DOptions } : {}),
         ...(config.model ? { model: config.model } : {}),
         targetPolycount: config.targetPolycount,
         texture: config.texture,
@@ -2722,7 +3023,11 @@ export function toAssetCanvasNode(node: AssetCanvasFlowNode): AssetCanvasNode {
   throw new Error("Unsupported Asset Canvas Node type");
 }
 
-/** Keeps only the reference fields; catalog entries also carry display fields that canvas.json rejects. */
+/** Keeps only the reference fields accepted by the persisted board schema. */
+function textNodeReferences(node: AssetCanvasFlowNode): AssetCanvasTextReference[] {
+  return (node.data.references ?? []).flatMap((reference) => reference.type === "node" ? [{ type: "node" as const, nodeId: reference.nodeId }] : []);
+}
+
 function modelRef<T extends { provider: string; id: string }>(model: T): { provider: string; id: string } {
   return { provider: model.provider, id: model.id };
 }
@@ -2735,10 +3040,11 @@ function sameImageModel(left: ImageModelRef, right?: ImageModelRef): boolean {
   return Boolean(right && left.provider === right.provider && left.id === right.id);
 }
 
-function imageReferenceViews(node: AssetCanvasFlowNode, nodes: AssetCanvasFlowNode[], libraryAssets: LibraryAsset[]): MediaReferenceView[] {
+function imageReferenceViews(node: AssetCanvasFlowNode, nodes: AssetCanvasFlowNode[], libraryAssets: LibraryAsset[], model3DModels?: readonly Model3DModel[]): MediaReferenceView[] {
   if (node.type !== "image" && node.type !== "model-3d") return [];
+  const viewLabels = node.type === "model-3d" ? model3DViewLabels(nodeModel3D(node, model3DModels)) : undefined;
   return (node.data.images ?? []).map((reference, index) => {
-    const label = node.type === "model-3d" ? MODEL_3D_VIEW_LABELS[index] ?? `View ${index + 1}` : `Image ${index + 1}`;
+    const label = viewLabels ? viewLabels[index] ?? `View ${index + 1}` : `Image ${index + 1}`;
     if (reference.type === "library") {
       const asset = libraryAssets.find((candidate) => candidate.id === reference.assetId);
       return { assetId: reference.assetId, key: `library:${reference.assetId}:${index}`, name: asset?.name ?? "Missing image", label, type: "image" };
@@ -2759,7 +3065,7 @@ function imageReferenceViews(node: AssetCanvasFlowNode, nodes: AssetCanvasFlowNo
 }
 
 function modelReferenceViews(node: AssetCanvasFlowNode, nodes: AssetCanvasFlowNode[], libraryAssets: LibraryAsset[]): MediaReferenceView[] {
-  const source = node.type === "animate-3d" ? node.data.images?.[0] : undefined;
+  const source = node.type === "animate-3d" ? node.data.images?.[0] : node.type === "model-3d" ? node.data.model3DSource : undefined;
   if (!source) return [];
   if (source.type === "library") {
     const asset = libraryAssets.find((candidate) => candidate.id === source.assetId);
@@ -2802,7 +3108,7 @@ function videoReferenceViews(node: AssetCanvasFlowNode, nodes: AssetCanvasFlowNo
 function imageReferenceLimit(node: AssetCanvasFlowNode, imageModels: ImageModel[]): number {
   if (node.type !== "image") return 0;
   const model = imageModels.find((candidate) => sameImageModel(candidate, node.data.model));
-  return model?.supportsReferenceImage ? Math.min(IMAGE_REFERENCE_LIMIT, model.maxReferenceImages ?? IMAGE_REFERENCE_LIMIT) : 0;
+  return model?.supportsReferenceImage ? Math.min(IMAGE_MAX_REFERENCE_IMAGES, model.maxReferenceImages ?? IMAGE_MAX_REFERENCE_IMAGES) : 0;
 }
 
 function selectedVideoModel(node: AssetCanvasFlowNode, videoModels: VideoModel[]): VideoModel | undefined {
@@ -2817,37 +3123,42 @@ function sameModel(model: ModelRef, ref?: ModelRef): boolean {
   return Boolean(ref && model.provider === ref.provider && model.id === ref.id);
 }
 
-/** The model a 3D node runs: its saved choice, or the default when it has none or names one that no longer exists. */
-/** Meshy reads the first image as the front; the rest are any other angles, named here as suggestions. */
-const MODEL_3D_VIEW_LABELS = ["Front", "Side", "Back", "Other angle"];
-
-function nodeModel3D(node: Pick<AssetCanvasFlowNode, "type" | "data">): Model3DModel {
-  return resolveModel3D(nodeModel3DConfig(node).model) ?? DEFAULT_MODEL_3D;
+/** Direction labels are only shown for protocols that assign meaning to image order. */
+export function model3DViewLabels(model?: Model3DModel): string[] {
+  return Array.from({ length: model?.maxReferenceImages ?? MODEL_3D_MAX_REFERENCE_IMAGES }, (_, index) =>
+    model?.referenceImageLabels?.[index] ?? `Reference ${index + 1}`);
 }
 
-/** The node's model as offered by the catalog; undefined while its provider is not set up. */
-function selectedModel3D(config: Model3DGenerationConfig, models: readonly Model3DModel[]): Model3DModel | undefined {
-  const model = resolveModel3D(config.model) ?? DEFAULT_MODEL_3D;
-  return models.find((candidate) => sameModel(candidate, model));
+function nodeModel3D(node: Pick<AssetCanvasFlowNode, "type" | "data">, models: readonly Model3DModel[] = node.data.model3DRuntime?.models ?? []): Model3DModel | undefined {
+  if (node.data.model3DOperation === "retexture" || node.data.model3DOperation === "remesh") return resolveModel3DConnection(node.data.model3DConfig?.model, models);
+  return resolveModel3D(node.data.model3DConfig?.model, models);
 }
 
-function nodeModel3DConfig(node: Pick<AssetCanvasFlowNode, "type" | "data">): Model3DGenerationConfig {
+function nodeModel3DConfig(node: Pick<AssetCanvasFlowNode, "type" | "data">, models?: readonly Model3DModel[]): Model3DGenerationConfig {
   if (node.type !== "model-3d") return DEFAULT_MODEL_3D_CONFIG;
-  return normalizeModel3DConfig(node.data.model3DConfig);
+  const config = node.data.model3DConfig;
+  return normalizeModel3DConfig(config, nodeModel3D(node, models), node.data.model3DOperation);
 }
 
-type ConnectionRelation = "image-reference" | "video-reference" | "model-reference" | "prompt" | "document-image";
+type ConnectionRelation = "image-reference" | "video-reference" | "model-reference" | "prompt" | "text-reference";
 
-function connectionRelation(
+export function connectionRelation(
   source: AssetCanvasFlowNode,
   target: AssetCanvasFlowNode,
   _sourceHandle: string | null | undefined,
   nodes: AssetCanvasFlowNode[],
   libraryAssets: LibraryAsset[],
   imageModels: ImageModel[],
+  model3DModels: readonly Model3DModel[] = [],
 ): ConnectionRelation | undefined {
   if (source.id === target.id) return undefined;
-  if (target.type === "document" && source.data.assetId && isSupportedImageReferenceSource(source, libraryAssets)) return "document-image";
+  if (target.type === "text" || target.type === "document") {
+    if (source.type === "asset" && !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(libraryAssets.find((asset) => asset.id === source.data.assetId)?.contentType ?? "")) return undefined;
+    if (!isTextGenerationReferenceNode(source) || (target.data.references?.length ?? 0) >= MAX_TEXT_NODE_REFERENCES ||
+      target.data.references?.some((reference) => reference.type === "node" && reference.nodeId === source.id) ||
+      (source.type === "document" && target.type === "document" && source.data.documentId === target.data.documentId)) return undefined;
+    return "text-reference";
+  }
   if (isSupportedImageReferenceSource(source, libraryAssets) && target.type === "image") {
     return (target.data.images?.length ?? 0) < imageReferenceLimit(target, imageModels) &&
       !(target.data.images ?? []).some((image) => image.type === "node" && image.nodeId === source.id)
@@ -2855,16 +3166,22 @@ function connectionRelation(
       : undefined;
   }
   if (isSupportedImageReferenceSource(source, libraryAssets) && target.type === "model-3d") {
-    return (target.data.images?.length ?? 0) < nodeModel3D(target).maxReferenceImages &&
+    if (target.data.model3DOperation === "text" || target.data.model3DOperation === "remesh") return undefined;
+    if (target.data.model3DOperation === "retexture" && (target.data.images?.length ?? 0) >= 1) return undefined;
+    return (target.data.images?.length ?? 0) < (nodeModel3D(target, model3DModels)?.maxReferenceImages ?? MODEL_3D_MAX_REFERENCE_IMAGES) &&
       !(target.data.images ?? []).some((image) => image.type === "node" && image.nodeId === source.id)
       ? "image-reference"
       : undefined;
+  }
+  if (target.type === "model-3d" && (target.data.model3DOperation === "retexture" || target.data.model3DOperation === "remesh") && isModelSource(source, libraryAssets)) {
+    const current = target.data.model3DSource;
+    return current?.type === "node" && current.nodeId === source.id ? undefined : "model-reference";
   }
   if (target.type === "animate-3d") {
     const current = target.data.images?.[0];
     return isModelSource(source, libraryAssets) && !(current?.type === "node" && current.nodeId === source.id) ? "model-reference" : undefined;
   }
-  if ((source.type === "text" || source.type === "document") && (target.type === "image" || target.type === "video")) {
+  if ((source.type === "text" || source.type === "document") && (target.type === "image" || target.type === "video" || target.type === "model-3d" && (target.data.model3DOperation === "text" || target.data.model3DOperation === "retexture"))) {
     return target.data.promptSource?.nodeId === source.id ? undefined : "prompt";
   }
   if (target.type === "video") {
@@ -2879,7 +3196,7 @@ function isMediaNodeType(type: AssetCanvasNodeType): type is "image" | "video" {
 
 /** GLB output of a Model 3D node or a Library model; only GLB can be rigged. */
 function isModelSource(node: AssetCanvasFlowNode, libraryAssets: LibraryAsset[]): boolean {
-  if (node.type === "model-3d") return true;
+  if (node.type === "model-3d" || node.type === "animate-3d") return true;
   if (node.type !== "asset" || node.data.mediaType !== "model") return false;
   return libraryAssets.find((asset) => asset.id === node.data.assetId)?.contentType === "model/gltf-binary";
 }
@@ -2910,11 +3227,11 @@ function canAddVideoReference(target: AssetCanvasFlowNode, source: AssetCanvasFl
   return references.filter((reference) => reference.type === type).length < 9;
 }
 
-function assetEdgeId(relation: "scene" | "image" | "reference" | "prompt" | "presentation", targetId: string, referenceId: string): string {
+function assetEdgeId(relation: "scene" | "image" | "model" | "reference" | "prompt" | "presentation", targetId: string, referenceId: string): string {
   return `${ASSET_EDGE_PREFIX}${relation}:${targetId}:${referenceId}`;
 }
 
-function removeNodesAndReferences(nodes: AssetCanvasFlowNode[], removedIds: ReadonlySet<string>): AssetCanvasFlowNode[] {
+export function removeNodesAndReferences(nodes: AssetCanvasFlowNode[], removedIds: ReadonlySet<string>): AssetCanvasFlowNode[] {
   return nodes
     .filter((node) => !removedIds.has(node.id))
     .map((node) => node.type === "image" || node.type === "model-3d" || node.type === "animate-3d"
@@ -2922,11 +3239,12 @@ function removeNodesAndReferences(nodes: AssetCanvasFlowNode[], removedIds: Read
             ...node,
             data: {
               ...node.data,
+              ...(node.data.model3DSource?.type === "node" && removedIds.has(node.data.model3DSource.nodeId) ? { model3DSource: undefined } : {}),
               images: (node.data.images ?? []).filter((image) => image.type !== "node" || !removedIds.has(image.nodeId)),
               ...(node.data.promptSource && removedIds.has(node.data.promptSource.nodeId) ? { promptSource: undefined } : {}),
             },
           }
-      : node.type === "video"
+      : node.type === "video" || node.type === "text" || node.type === "document"
         ? {
             ...node,
             data: {
@@ -2938,14 +3256,10 @@ function removeNodesAndReferences(nodes: AssetCanvasFlowNode[], removedIds: Read
       : node);
 }
 
-function resolveLinkedPrompt(node: AssetCanvasFlowNode, nodes: AssetCanvasFlowNode[], design?: CanvasDesignDocuments): string | undefined {
+function resolveLinkedPrompt(node: AssetCanvasFlowNode, nodes: AssetCanvasFlowNode[], documents: CanvasDocuments): string | undefined {
   if (!node.data.promptSource) return undefined;
   const source = nodes.find((candidate) => candidate.id === node.data.promptSource?.nodeId);
-  return source?.type === "document" ? design?.documents.find((doc) => doc.id === source.data.documentId)?.markdown : source?.type === "text" ? source.data.text ?? "" : undefined;
-}
-
-function resolveNodePrompt(node: AssetCanvasFlowNode, nodes: AssetCanvasFlowNode[], design?: CanvasDesignDocuments): string {
-  return combineAssetCanvasPrompt(resolveLinkedPrompt(node, nodes, design), node.data.prompt ?? "");
+  return source?.type === "document" ? documents.documents.find((doc) => doc.id === source.data.documentId)?.markdown : source?.type === "text" ? source.data.text ?? "" : undefined;
 }
 
 function effectivePrompt(data: AssetCanvasFlowData, runtime?: MediaNodeRuntime): string {
@@ -2965,24 +3279,6 @@ async function promptImage(blob: Blob): Promise<CreateLibraryImageRequest["image
   return { mediaType: blob.type, data: dataUrl.split(",", 2)[1] ?? "" };
 }
 
-async function modelPromptImage(blob: Blob): Promise<CreateLibraryImageRequest["image"]> {
-  if (blob.type !== "image/webp") return promptImage(blob);
-  const image = await createImageBitmap(blob);
-  try {
-    const canvas = document.createElement("canvas");
-    canvas.width = image.width;
-    canvas.height = image.height;
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("Could not prepare the connected image for 3D generation.");
-    context.drawImage(image, 0, 0);
-    const png = await new Promise<Blob | undefined>((resolve) => canvas.toBlob((value) => resolve(value ?? undefined), "image/png"));
-    if (!png) throw new Error("Could not prepare the connected image for 3D generation.");
-    return promptImage(png);
-  } finally {
-    image.close();
-  }
-}
-
 async function readUploadImage(file: File): Promise<{ name: string; image: CreateLibraryImageRequest["image"] }> {
   if (file.type !== "image/png" && file.type !== "image/jpeg" && file.type !== "image/webp") {
     throw new Error("Use PNG, JPEG, or WebP reference images.");
@@ -2995,6 +3291,7 @@ function libraryUploadMediaType(file: File): LibraryUploadMediaType | undefined 
   const extension = file.name.split(".").pop()?.toLowerCase();
   if (extension === "png") return "image/png";
   if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+  if (extension === "svg") return "image/svg+xml";
   if (extension === "webp") return "image/webp";
   if (extension === "mp4") return "video/mp4";
   if (extension === "mov") return "video/quicktime";
@@ -3012,10 +3309,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function projectCoverBlob(source: AssetCanvasCoverSource, assets: LibraryAsset[]): Promise<Blob | undefined> {
+async function projectCoverBlob(source: AssetCanvasCoverSource, assets: LibraryAsset[], content: (id: string) => Promise<Blob> = getLibraryAsset): Promise<Blob | undefined> {
   const asset = assets.find((candidate) => candidate.id === source.assetId);
   if (!asset || (asset.mediaType !== "image" && asset.mediaType !== "video") || asset.contentType === "image/svg+xml" || asset.name.toLowerCase().endsWith(".svg")) return undefined;
-  return mediaBlobToWebP(await getLibraryAsset(asset.id), asset.mediaType);
+  return mediaBlobToWebP(await content(asset.id), asset.mediaType);
 }
 
 async function mediaBlobToWebP(blob: Blob, mediaType: "image" | "video"): Promise<Blob | undefined> {

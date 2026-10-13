@@ -12,6 +12,7 @@ import {
   DEFAULT_VIDEO_NODE_CONFIG,
 } from "./generation-config.js";
 import { Check } from "typebox/value";
+import { canvasNodeContent, canvasNodeLayout, contentNodeSizeIssue, isResizableCanvasNodeType, withoutContentNodeSize } from "./canvas-node-layout.js";
 import { ASSET_CANVAS_EDITOR_LAYOUT_SCHEMA, ASSET_CANVAS_SCHEMA } from "./asset-canvas-schema.js";
 
 export type AssetCanvasStarter = "image" | "video" | "model-3d";
@@ -29,6 +30,7 @@ export function createAssetCanvasDocument(): AssetCanvasDocument {
 export function createAssetGenerationNode(type: AssetCanvasStarter, position: { x: number; y: number }, options: {
   imageModel?: ImageModelRef;
   videoModel?: VideoModelRef;
+  videoReferenceMode?: "frame" | "reference";
   imageResolution?: Extract<AssetCanvasNode, { type: "image" }>["data"]["resolution"];
   imageAspectRatio?: Extract<AssetCanvasNode, { type: "image" }>["data"]["aspectRatio"];
   videoAspectRatio?: Extract<AssetCanvasNode, { type: "video" }>["data"]["aspectRatio"];
@@ -57,6 +59,7 @@ export function createAssetGenerationNode(type: AssetCanvasStarter, position: { 
       aspectRatio: options.videoAspectRatio ?? DEFAULT_VIDEO_NODE_CONFIG.aspectRatio,
       duration: DEFAULT_VIDEO_NODE_CONFIG.duration,
       references: [],
+      ...(options.videoReferenceMode ? { referenceMode: options.videoReferenceMode } : {}),
     },
   };
   return { id, type, position, data: { ...DEFAULT_MODEL_3D_CONFIG, images: [] } };
@@ -88,7 +91,13 @@ export function validateAssetCanvasDocument(document: AssetCanvasDocument): void
   }
   const layoutIds = Object.keys(document.editorLayout.nodes);
   if (layoutIds.length !== nodeIds.size || layoutIds.some((id) => !nodeIds.has(id))) {
-    throw new Error("editor/layout.json Node IDs must exactly match canvas.json Nodes");
+    throw new Error("Editor layout Node IDs must exactly match board Nodes");
+  }
+  for (const node of document.nodes) {
+    const layout = document.editorLayout.nodes[node.id]!;
+    if (!isResizableCanvasNodeType(node.type) && [node.width, node.height, layout.width, layout.height].some((value) => value !== undefined)) {
+      throw new Error(contentNodeSizeIssue(node));
+    }
   }
   const edgeIds = new Set<string>();
   for (const edge of document.edges) {
@@ -98,18 +107,42 @@ export function validateAssetCanvasDocument(document: AssetCanvasDocument): void
   }
   const nodes = new Map(document.nodes.map((node) => [node.id, node]));
   for (const node of document.nodes) {
+    if (node.type === "text" || node.type === "document") {
+      for (const reference of node.data.references ?? []) {
+        const source = nodes.get(reference.nodeId);
+        if (!source || source.id === node.id || !isTextGenerationReferenceNode(source) ||
+          (node.type === "document" && source.type === "document" && source.data.documentId === node.data.documentId)) {
+          throw new Error(`Node ${node.id} has an invalid generation reference`);
+        }
+      }
+    }
     if (node.type === "image" || node.type === "model-3d") {
       for (const reference of node.data.images) validateReference(node.id, reference, nodes, ["image", "asset"]);
     }
     if (node.type === "video") {
       for (const reference of node.data.references) validateReference(node.id, reference, nodes, ["image", "video", "asset"]);
     }
-    if (node.type === "animate-3d" && node.data.source) validateReference(node.id, node.data.source, nodes, ["model-3d", "asset"]);
-    if ((node.type === "image" || node.type === "video") && node.data.promptSource) {
+    if ((node.type === "animate-3d" || node.type === "model-3d") && node.data.source) validateReference(node.id, node.data.source, nodes, ["model-3d", "animate-3d", "asset"]);
+    if ((node.type === "image" || node.type === "video" || node.type === "model-3d") && node.data.promptSource) {
       const source = nodes.get(node.data.promptSource.nodeId);
       if (!source || (source.type !== "text" && source.type !== "document") || source.id === node.id) throw new Error(`Node ${node.id} has an invalid Text reference`);
     }
   }
+}
+
+export function isTextGenerationReferenceNode(node: { type?: AssetCanvasNode["type"]; data: object }): boolean {
+  return node.type === "text" || node.type === "document" || node.type === "image" || (node.type === "asset" && "mediaType" in node.data && node.data.mediaType === "image");
+}
+
+/** Applies {@link withoutContentNodeSize} to unsaved or copied canvas data created before sizes were validated. */
+export function withoutContentNodeSizes(document: AssetCanvasDocument): AssetCanvasDocument {
+  const nodes = new Map(document.nodes.map((node) => [node.id, node]));
+  const layout: AssetCanvasDocument["editorLayout"]["nodes"] = Object.create(null);
+  for (const [id, position] of Object.entries(document.editorLayout.nodes)) {
+    const node = nodes.get(id);
+    layout[id] = node && !isResizableCanvasNodeType(node.type) ? { x: position.x, y: position.y } : position;
+  }
+  return { ...document, nodes: document.nodes.map(withoutContentNodeSize), editorLayout: { ...document.editorLayout, nodes: layout } };
 }
 
 export function isAssetCanvasDocument(value: unknown): value is AssetCanvasDocument {
@@ -117,8 +150,9 @@ export function isAssetCanvasDocument(value: unknown): value is AssetCanvasDocum
   const document = value as AssetCanvasDocument;
   try {
     const { editorLayout, ...rest } = document;
-    const persisted = { ...rest, nodes: rest.nodes.map(({ position: _position, ...node }) => node) };
+    const persisted = { ...rest, nodes: rest.nodes.map(canvasNodeContent) };
     if (!Check(ASSET_CANVAS_SCHEMA, persisted) || !Check(ASSET_CANVAS_EDITOR_LAYOUT_SCHEMA, editorLayout)) return false;
+    if (!document.nodes.every((node) => Check(ASSET_CANVAS_EDITOR_LAYOUT_SCHEMA.properties.nodes.additionalProperties, canvasNodeLayout(node)))) return false;
     validateAssetCanvasDocument(document);
     return true;
   } catch {
@@ -137,6 +171,7 @@ function validateReference(
   if (!source || source.id === ownerId || !allowed.includes(source.type)) {
     throw new Error(`Node ${ownerId} has an invalid Node reference`);
   }
+  if (source.type === "asset" && allowed.includes("model-3d") && source.data.mediaType !== "model") throw new Error(`Node ${ownerId} requires a model reference`);
   if (source.type === "asset" && allowed.length === 2 && source.data.mediaType !== "image") {
     throw new Error(`Node ${ownerId} requires an image reference`);
   }
@@ -152,7 +187,7 @@ export function resolveAssetCanvasImageAssetId(nodes: readonly AssetCanvasNode[]
 export function resolveAssetCanvasAssetId(nodes: readonly AssetCanvasNode[], reference: AssetCanvasReference): string | undefined {
   if (reference.type === "library") return reference.assetId;
   const node = nodes.find((candidate) => candidate.id === reference.nodeId);
-  return node?.type === "image" || node?.type === "video" || node?.type === "asset" ? node.data.assetId : undefined;
+  return node && "assetId" in node.data ? node.data.assetId : undefined;
 }
 
 export function combineAssetCanvasPrompt(linkedText: string | undefined, localPrompt: string): string {

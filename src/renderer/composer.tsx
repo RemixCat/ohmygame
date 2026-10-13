@@ -1,22 +1,27 @@
-import { FileText, SendArrow, Square, X } from "./icons.js";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { FileText, X } from "./icons.js";
+import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import type { AgentModel, AgentModelRef, AgentReasoningLevel, ConversationCapabilities, PendingPrompt, PlanMode, PlanState, PluginMention, PromptAttachment, PromptContext, PromptImage, PromptMode, PromptReference } from "../shared/contracts.js";
-import { AttachmentPickerButton, AttachmentStrip, appendAttachments, attachmentFiles, uploadAttachments, type ComposerAttachment } from "./composer-attachments.js";
-import { ModelSelector, type AgentModelCatalogStatus } from "./model-selector.js";
+import { AttachmentStrip, appendAttachments, attachmentFiles, uploadAttachments, type ComposerAttachment } from "./composer-attachments.js";
+import type { AgentModelCatalogStatus } from "./model-selector.js";
 import { MessageQueue } from "./message-queue.js";
 import { PromptBox, type DroppedFile } from "./prompt-box.js";
+import { ComposerActions } from "./composer-actions.js";
 import { PlanStatus } from "./plan-status.js";
 import { compactInstructions, matchesCompactCommand, matchesPlanCommand, PlanCommandMenu, PlanModeIndicator } from "./plan-mode-control.js";
 import { createPromptHistory, nextPrompt, previousPrompt, recordPrompt } from "./prompt-history.js";
-import { PromptContextIcon, type ChatContextChip, type ChatReference } from "./chat-reference.js";
-import { ComposerMentionMenu } from "./composer-mention-menu.js";
-import { activePluginMentions, extractLeadingPluginMention, formatComposerInvocation, formatSkillInvocation, insertMention, matchingMentions, mentionQuery, parseSkillInvocation, toPluginMention, type ComposerMention } from "./composer-mentions.js";
+import { formatChatPrompt, PromptContextIcon, type ChatContextChip } from "./chat-reference.js";
+import { useComposerContextMenu } from "./composer-context-menu.js";
+import { activePluginMentions, extractLeadingPluginMention, formatComposerInvocation, formatSkillInvocation, insertMention, parseSkillInvocation, toPluginMention, type ComposerMention, type ComposerMentionQuery } from "./composer-mentions.js";
 import { ComposerCapabilityReferences } from "./composer-capability-references.js";
-import { getGameDesign } from "./game-design-api.js";
-import { designDocumentPath } from "../shared/game-design.js";
+import { getCanvasDocument } from "./canvas-api.js";
+import { canvasDocumentPath } from "../shared/canvas-document.js";
+import { composerDrafts, type ComposerDraft } from "./composer-drafts.js";
+
+export type { ComposerDraft } from "./composer-drafts.js";
 
 interface ComposerProps {
   projectId?: string;
+  conversationId?: string;
   supportsDesign?: boolean;
   conversationReady: boolean;
   running: boolean;
@@ -44,28 +49,14 @@ interface ComposerProps {
   onRemovePending: (turnId: string) => Promise<boolean>;
   onSteerPending: (turnId: string) => Promise<boolean>;
   onEditPending: (item: PendingPrompt) => Promise<boolean>;
-  reference?: ChatReference;
-  onClearReference?: () => void;
   /** Editor context the next message carries, such as the open Node. */
   contexts?: ChatContextChip[];
   onRemoveContext?: (key: string) => void;
-  onDirtyChange?: (dirty: boolean) => void;
-  /** Text an editor asks to put in the prompt, such as "Ask AI to create it"; a new `id` inserts it again. */
-  promptRequest?: { text: string; id: number };
-}
-
-export interface ComposerDraft {
-  prompt: string;
-  mentions: PluginMention[];
-}
-
-interface DesignDocumentReference {
-  references: PromptReference[];
-  context: PromptContext;
 }
 
 export function Composer({
   projectId,
+  conversationId,
   supportsDesign = false,
   conversationReady,
   running,
@@ -93,50 +84,28 @@ export function Composer({
   onRemovePending,
   onSteerPending,
   onEditPending,
-  reference,
-  onClearReference,
   contexts = [],
   onRemoveContext,
-  onDirtyChange,
-  promptRequest,
 }: ComposerProps) {
-  const initialSkill = parseSkillInvocation(initialDraft?.prompt ?? "");
-  const initialPlugin = extractLeadingPluginMention(initialSkill?.prompt ?? initialDraft?.prompt ?? "", initialDraft?.mentions ?? []);
-  const [prompt, setPrompt] = useState(initialPlugin.prompt);
-  const [selectedSkill, setSelectedSkill] = useState(initialSkill?.name);
-  const [selectedPlugin, setSelectedPlugin] = useState(initialPlugin.mention);
-  const [pluginMentions, setPluginMentions] = useState<PluginMention[]>(initialDraft?.mentions ?? []);
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
-  const [designReference, setDesignReference] = useState<DesignDocumentReference>();
+  const [draftSession] = useState(() => composerDrafts.get(
+    projectId && conversationId ? { projectId, conversationId } : undefined,
+    initialDraft,
+    planMode === "planning",
+  ));
+  const draft = useSyncExternalStore(draftSession.subscribe, draftSession.getSnapshot, draftSession.getSnapshot);
+  const { prompt, selectedSkill, selectedPlugin, mentions: pluginMentions, attachments, designReference, reference, planning, submitting } = draft;
+  const updateDraft = draftSession.update;
   const [referencingDesign, setReferencingDesign] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string>();
-  const [submitting, setSubmitting] = useState(false);
   const [history, setHistory] = useState(() => createPromptHistory(promptHistory.map((entry) => entry.prompt)));
   const [mentionHistory, setMentionHistory] = useState(() => new Map(promptHistory.map((entry) => [entry.prompt, entry.mentions])));
-  const [planning, setPlanning] = useState(planMode === "planning");
   const [selectedCommand, setSelectedCommand] = useState<"plan" | "compact">("plan");
   const [contextPercent, setContextPercent] = useState<number>();
   const [mentionCursor, setMentionCursor] = useState(0);
-  const [selectedMention, setSelectedMention] = useState(0);
-  const [dismissedMention, setDismissedMention] = useState<string>();
   const textarea = useRef<HTMLTextAreaElement>(null);
-  const candidateMention = mentionQuery(prompt, mentionCursor);
-  const mentionKey = candidateMention ? `${candidateMention.start}:${candidateMention.trigger}:${candidateMention.query}` : undefined;
-  const activeMention = mentionKey === dismissedMention ? undefined : candidateMention;
-  const mentions = activeMention ? matchingMentions(
-    planning ? { plugins: capabilities.plugins, skills: [] } : capabilities,
-    activeMention,
-  ) : [];
-  const dirty = Boolean(prompt || selectedSkill || selectedPlugin || attachments.length || reference || designReference);
-
-  useEffect(() => setSelectedMention(0), [activeMention?.trigger, activeMention?.query]);
-  useEffect(() => {
-    onDirtyChange?.(dirty);
-    return () => onDirtyChange?.(false);
-  }, [dirty, onDirtyChange]);
   useEffect(() => {
     if (!initialDraft) return;
-    const cursor = initialPlugin.prompt.length;
+    const cursor = prompt.length;
     setMentionCursor(cursor);
     requestAnimationFrame(() => {
       textarea.current?.focus();
@@ -144,25 +113,12 @@ export function Composer({
     });
     onInitialDraftHandled?.();
   }, []);
-  useEffect(() => {
-    if (!promptRequest) return;
-    const next = prompt.trim() ? `${prompt.trimEnd()}\n${promptRequest.text}` : promptRequest.text;
-    setPrompt(next);
-    setMentionCursor(next.length);
-    requestAnimationFrame(() => {
-      textarea.current?.focus();
-      textarea.current?.setSelectionRange(next.length, next.length);
-    });
-  }, [promptRequest?.id]);
-  useEffect(() => {
-    if (!mentionKey) setDismissedMention(undefined);
-  }, [mentionKey]);
 
   async function submit() {
     const value = formatComposerPrompt(selectedSkill, selectedPlugin, prompt.trim());
-    if (!conversationReady || (!value && attachments.length === 0) || stopping || submitting || !projectId) return;
+    if (!conversationReady || (!value && attachments.length === 0) || stopping || draftSession.getSnapshot().submitting || !projectId) return;
     setAttachmentError(undefined);
-    setSubmitting(true);
+    updateDraft({ submitting: true });
     try {
       const batchId = crypto.randomUUID();
       let uploaded: PromptAttachment[];
@@ -173,7 +129,7 @@ export function Composer({
         return;
       }
       const submitted = await onSubmit(
-        value,
+        reference ? formatChatPrompt(reference, value) : value,
         activePluginMentions(value, pluginMentions),
         [],
         planning ? "planning" : "normal",
@@ -184,18 +140,12 @@ export function Composer({
       if (submitted) {
         setHistory((current) => recordPrompt(current, value));
         setMentionHistory((current) => new Map(current).set(value, activePluginMentions(value, pluginMentions)));
-        setPrompt("");
-        setSelectedSkill(undefined);
-        setSelectedPlugin(undefined);
-        setPluginMentions([]);
-        setMentionCursor(0);
-        setAttachments([]);
-        setDesignReference(undefined);
+        if (draftSession.clearSubmitted(draft)) setMentionCursor(0);
         setAttachmentError(undefined);
         textarea.current?.focus();
       }
     } finally {
-      setSubmitting(false);
+      updateDraft({ submitting: false });
     }
   }
 
@@ -204,16 +154,16 @@ export function Composer({
     setAttachmentError(undefined);
     setReferencingDesign(true);
     try {
-      const result = await getGameDesign(projectId);
-      if (!result.design) throw new Error("This project does not have a game design document yet");
-      setDesignReference({
-        references: [{ type: "workspace-file", path: designDocumentPath(result.design.document.id) }],
+      const result = await getCanvasDocument(projectId);
+      if (!result) throw new Error("This project does not have a game design document yet");
+      updateDraft({ designReference: {
+        references: [{ type: "workspace-file", path: canvasDocumentPath(result.document.id) }],
         context: {
           kind: "design-document",
-          label: result.design.document.title || "Game design",
+          label: result.document.title || "Game design",
           text: "Reference the saved game design document for this message.",
         },
-      });
+      } });
       textarea.current?.focus();
     } catch (cause) {
       setAttachmentError(cause instanceof Error ? cause.message : String(cause));
@@ -230,10 +180,7 @@ export function Composer({
     const historicalMentions = mentionHistory.get(result.prompt) ?? [];
     const plugin = extractLeadingPluginMention(skill?.prompt ?? result.prompt, historicalMentions);
     setHistory(result.history);
-    setPrompt(plugin.prompt);
-    setSelectedSkill(skill?.name);
-    setSelectedPlugin(plugin.mention);
-    setPluginMentions(historicalMentions);
+    updateDraft({ prompt: plugin.prompt, selectedSkill: skill?.name, selectedPlugin: plugin.mention, mentions: historicalMentions });
     const cursor = plugin.prompt.length;
     setMentionCursor(cursor);
     requestAnimationFrame(() => {
@@ -241,22 +188,20 @@ export function Composer({
     });
   }
 
-  function changePrompt(value: string) {
-    setPrompt(value);
-    setPluginMentions((current) => activePluginMentions(formatComposerPrompt(selectedSkill, selectedPlugin, value), current));
+  function changePrompt(value: string, mentions = pluginMentions) {
+    updateDraft({ prompt: value, mentions: activePluginMentions(formatComposerPrompt(selectedSkill, selectedPlugin, value), mentions) });
     setHistory((current) => current.index === current.entries.length
       ? current
       : { ...current, index: current.entries.length, draft: formatComposerPrompt(selectedSkill, selectedPlugin, value) });
   }
 
   function clearSelectedPlugin(): void {
-    setSelectedPlugin(undefined);
-    setPluginMentions((current) => activePluginMentions(formatSkillInvocation(selectedSkill, prompt), current));
+    updateDraft((current) => ({ selectedPlugin: undefined, mentions: activePluginMentions(formatSkillInvocation(selectedSkill, prompt), current.mentions) }));
   }
 
   function addAttachments(next: ComposerAttachment[]): void {
     setAttachmentError(undefined);
-    try { setAttachments(appendAttachments(attachments, next)); }
+    try { updateDraft({ attachments: appendAttachments(attachments, next) }); }
     catch (cause) { setAttachmentError(cause instanceof Error ? cause.message : String(cause)); return; }
     textarea.current?.focus();
   }
@@ -265,14 +210,12 @@ export function Composer({
     addAttachments(attachmentFiles(files));
   }
 
-  function selectMention(mention: ComposerMention) {
-    if (!activeMention) return;
+  function selectMention(mention: ComposerMention, query?: ComposerMentionQuery) {
+    const activeMention = query ?? { start: mentionCursor, end: mentionCursor, trigger: "@" as const, query: "" };
     if (mention.type === "skill") {
       const suffix = prompt.slice(activeMention.end).replace(/^\s+/, "");
-      setPrompt(`${prompt.slice(0, activeMention.start)}${suffix}`);
-      setSelectedSkill(mention.value.name);
+      updateDraft({ selectedSkill: mention.value.name, ...(query ? { prompt: `${prompt.slice(0, activeMention.start)}${suffix}` } : {}) });
       setMentionCursor(activeMention.start);
-      setSelectedMention(0);
       requestAnimationFrame(() => {
         textarea.current?.focus();
         textarea.current?.setSelectionRange(activeMention.start, activeMention.start);
@@ -280,17 +223,14 @@ export function Composer({
       return;
     }
     const selected = toPluginMention(mention.value);
-    if (activeMention.start === 0 && !selectedPlugin) {
-      const nextPrompt = prompt.slice(activeMention.end).replace(/^\s+/, "");
-      const candidates = [
-        ...pluginMentions.filter((item) => item.name !== selected.name || item.marketplaceId !== selected.marketplaceId),
-        selected,
-      ];
-      setPrompt(nextPrompt);
-      setSelectedPlugin(selected);
-      setPluginMentions(activePluginMentions(formatComposerPrompt(selectedSkill, selected, nextPrompt), candidates));
+    const candidates = [
+      ...pluginMentions.filter((item) => item.name !== selected.name || item.marketplaceId !== selected.marketplaceId),
+      selected,
+    ];
+    if ((!query || activeMention.start === 0) && !selectedPlugin) {
+      const nextPrompt = query ? prompt.slice(activeMention.end).replace(/^\s+/, "") : prompt;
+      updateDraft({ prompt: nextPrompt, selectedPlugin: selected, mentions: activePluginMentions(formatComposerPrompt(selectedSkill, selected, nextPrompt), candidates) });
       setMentionCursor(0);
-      setSelectedMention(0);
       requestAnimationFrame(() => {
         textarea.current?.focus();
         textarea.current?.setSelectionRange(0, 0);
@@ -298,13 +238,8 @@ export function Composer({
       return;
     }
     const inserted = insertMention(prompt, activeMention, mention);
-    changePrompt(inserted.value);
-    setPluginMentions((current) => [
-      ...current.filter((item) => item.name !== selected.name || item.marketplaceId !== selected.marketplaceId),
-      selected,
-    ]);
+    changePrompt(inserted.value, candidates);
     setMentionCursor(inserted.cursor);
-    setSelectedMention(0);
     requestAnimationFrame(() => {
       textarea.current?.focus();
       textarea.current?.setSelectionRange(inserted.cursor, inserted.cursor);
@@ -322,6 +257,37 @@ export function Composer({
   // Backspace (delete the selected Node) would take the next keystrokes.
   const textareaReadOnly = submitting || referencingDesign;
   const inputDisabled = textareaDisabled || textareaReadOnly;
+  useEffect(() => {
+    const requestId = draft.focusRequestId;
+    if (!requestId || inputDisabled) return;
+    const frame = requestAnimationFrame(() => {
+      const input = textarea.current;
+      const current = draftSession.getSnapshot();
+      if (!input || input.disabled || input.readOnly || current.focusRequestId !== requestId) return;
+      const cursor = current.prompt.length;
+      input.focus();
+      input.setSelectionRange(cursor, cursor);
+      setMentionCursor(cursor);
+      updateDraft({ focusRequestId: undefined });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [draft.focusRequestId, inputDisabled]);
+
+  const contextMenu = useComposerContextMenu({
+    prompt,
+    cursor: mentionCursor,
+    textarea,
+    disabled: inputDisabled,
+    capabilities,
+    planning,
+    canTogglePlanning,
+    onFiles: addAttachments,
+    onDesignReference: supportsDesign ? () => { void referenceDesign(); } : undefined,
+    onTogglePlanning: () => { void togglePlanning(false); },
+    onMention: selectMention,
+    onChange: changePrompt,
+    onSelectionChange: setMentionCursor,
+  });
 
   useEffect(() => {
     if (showPlanCommand) setSelectedCommand("plan");
@@ -344,18 +310,18 @@ export function Composer({
   }, [showCompactCommand]);
 
   useEffect(() => {
-    if (planMode === "planning") setPlanning(true);
-    else if (planMode !== "normal") setPlanning(false);
+    if (planMode === "planning") updateDraft({ planning: true });
+    else if (planMode !== "normal") updateDraft({ planning: false });
   }, [planMode]);
 
-  async function togglePlanning() {
+  async function togglePlanning(clearDraft = true) {
     if (planning && planMode === "planning" && !await onCancelPlan()) return;
-    setPlanning((value) => !value);
-    setPrompt("");
-    setSelectedSkill(undefined);
-    setSelectedPlugin(undefined);
-    setPluginMentions([]);
-    setMentionCursor(0);
+    updateDraft((current) => ({
+      planning: !current.planning,
+      selectedSkill: clearDraft || !current.planning ? undefined : current.selectedSkill,
+      ...(clearDraft ? { prompt: "", selectedPlugin: undefined, mentions: [] } : {}),
+    }));
+    if (clearDraft) setMentionCursor(0);
     textarea.current?.focus();
   }
 
@@ -373,7 +339,7 @@ export function Composer({
   }
 
   async function runCompact(instructions?: string) {
-    setPrompt("");
+    updateDraft({ prompt: "" });
     setMentionCursor(0);
     textarea.current?.focus();
     await onCompact(instructions);
@@ -384,21 +350,16 @@ export function Composer({
     const skill = parseSkillInvocation(item.prompt);
     const plugin = extractLeadingPluginMention(skill?.prompt ?? item.prompt, item.mentions);
     const nextPrompt = plugin.prompt;
-    setPrompt(nextPrompt);
-    setSelectedSkill(skill?.name);
-    setSelectedPlugin(plugin.mention);
-    setPluginMentions(item.mentions);
-    setAttachments([]);
-    const referencedDesign = item.references.find((reference) => reference.type === "workspace-file" && /^design\/documents\/[a-zA-Z0-9_-]+\.md$/.test(reference.path));
-    setDesignReference(referencedDesign ? {
+    const referencedDesign = item.references.find((reference) => reference.type === "workspace-file" && /^canvas\/documents\/[a-zA-Z0-9_-]+\.md$/.test(reference.path));
+    updateDraft({ prompt: nextPrompt, selectedSkill: skill?.name, selectedPlugin: plugin.mention, mentions: item.mentions,
+      attachments: [], reference: undefined, designReference: referencedDesign ? {
       references: [referencedDesign],
       context: {
         kind: "design-document",
         label: "Game design",
         text: "The user explicitly referenced this saved design document.",
       },
-    } : undefined);
-    onClearReference?.();
+    } : undefined });
     setMentionCursor(nextPrompt.length);
     setAttachmentError(undefined);
     requestAnimationFrame(() => {
@@ -409,33 +370,16 @@ export function Composer({
 
   function handleCommandKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): boolean {
     setMentionCursor(event.currentTarget.selectionStart);
+    if (contextMenu.handleKeyDown(event)) return true;
     if (selectedSkill && event.key === "Backspace" && event.currentTarget.selectionStart === 0 && event.currentTarget.selectionEnd === 0) {
       event.preventDefault();
-      setSelectedSkill(undefined);
+      updateDraft({ selectedSkill: undefined });
       return true;
     }
     if (selectedPlugin && event.key === "Backspace" && event.currentTarget.selectionStart === 0 && event.currentTarget.selectionEnd === 0) {
       event.preventDefault();
       clearSelectedPlugin();
       return true;
-    }
-    if (mentions.length > 0) {
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        const offset = event.key === "ArrowDown" ? 1 : -1;
-        setSelectedMention((current) => (current + offset + mentions.length) % mentions.length);
-        return true;
-      }
-      if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
-        event.preventDefault();
-        selectMention(mentions[selectedMention] ?? mentions[0]);
-        return true;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setDismissedMention(mentionKey);
-        return true;
-      }
     }
     if (!showPlanCommand && !showCompactCommand) return false;
     const commands: Array<"plan" | "compact"> = [
@@ -474,28 +418,14 @@ export function Composer({
       />
       {notice || attachmentError ? <p className="composer-error" role="alert">{attachmentError ?? notice}</p> : null}
       <PromptBox
-        actions={(
-          <>
-            <ModelSelector
-              models={models}
-              status={modelStatus}
-              value={model}
-              reasoningLevel={reasoningLevel}
-              disabled={!conversationReady || running || stopping || modelChanging}
-              onChange={onModelChange}
-              onReasoningChange={onReasoningChange}
-            />
-            {showStop ? (
-              <button className="icon-button stop-button" type="button" onClick={onStop} disabled={stopping} title="Stop agent" aria-label="Stop agent">
-                <Square size={14} fill="currentColor" />
-              </button>
-            ) : (
-              <button className="icon-button send-button" type="submit" disabled={inputDisabled || (!selectedSkill && !selectedPlugin && !prompt.trim() && attachments.length === 0) || stopping} title={running ? "Queue follow-up" : "Send prompt"} aria-label={running ? "Queue follow-up" : "Send prompt"}>
-                <SendArrow size={15} />
-              </button>
-            )}
-          </>
-        )}
+        actions={<ComposerActions
+          models={models} status={modelStatus} value={model} reasoningLevel={reasoningLevel}
+          disabled={!conversationReady || running || stopping || modelChanging}
+          onChange={onModelChange} onReasoningChange={onReasoningChange}
+          showStop={showStop} stopping={stopping} onStop={onStop}
+          sendDisabled={inputDisabled || (!selectedSkill && !selectedPlugin && !prompt.trim() && attachments.length === 0) || stopping}
+          sendLabel={running ? "Queue follow-up" : "Send prompt"}
+        />}
         content={<>
           {contexts.length ? <div className="composer-contexts" aria-label="Context for the next message">
             {contexts.map((context) => <div className={`composer-context is-${context.kind}`} key={context.key} title={context.detail ?? context.label}>
@@ -508,17 +438,17 @@ export function Composer({
           {reference ? <div className="composer-reference">
             <div className="composer-reference-label">Selected text</div>
             <div className="composer-reference-text">{reference.text}</div>
-            <button type="button" className="composer-reference-remove" onClick={onClearReference} aria-label="Remove selected text">×</button>
+            <button type="button" className="composer-reference-remove" onClick={() => updateDraft({ reference: undefined })} aria-label="Remove selected text">×</button>
           </div> : null}
           {designReference ? <div className="composer-contexts" aria-label="Referenced game design">
             <div className="composer-context is-design-document" title={designReference.context.label}>
               <FileText size={12} />
               <span>{designReference.context.label}</span>
               <small>Game design</small>
-              <button type="button" onClick={() => setDesignReference(undefined)} aria-label="Remove game design reference"><X size={11} /></button>
+              <button type="button" onClick={() => updateDraft({ designReference: undefined })} aria-label="Remove game design reference"><X size={11} /></button>
             </div>
           </div> : null}
-          <AttachmentStrip items={attachments} onRemove={(id) => setAttachments((items) => items.filter((attachment) => attachment.id !== id))} />
+          <AttachmentStrip items={attachments} onRemove={(id) => updateDraft((current) => ({ attachments: current.attachments.filter((attachment) => attachment.id !== id) }))} />
         </>}
         disabled={textareaDisabled}
         readOnly={textareaReadOnly}
@@ -526,7 +456,7 @@ export function Composer({
           skill={selectedSkill}
           plugin={selectedPlugin}
           onRemoveSkill={() => {
-            setSelectedSkill(undefined);
+            updateDraft({ selectedSkill: undefined });
             textarea.current?.focus();
           }}
           onRemovePlugin={() => {
@@ -536,11 +466,7 @@ export function Composer({
         />}
         leading={(
           <>
-            <AttachmentPickerButton
-              disabled={inputDisabled}
-              onFiles={addAttachments}
-              onDesignReference={supportsDesign ? () => { void referenceDesign(); } : undefined}
-            />
+            {contextMenu.button}
             {planning ? (
               <PlanModeIndicator disabled={running || stopping} onExit={() => { void togglePlanning(); }} />
             ) : null}
@@ -553,9 +479,8 @@ export function Composer({
         onDropFiles={inputDisabled ? undefined : addFiles}
         onDropError={(error) => setAttachmentError(`Could not read dropped folder: ${error.message}`)}
         onSubmit={submitOrRunCommand}
-        overlay={mentions.length ? (
-          <ComposerMentionMenu items={mentions} selected={selectedMention} onSelect={selectMention} />
-        ) : showPlanCommand || showCompactCommand ? (
+        suggestions={contextMenu.suggestions}
+        overlay={contextMenu.open ? contextMenu.overlay : showPlanCommand || showCompactCommand ? (
           <PlanCommandMenu
             planning={planning}
             onToggle={() => { void togglePlanning(); }}

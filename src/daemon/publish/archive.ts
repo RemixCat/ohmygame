@@ -6,10 +6,13 @@ import path from "node:path";
 import type { Readable } from "node:stream";
 import { ZipFile } from "yazl";
 import type { ProjectState } from "../../shared/contracts.js";
+import { isWebRuntimeProjectType } from "../../shared/project-runtime.js";
 import { PLUGIN_ARCHIVE_ALLOWED_HIDDEN_DIRECTORIES } from "../../shared/plugins.js";
 import { PUBLISH_ARTIFACT_MAX_BYTES, PUBLISH_GAME_COVER_PATH } from "../../shared/publish-v1.js";
 import type { AssetLibrary } from "../asset-library.js";
-import { packageManagerCommand, packageManagerInstallArguments, packageManagerRunArguments, resolvePackageManager } from "../package-manager.js";
+import { packageManagerCommand, packageManagerRunArguments, resolvePackageManager } from "../package-manager.js";
+import { ensureProjectDependencies } from "../project-dependencies.js";
+import { projectProcessEnvironment } from "../project-process.js";
 import { resolveStartupDirectory } from "../projects.js";
 import { buildPlayableProject, nodeGraphSignature } from "../playable-project.js";
 import { isCompiledNodeGraph } from "../../shared/playable-compiled.js";
@@ -52,7 +55,7 @@ export class ArtifactBuilder {
         temporary = await prepareInteractiveStory(project, this.library, this.playerDirectory);
         source = temporary;
       } else {
-        const workspacePath = project.type === "web-game"
+        const workspacePath = isWebRuntimeProjectType(project.type)
           ? await publishStartupDirectory(project)
           : project.workspacePath;
         source = await prepareSource(workspacePath, (child) => this.#running.set(project.id, child), project);
@@ -71,7 +74,7 @@ export class ArtifactBuilder {
    */
   async preparePlayableDraft(project: ProjectState): Promise<string> {
     if (project.type !== "interactive-story") throw new PublishError("Playable drafts require an Interactive Story project");
-    if (!this.library || !this.playerDirectory) throw new PublishError("Published Player is not built. Run npm run build:player first.");
+    if (!this.library || !this.playerDirectory) throw new PublishError("Published Player is not built. Run bun run build:player first.");
     await assertNodePlayerBuilt(this.playerDirectory);
     let definition: NodePlayerDefinition | undefined;
     try {
@@ -89,7 +92,7 @@ export class ArtifactBuilder {
    * against the publish rules.
    */
   async preparePlayableExample(workspacePath: string, exampleId: string): Promise<string> {
-    if (!this.library || !this.playerDirectory) throw new PublishError("Published Player is not built. Run npm run build:player first.");
+    if (!this.library || !this.playerDirectory) throw new PublishError("Published Player is not built. Run bun run build:player first.");
     await assertNodePlayerBuilt(this.playerDirectory);
     const definition = await buildPlayableProject(workspacePath, "draft");
     if (!definition) throw new PublishError("This example has no graph.json.");
@@ -283,7 +286,7 @@ async function assertNodePlayerBuilt(playerDirectory: string): Promise<void> {
   ).filter((file): file is string => file !== undefined);
   if (missing.length) {
     throw new PublishError(
-      `Published Player build is incomplete. Missing: ${missing.join(", ")}. Run npm run build:player first.`,
+      `Published Player build is incomplete. Missing: ${missing.join(", ")}. Run bun run build:player first.`,
     );
   }
 }
@@ -299,11 +302,11 @@ async function prepareSource(workspacePath: string, track: (child: ChildProcess)
     if (typeof build !== "string" || !build.trim()) {
       throw new PublishError("Projects with package.json need a non-empty scripts.build command before publishing");
     }
-    if (hasDependencies(packageJson) && !await exists(path.join(workspacePath, "node_modules"))) {
-      const packageManager = await resolvePackageManager(workspacePath, project?.packageManager);
-      await run(packageManagerCommand(packageManager), packageManagerInstallArguments(packageManager), workspacePath, track);
+    const { manager: packageManager } = await resolvePackageManager(workspacePath, project?.packageManager);
+    if (hasDependencies(packageJson)) {
+      await ensureProjectDependencies(workspacePath, packageManager,
+        (command, args) => run(command, args, workspacePath, track));
     }
-    const packageManager = await resolvePackageManager(workspacePath, project?.packageManager);
     await run(packageManagerCommand(packageManager), packageManagerRunArguments("build"), workspacePath, track);
     const output = await findBuildOutput(workspacePath);
     if (!output) throw new PublishError("Build completed but did not produce a static index.html in dist, build, or out");
@@ -319,7 +322,9 @@ async function createZip(source: string, plugin = false, cover?: Buffer, maxByte
   const zipOptions = {
     mtime: new Date(1980, 0, 2),
     forceDosTimestamp: true,
-    ...(plugin ? { mode: 0o100644 } : {}),
+    // Deflate output differs between zlib builds, so Plugin entries are stored
+    // to keep the archive's checksum the same on every runtime.
+    ...(plugin ? { mode: 0o100644, compress: false } : {}),
   } as const;
   if (cover !== undefined && files.includes(PUBLISH_GAME_COVER_PATH)) {
     throw new PublishError(`Publish output uses reserved path: ${PUBLISH_GAME_COVER_PATH}`);
@@ -341,6 +346,8 @@ async function createZip(source: string, plugin = false, cover?: Buffer, maxByte
       chunks.push(chunk);
     });
     output.once("error", reject);
+    // yazl reports a file it cannot stat or read on the ZipFile, possibly once per file, and then never ends the output.
+    zip.on("error", reject);
     output.once("end", () => resolve(Buffer.concat(chunks)));
   });
   zip.end();
@@ -383,7 +390,7 @@ async function findBuildOutput(workspacePath: string): Promise<string | undefine
 async function run(command: string, args: string[], cwd: string, track: (child: ChildProcess) => void): Promise<void> {
   const child = spawn(command, args, {
     cwd,
-    env: { ...process.env, BROWSER: "none" },
+    env: { ...projectProcessEnvironment(), BROWSER: "none" },
     stdio: ["ignore", "ignore", "pipe"],
     detached: process.platform !== "win32",
     shell: process.platform === "win32",

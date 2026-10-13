@@ -4,7 +4,7 @@ import path from "node:path";
 import { NodeIO, Document } from "@gltf-transform/core";
 import { describe, expect, it, vi } from "vitest";
 import { MeshyProvider } from "../src/daemon/meshy-provider.js";
-import { MeshySettingsStore } from "../src/daemon/meshy-settings.js";
+import { MediaProviderKeyStore } from "../src/daemon/media-provider-settings.js";
 
 const T2 = { provider: "meshy", id: "meshy-t2" };
 const MESHY_7_1 = { provider: "meshy", id: "meshy-7.1" };
@@ -28,7 +28,7 @@ describe("Meshy provider", () => {
     })).resolves.toEqual({
       bytes: Buffer.from([1, 2, 3]),
       mediaType: "model/gltf-binary",
-      requestId: "task-1",
+      requestId: "task-1", metadata: { forwardAxis: "+Z" },
     });
 
     expect(request.mock.calls.map(([url]) => url)).toEqual([
@@ -116,7 +116,7 @@ describe("Meshy provider", () => {
     const provider = new MeshyProvider(() => "meshy-key", request, 0);
 
     await expect(provider.animate({ model: Buffer.from("glb"), actionIds: [0, 30], heightMeters: 1.6 }))
-      .resolves.toEqual({ bytes: Buffer.from([9]), mediaType: "model/gltf-binary", requestId: "anim-1" });
+      .resolves.toEqual({ bytes: Buffer.from([9]), mediaType: "model/gltf-binary", requestId: "anim-1", metadata: { forwardAxis: "+Z" } });
     expect(request.mock.calls.map(([url]) => url)).toEqual([
       "https://api.meshy.ai/openapi/v1/rigging",
       "https://api.meshy.ai/openapi/v1/rigging/rig-1",
@@ -124,7 +124,7 @@ describe("Meshy provider", () => {
       "https://api.meshy.ai/openapi/v1/animations/anim-1",
       "https://files.example/animated.glb",
     ]);
-    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({ model_url: "data:model/gltf-binary;base64,Z2xi", height_meters: 1.6 });
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toEqual({ model_url: "data:application/octet-stream;base64,Z2xi", height_meters: 1.6 });
     expect(JSON.parse(String(request.mock.calls[2]?.[1]?.body))).toEqual({ rig_task_id: "rig-1", action_ids: [0, 30] });
   });
 
@@ -248,7 +248,7 @@ describe("Meshy provider", () => {
 describe("Meshy settings", () => {
   it("persists and clears the API key", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "ohmygame-meshy-"));
-    const settings = new MeshySettingsStore(directory);
+    const settings = new MediaProviderKeyStore(directory, "meshy", "Meshy");
     await settings.load();
     expect(settings.get()).toEqual({ configured: false });
 
@@ -256,7 +256,7 @@ describe("Meshy settings", () => {
     expect(settings.key()).toBe("meshy-key");
     expect(JSON.parse(await readFile(path.join(directory, "meshy.json"), "utf8"))).toEqual({ version: 1, apiKey: "meshy-key" });
 
-    const restored = new MeshySettingsStore(directory);
+    const restored = new MediaProviderKeyStore(directory, "meshy", "Meshy");
     await restored.load();
     expect(restored.key()).toBe("meshy-key");
     await restored.clear();

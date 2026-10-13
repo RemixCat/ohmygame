@@ -1,6 +1,7 @@
 import type { ImageModel, ProjectState, VideoModel } from "../shared/contracts.js";
 import { createAssetCanvasStarterDocument, preferredImageOption, type AssetCanvasStarter } from "../shared/asset-canvas.js";
-import { createProject, deleteProject, listImageModels, listVideoModels, updateAssetCanvas, waitForRuntime } from "./api.js";
+import { createProject, deleteProject, listImageModels, listVideoModels, waitForRuntime } from "./api.js";
+import { getCanvasWorkspace, getCanvasBoard, saveCanvasBoard } from "./canvas-api.js";
 
 export interface AssetCanvasQuickStart {
   key: string;
@@ -33,17 +34,28 @@ type MediaModels = { image: ImageModel[]; video: VideoModel[] };
 // Provider catalogs can take seconds, so the app loads them ahead of a click and starters reuse the result.
 let cachedModels: MediaModels | undefined;
 let pendingModels: Promise<MediaModels> | undefined;
+let modelRevision = 0;
+
+export function invalidateQuickStartModels(): void {
+  modelRevision += 1;
+  cachedModels = undefined;
+  pendingModels = undefined;
+}
 
 /** Refreshes the media model lists, joining a load already in flight. */
 export function loadQuickStartModels(): Promise<MediaModels> {
-  pendingModels ??= waitForRuntime()
+  if (pendingModels) return pendingModels;
+  const revision = modelRevision;
+  const pending = waitForRuntime()
     .then(() => Promise.all([listImageModels().catch(() => []), listVideoModels().catch(() => [])]))
     .catch(() => [[], []] as [ImageModel[], VideoModel[]])
     .then(([image, video]) => {
-      cachedModels = { image, video };
-      return cachedModels;
+      const models = { image, video };
+      if (revision === modelRevision) cachedModels = models;
+      return models;
     })
-    .finally(() => { pendingModels = undefined; });
+    .finally(() => { if (pendingModels === pending) pendingModels = undefined; });
+  pendingModels = pending;
   return pendingModels;
 }
 
@@ -51,7 +63,9 @@ export async function createAssetCanvasQuickStart(item: AssetCanvasQuickStart): 
   const { document, nodeId } = createAssetCanvasStarterDocument(item.type, starterOptions(item, await modelsFor(item)));
   const project = await createProject({ type: "asset-canvas" });
   try {
-    await updateAssetCanvas(project.id, document);
+    const workspace = await getCanvasWorkspace(project.id);
+    const current = await getCanvasBoard(project.id, workspace.boards[0]!.id);
+    await saveCanvasBoard(project.id, { board: { ...document, id: current.board.id }, revision: current.revision });
   } catch (cause) {
     try {
       await deleteProject(project.id);
@@ -90,7 +104,7 @@ function starterOptions(item: AssetCanvasQuickStart, models: MediaModels): Param
   }
   if (item.type === "video") {
     const model = pickModel(item, models.video);
-    return model ? { videoModel: { provider: model.provider, id: model.id }, videoAspectRatio: model.aspectRatios[0] } : {};
+    return model ? { videoModel: { provider: model.provider, id: model.id }, videoAspectRatio: model.aspectRatios[0], videoReferenceMode: model.imageReferenceMode } : {};
   }
   return {};
 }
@@ -101,7 +115,11 @@ function pickModel<Model extends { id: string }>(item: AssetCanvasQuickStart, mo
 }
 
 function matchesModelId(id: string, modelId: string): boolean {
-  return id === modelId || id.endsWith(`/${modelId}`);
+  if (id === modelId || id.endsWith(`/${modelId}`)) return true;
+  const normalizedId = id.toLowerCase().replaceAll(".", "-");
+  const normalizedModelId = modelId.toLowerCase().replaceAll(".", "-");
+  if (!normalizedModelId.startsWith("seedance-")) return false;
+  return normalizedId.split("/").pop()?.includes(normalizedModelId) ?? false;
 }
 
 function errorMessage(cause: unknown): string {

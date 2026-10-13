@@ -23,13 +23,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.19.0
-          cache: npm
-      - run: npm ci --legacy-peer-deps
-      - run: npm run prepare:desktop-runtime -- win32-x64
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run prepare:desktop-runtime win32-x64
         env:
           PUBLISH_API_URL: ${{ vars.PUBLISH_API_URL }}
           SENTRY_DSN: ${{ vars.SENTRY_DSN }}
-      - run: npm run build:desktop-app
+      # Fail the release instead of shipping without examples; the build step reuses this output.
+      - run: bun run prepare:examples --require
+      - run: bun run build:desktop-app
         env:
           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
@@ -40,9 +44,27 @@ jobs:
         run: |
           if (-not $env:DESKTOP_UPDATE_URL) { throw "DESKTOP_UPDATE_URL repository variable is not configured" }
       - name: Build Windows package
-        run: npx electron-builder --win nsis --x64 --publish never
+        run: bun --bun node_modules/electron-builder/cli.js --win nsis --x64 --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      - name: Check packaged Windows npm
+        shell: pwsh
+        run: |
+          $runtime = (Resolve-Path "release/win-unpacked/resources/runtime/node").Path
+          $env:PATH = "$runtime;$env:PATH"
+          $workspace = Join-Path $env:RUNNER_TEMP "ohmygame-packaged-npm"
+          New-Item -ItemType Directory -Force -Path "$workspace/dependency" | Out-Null
+          Set-Location $workspace
+          '{"name":"packaged-npm-check","private":true,"dependencies":{"runtime-fixture":"file:./dependency"},"scripts":{"check":"node check.cjs"}}' | Set-Content package.json
+          '{"name":"runtime-fixture","version":"1.0.0","main":"index.cjs"}' | Set-Content dependency/package.json
+          'module.exports = "ok";' | Set-Content dependency/index.cjs
+          'require("node:assert/strict").equal(require("runtime-fixture"), "ok");' | Set-Content check.cjs
+          & "$runtime/npm.cmd" --version
+          if ($LASTEXITCODE -ne 0) { throw "Packaged npm could not start" }
+          & "$runtime/npm.cmd" install --offline --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { throw "Packaged npm could not install dependencies" }
+          & "$runtime/npm.cmd" run check
+          if ($LASTEXITCODE -ne 0) { throw "Packaged npm could not run a project script" }
       - uses: actions/upload-artifact@v4
         with:
           name: OhMyGame-Windows-x64
@@ -62,13 +84,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22.19.0
-          cache: npm
-      - run: npm ci --legacy-peer-deps
-      - run: npm run prepare:desktop-runtime -- darwin-arm64
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile
+      - run: bun run prepare:desktop-runtime darwin-arm64
         env:
           PUBLISH_API_URL: ${{ vars.PUBLISH_API_URL }}
           SENTRY_DSN: ${{ vars.SENTRY_DSN }}
-      - run: npm run build:desktop-app
+      # Fail the release instead of shipping without examples; the build step reuses this output.
+      - run: bun run prepare:examples --require
+      - run: bun run build:desktop-app
         env:
           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
@@ -93,7 +119,7 @@ jobs:
             fi
           done
       - name: Build signed macOS package
-        run: npx electron-builder --mac dmg zip --arm64 --publish never
+        run: bun --bun node_modules/electron-builder/cli.js --mac dmg zip --arm64 --publish never
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}

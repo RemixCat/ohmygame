@@ -9,13 +9,15 @@ import { promptContextBlock } from "../src/daemon/prompt-context.js";
 import type { StoredConversation } from "../src/daemon/conversations.js";
 import type { AgentReasoningLevel, ProjectState } from "../src/shared/contracts.js";
 import { RuntimeEventBus } from "../src/shared/events.js";
+import { createProviderFailureDiagnostic } from "@earendil-works/pi-ai/utils/provider-failure";
+import { AGENT_ERROR_ENTRY } from "../src/daemon/agent-errors.js";
 
 describe("lastAssistantError", () => {
   it("surfaces model errors even when Pi resolves the prompt", () => {
     expect(lastAssistantError([
       { role: "user", content: [] },
       { role: "assistant", stopReason: "error", errorMessage: "No API key" },
-    ])).toBe("No API key");
+    ])).toEqual({ message: "No API key", code: "model_not_configured" });
   });
 
   it("does not turn a successful assistant response into an error", () => {
@@ -176,6 +178,21 @@ describe("conversationItems", () => {
       summary: "Earlier context",
       tokensBefore: 42_000,
     })]);
+  });
+
+  it("restores trailing compaction within its original turn", () => {
+    const items = conversationItems([
+      sessionMessage("user-1", { role: "user", content: "Make a game", timestamp: 1 }),
+      sessionMessage("assistant-1", { role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop", timestamp: 2 }),
+      {
+        type: "compaction", id: "compaction-1", parentId: "assistant-1",
+        timestamp: new Date(3).toISOString(), summary: "Previous work", firstKeptEntryId: "user-1", tokensBefore: 42_000,
+      },
+      sessionMessage("user-2", { role: "user", content: "Add a menu", timestamp: 4 }),
+    ] as never, false);
+
+    expect(items.find((item) => item.type === "contextCompaction")).toMatchObject({ turnId: "user-1", summary: "Previous work" });
+    expect(items.at(-1)).toMatchObject({ turnId: "user-2", type: "userMessage" });
   });
 
   it("projects model switches after the conversation starts", () => {
@@ -574,6 +591,27 @@ describe("conversationItems", () => {
 });
 
 describe("AgentManager", () => {
+  it.each(["completed", "cancelled", "failed"] as const)("runs owned-resource cleanup after a %s prompt", async (outcome) => {
+    const session = new FakeSession();
+    const pending = deferred<void>();
+    session.prompt.mockImplementation(() => pending.promise);
+    const cleanup = vi.fn(async () => {});
+    const manager = new AgentManager(new RuntimeEventBus(), { createSession: async () => session, onRunFinished: cleanup });
+    const project = createProject();
+    const conversation = createConversation(project);
+    const turn = manager.prompt(project, conversation, "Build");
+    await vi.waitFor(() => expect(session.prompt).toHaveBeenCalled());
+    if (outcome === "cancelled") await manager.cancel(project.id, conversation.summary.id, turn.turnId);
+    if (outcome === "failed") {
+      pending.reject(new Error("Failed"));
+      await expect(turn.result).rejects.toThrow("Failed");
+    } else {
+      pending.resolve();
+      await expect(turn.result).resolves.toBe(outcome);
+    }
+    expect(cleanup).toHaveBeenCalledExactlyOnceWith(project, conversation.summary.id);
+    await manager.close();
+  });
   it("aggregates activity across conversations until all project work ends", async () => {
     const completions = [deferred<void>(), deferred<void>(), deferred<void>()];
     const sessions = completions.map((completion) => {
@@ -981,6 +1019,87 @@ describe("AgentManager", () => {
     await manager.close();
   });
 
+  it.each(["Connection error.", undefined])("keeps the final retry's cause in events, logs and history when finalError is %s", async (finalError) => {
+    const session = new FakeSession();
+    const finalMessage = {
+      role: "assistant", content: [], stopReason: "error", errorMessage: "Connection error.",
+      provider: "deepseek", model: "deepseek-chat", timestamp: 2,
+      diagnostics: [createProviderFailureDiagnostic(new Error("Connection error.", { cause: Object.assign(new Error("socket reset"), { code: "ECONNRESET" }) }), "https://api.deepseek.com")],
+    };
+    session.prompt.mockImplementation(async () => {
+      session.emit({ type: "message_start", message: { role: "user", content: "Build", timestamp: 1 } } as never);
+      const first = { ...finalMessage, diagnostics: [createProviderFailureDiagnostic(new Error("Connection error.", { cause: Object.assign(new Error("DNS failure"), { code: "ENOTFOUND" }) }))] };
+      session.emit({ type: "message_end", message: first } as never);
+      session.emit({ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2_000, errorMessage: "Connection error." });
+      session.messages.push(finalMessage);
+      session.emit({ type: "message_end", message: finalMessage } as never);
+      session.emit({ type: "auto_retry_end", success: false, attempt: 1, finalError });
+    });
+    const events = new RuntimeEventBus();
+    const onRunFailed = vi.fn();
+    const manager = new AgentManager(events, {
+      createSession: async () => session, onRunFailed,
+      errorDiagnostics: () => ({ network: { source: "manual", proxyUrl: "http://user:secret@localhost:7890" } }),
+    });
+    const project = createProject();
+    const conversation = createConversation(project);
+    await expect(manager.prompt(project, conversation, "Build").result).rejects.toThrow("Connection error.");
+    const retry = events.since(project.id).findLast((event) => event.type === "item.completed" && event.data.item.type === "retry");
+    expect(retry).toMatchObject({ data: { item: { status: "failed", error: { code: "connection_reset", diagnostics: { retryAttempts: 1, provider: "deepseek", network: { source: "manual", proxyUrl: "http://localhost:7890/" } } } } } });
+    expect(onRunFailed).toHaveBeenCalledWith(expect.objectContaining({ code: "connection_reset" }), expect.objectContaining({ conversationId: conversation.summary.id }));
+    expect(onRunFailed).toHaveBeenCalledOnce();
+    const saved = session.appendCustomEntry.mock.calls.findLast(([type]) => type === AGENT_ERROR_ENTRY)?.[1];
+    const history = conversationItems([
+      sessionMessage("user", { role: "user", content: "Build", timestamp: 1 }),
+      sessionMessage("final", JSON.parse(JSON.stringify(finalMessage))),
+      { type: "custom", id: "failure-details", customType: AGENT_ERROR_ENTRY, timestamp: new Date(3).toISOString(), data: saved },
+    ] as never);
+    const restored = history.findLast((item) => item.type === "agentMessage");
+    expect(restored).toMatchObject({ error: { code: "connection_reset", diagnostics: { retryAttempts: 1, network: { source: "manual" } } } });
+    expect(JSON.stringify(saved)).not.toContain("secret");
+    expect(history.filter((item) => item.type === "agentMessage")).toHaveLength(1);
+    await manager.close();
+  });
+
+  it("keeps a failure before the user message separate from the previous failed turn", async () => {
+    const session = new FakeSession();
+    session.prompt.mockRejectedValue(new Error("No API key for deepseek/deepseek-chat"));
+    const manager = new AgentManager(new RuntimeEventBus(), { createSession: async () => session });
+    const project = createProject();
+    await expect(manager.prompt(project, createConversation(project), "Try again").result).rejects.toThrow("No API key");
+    const saved = session.appendCustomEntry.mock.calls.findLast(([type]) => type === AGENT_ERROR_ENTRY)?.[1];
+    const history = conversationItems([
+      sessionMessage("previous-user", { role: "user", content: "Build", timestamp: 1 }),
+      sessionMessage("previous-error", { role: "assistant", content: [], stopReason: "error", errorMessage: "Connection error.", timestamp: 2 }),
+      { type: "custom", id: "preflight-error", customType: AGENT_ERROR_ENTRY, timestamp: new Date(3).toISOString(), data: saved },
+    ] as never);
+    expect(history.filter((item) => item.type === "agentMessage")).toMatchObject([
+      { turnId: "previous-user", error: { code: "network_error", message: "Connection error." } },
+      { turnId: "preflight-error", error: { code: "model_not_configured" } },
+    ]);
+    await manager.close();
+  });
+
+  it("does not retain terminal diagnostics after a successful retry", async () => {
+    const session = new FakeSession();
+    session.prompt.mockImplementation(async () => {
+      const failed = { role: "assistant", content: [], stopReason: "error", errorMessage: "Connection error." };
+      session.emit({ type: "message_end", message: failed } as never);
+      session.emit({ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2_000, errorMessage: "Connection error." });
+      const success = { role: "assistant", content: [], stopReason: "stop" };
+      session.messages.push(success);
+      session.emit({ type: "message_end", message: success } as never);
+      session.emit({ type: "auto_retry_end", success: true, attempt: 1 });
+    });
+    const onRunFailed = vi.fn();
+    const manager = new AgentManager(new RuntimeEventBus(), { createSession: async () => session, onRunFailed });
+    const project = createProject();
+    await expect(manager.prompt(project, createConversation(project), "Build").result).resolves.toBe("completed");
+    expect(onRunFailed).not.toHaveBeenCalled();
+    expect(session.appendCustomEntry.mock.calls.some(([type]) => type === AGENT_ERROR_ENTRY)).toBe(false);
+    await manager.close();
+  });
+
   it("aborts and waits for active work before closing", async () => {
     const session = new FakeSession();
     const prompt = deferred<void>();
@@ -1071,8 +1190,8 @@ describe("AgentManager", () => {
       { type: "item.started", data: { item: expect.objectContaining({ id: expect.any(String), type: "agentMessage", text: "", status: "inProgress" }) } },
       { type: "item.agentMessage.delta", data: { itemId: expect.any(String), delta: "Hello" } },
       { type: "item.completed", data: { item: expect.objectContaining({ id: expect.any(String), type: "agentMessage", text: "Hello", status: "completed", phase: "commentary" }) } },
-      { type: "item.started", data: { item: expect.objectContaining({ id: expect.any(String), type: "retry", status: "inProgress", attempt: 1, maxAttempts: 3, delayMs: 2_000, error: { message: "fetch failed" } }) } },
-      { type: "item.updated", data: { item: expect.objectContaining({ id: expect.any(String), type: "retry", status: "inProgress", attempt: 2, maxAttempts: 3, delayMs: 4_000, error: { message: "fetch failed again" } }) } },
+      { type: "item.started", data: { item: expect.objectContaining({ id: expect.any(String), type: "retry", status: "inProgress", attempt: 1, maxAttempts: 3, delayMs: 2_000, error: { code: "network_error", message: "fetch failed", diagnostics: { retryAttempts: 1 } } }) } },
+      { type: "item.updated", data: { item: expect.objectContaining({ id: expect.any(String), type: "retry", status: "inProgress", attempt: 2, maxAttempts: 3, delayMs: 4_000, error: { code: "network_error", message: "fetch failed again", diagnostics: { retryAttempts: 2 } } }) } },
       { type: "item.completed", data: { item: expect.objectContaining({ id: expect.any(String), type: "retry", status: "completed", attempt: 2 }) } },
       { type: "item.started", data: { item: expect.objectContaining({ id: expect.any(String), type: "dynamicToolCall", toolCallId: "call-1", tool: "edit", status: "inProgress", arguments: { path: "src/app.ts" } }) } },
       { type: "item.updated", data: { item: expect.objectContaining({ id: expect.any(String), type: "dynamicToolCall", output: "working" }) } },

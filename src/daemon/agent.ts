@@ -1,5 +1,6 @@
 import {
   createAgentSession,
+  createBashToolDefinition,
   DefaultResourceLoader,
   loadSkills,
   ModelRuntime,
@@ -20,16 +21,23 @@ import type { RuntimeEventBus } from "../shared/events.js";
 import type { StoredConversation } from "./conversations.js";
 import {
   ensureOhMyGamePiEnvironment,
-  resolveBundledMcpAdapterPath,
-  withBundledMcpAdapter,
+  withoutOhMyGameManagedPiPackages,
 } from "./pi-agent.js";
 import { mcpToolInput, parseMcpToolIdentity } from "../shared/mcp.js";
 import type { PluginSkillRegistration } from "./plugin-runtime.js";
 import { appendSystemPromptForProject, type AgentPromptProject } from "./agent-prompts.js";
 import { openRouterAttributionExtension } from "./openrouter-attribution.js";
+import type { ExtensionFactory } from "@earendil-works/pi-coding-agent";
+import type { PluginMcpHost } from "./plugin-mcp-host.js";
+import { projectProcessEnvironment } from "./project-process.js";
+import { createProviderImageReadTool, installDeepSeekImageFiles } from "./deepseek-image-files.js";
+import { SessionImages } from "./session-images.js";
+import { installSessionImageRequests } from "./session-image-requests.js";
+import { AGENT_ERROR_ENTRY, assistantMessageError, normalizeAgentError, thrownAgentError } from "./agent-errors.js";
 
 export interface CodingSession {
   readonly messages: readonly unknown[];
+  readonly model?: RuntimeModel;
   readonly sessionManager?: Pick<SessionManager, "appendCustomEntry" | "getBranch">;
   prompt(prompt: string, options?: { images?: PiPromptImage[] }): Promise<void>;
   followUp?(prompt: string, images?: PiPromptImage[]): Promise<unknown>;
@@ -87,11 +95,6 @@ export type AgentRunResult = "completed" | "cancelled";
 type CompactRunOutcome = { status: AgentRunResult } | { status: "failed"; cause: unknown };
 export type SessionFactory = (project: ProjectState, conversation: StoredConversation) => Promise<CodingSession>;
 
-export function loadConversation(project: ProjectState, sessionPath: string, before?: string, markInterrupted = true): ThreadItem[] {
-  const entries = SessionManager.open(sessionPath, sessionDirectory(project), project.workspacePath).getBranch();
-  return conversationItems(before ? entries.filter((entry) => entry.timestamp < before) : entries, markInterrupted);
-}
-
 export function conversationItems(entries: readonly SessionEntry[], markInterrupted = true): ThreadItem[] {
   const items: ThreadItem[] = [];
   const tools = new Map<string, Extract<ThreadItem, { type: "dynamicToolCall" | "mcpToolCall" }>>();
@@ -107,7 +110,7 @@ export function conversationItems(entries: readonly SessionEntry[], markInterrup
       const compactedAt = Date.parse(entry.timestamp);
       items.push({
         id: entry.id,
-        turnId: entry.id,
+        turnId: turnId ?? entry.id,
         type: "contextCompaction",
         status: "completed",
         summary: entry.summary,
@@ -131,6 +134,22 @@ export function conversationItems(entries: readonly SessionEntry[], markInterrup
     }
     if (entry.type === "custom" && entry.customType === USER_PROMPT_ENTRY) {
       storedPrompt = parseStoredPromptDetails(entry.data);
+      continue;
+    }
+    if (entry.type === "custom" && entry.customType === AGENT_ERROR_ENTRY) {
+      const data = record(entry.data);
+      const storedError = record(data?.error);
+      if (data?.version !== 1 || typeof storedError?.message !== "string") continue;
+      if (data.beforeUserMessage === true) {
+        turnId = entry.id;
+        storedPrompt = undefined;
+      } else turnId ??= entry.id;
+      const error = normalizeAgentError(storedError.message, storedError.diagnostics);
+      const previous = items.findLastIndex((item) => item.turnId === turnId && item.type === "agentMessage");
+      const item = items[previous];
+      if (item?.type === "agentMessage" && item.status === "failed") items[previous] = { ...item, error };
+      else items.push({ id: entry.id, turnId, type: "agentMessage", text: "", status: "failed", error, timestamp: Date.parse(entry.timestamp) });
+      turnFinished = true;
       continue;
     }
     if (entry.type !== "message") continue;
@@ -181,7 +200,7 @@ export function conversationItems(entries: readonly SessionEntry[], markInterrup
             status: threadItemStatus(message.stopReason),
             ...(phase ? { phase } : {}),
             timestamp,
-            ...(message.stopReason === "error" ? { error: itemError(message.errorMessage || "The model request failed") } : {}),
+            ...(message.stopReason === "error" ? { error: assistantMessageError(message) } : {}),
           });
         } else if (content.type === "toolCall") {
           if (content.name === "update_plan") {
@@ -229,7 +248,7 @@ export function conversationItems(entries: readonly SessionEntry[], markInterrup
           text: "",
           status: threadItemStatus(message.stopReason),
           timestamp,
-          ...(message.stopReason === "error" ? { error: itemError(message.errorMessage || "The model request failed") } : {}),
+          ...(message.stopReason === "error" ? { error: assistantMessageError(message) } : {}),
         });
       }
       if (message.stopReason !== "toolUse") turnFinished = true;
@@ -240,7 +259,7 @@ export function conversationItems(entries: readonly SessionEntry[], markInterrup
       if (questionnaire) {
         const result = questionnaireResult(message);
         const completed: typeof questionnaire = message.isError
-          ? { ...questionnaire, status: "failed", error: itemError(toolOutput(message).output || "Questionnaire failed"), timestamp }
+          ? { ...questionnaire, status: "failed", error: normalizeAgentError(toolOutput(message).output || "Questionnaire failed"), timestamp }
           : result?.cancelled
             ? { ...questionnaire, status: "cancelled", answers: [], timestamp }
             : { ...questionnaire, status: "completed", ...(result ? { answers: result.answers } : {}), timestamp };
@@ -283,7 +302,7 @@ export function conversationItems(entries: readonly SessionEntry[], markInterrup
       return { ...item, status: "failed" };
     }
     if (item.type === "userInputRequest" && item.status === "inProgress") {
-      return { ...item, status: "failed", error: itemError("Questionnaire interrupted") };
+      return { ...item, status: "failed", error: normalizeAgentError("Questionnaire interrupted") };
     }
     return item;
   });
@@ -301,6 +320,9 @@ interface AgentManagerOptions {
   loadSkills?: (project: ProjectState) => Promise<Array<{ name: string; description: string }>>;
   activeToolNames?: (project: ProjectState, mode: PlanMode, session: CodingSession) => string[];
   onRunCompleted?: (project: ProjectState) => void;
+  onRunFinished?: (project: ProjectState, conversationId: string) => Promise<void>;
+  errorDiagnostics?: () => NonNullable<ThreadItemError["diagnostics"]>;
+  onRunFailed?: (error: ThreadItemError, scope: { projectId: string; conversationId: string; turnId: string }) => void;
 }
 
 interface ManagedSession {
@@ -332,6 +354,9 @@ interface ActiveTurn {
   preparingToolItemIds: Map<number, string>;
   toolItemIds: Map<string, string>;
   retryItemId?: string;
+  userMessageStarted?: boolean;
+  lastError?: ThreadItemError;
+  retryAttempts?: number;
   items: Map<string, ThreadItem>;
   startedEventId?: number;
   startedAt?: number;
@@ -735,8 +760,9 @@ export class AgentManager {
     images: PromptImage[],
     active: ActiveTurn,
   ): Promise<AgentRunResult> {
+    let managed: ManagedSession;
     try {
-      const managed = await this.#getSession(project, conversation);
+      managed = await this.#getSession(project, conversation);
       if (active.mode === "planning" || active.mode === "executing") {
         appendPlanState(managed.session.sessionManager, {
           mode: active.mode,
@@ -752,7 +778,9 @@ export class AgentManager {
         return "cancelled";
       }
 
-      managed.session.setActiveToolsByName?.(this.options.activeToolNames?.(project, active.mode, managed.session) ?? BASE_TOOL_NAMES);
+      const activeTools = this.options.activeToolNames?.(project, active.mode, managed.session) ?? BASE_TOOL_NAMES;
+      managed.session.setActiveToolsByName?.(managed.session.getAllTools?.().some((tool) => tool.name === "recall_image")
+        ? [...new Set([...activeTools, "recall_image"])] : activeTools);
       appendPromptDetails(managed.session.sessionManager, active, prompt);
       if (images.length) {
         await managed.session.prompt(prompt, { images: images.map(toPiImage) });
@@ -763,25 +791,25 @@ export class AgentManager {
         this.#markCancelled(project.id, active);
         return "cancelled";
       }
-
-      const sessionError = lastAssistantError(managed.session.messages);
-      if (sessionError) {
-        throw new Error(sessionError);
-      }
-
-      this.#completeOpenItems(project.id, active, "completed");
-      this.#setState(project.id, active.conversationId, { status: "idle" });
-      this.events.publish(project.id, "agent.completed", {}, eventScope(active));
-      return "completed";
     } catch (cause) {
       if (isCancelling(active)) {
         this.#markCancelled(project.id, active);
         return "cancelled";
       }
-      const error = cause instanceof Error ? cause.message : String(cause);
-      this.#markError(project.id, active, error);
+      const error = thrownAgentError(cause);
+      this.#markError(project.id, active, active.lastError?.message === error.message ? active.lastError : error);
       throw cause;
     }
+
+    const error = lastAssistantError(managed.session.messages);
+    if (error) {
+      this.#markError(project.id, active, error);
+      throw new Error(error.message);
+    }
+    this.#completeOpenItems(project.id, active, "completed");
+    this.#setState(project.id, active.conversationId, { status: "idle" });
+    this.events.publish(project.id, "agent.completed", {}, eventScope(active));
+    return "completed";
   }
 
   async cancel(projectId: string, conversationId: string, turnId: string): Promise<void> {
@@ -1026,15 +1054,6 @@ export class AgentManager {
     return { id: active.startedEventId, timestamp: new Date(active.startedAt).toISOString() };
   }
 
-  eventImages(projectId: string, conversationId: string | undefined, turnId: string | undefined): PromptImage[] | undefined {
-    if (!conversationId || !turnId) return undefined;
-    const active = this.#activeTurns.get(conversationKey(projectId, conversationId));
-    if (active?.turnId === turnId) return active.images;
-    const pending = this.#pendingPrompts.get(conversationKey(projectId, conversationId));
-    const steering = this.#steeringPrompts.get(conversationKey(projectId, conversationId));
-    return [...(pending ?? []), ...(steering ?? [])].find((item) => item.turnId === turnId)?.images;
-  }
-
   async close(): Promise<void> {
     this.#closing = true;
     for (const active of this.#activeTurns.values()) {
@@ -1064,6 +1083,7 @@ export class AgentManager {
     const key = conversationKey(projectId, active.conversationId);
     await this.#withQueueMutation(key, async () => {
       if (this.#activeTurns.get(key) !== active) return;
+      await this.options.onRunFinished?.(project, active.conversationId);
       this.#activeTurns.delete(key);
       const questionnaire = this.#questionnaires.get(key);
       if (questionnaire) {
@@ -1071,7 +1091,7 @@ export class AgentManager {
         this.#completeItem(projectId, active, {
           ...questionnaire.item,
           status: "failed",
-          error: itemError("Planning ended before the questionnaire was answered"),
+          error: normalizeAgentError("Planning ended before the questionnaire was answered"),
         });
         questionnaire.reject(new Error("Planning ended before the questionnaire was answered"));
         this.#questionnaires.delete(key);
@@ -1110,7 +1130,7 @@ export class AgentManager {
       const error = outcome.status === "failed"
         ? outcome.cause instanceof Error ? outcome.cause.message : String(outcome.cause)
         : undefined;
-      this.#completeOpenItems(project.id, active, error ? "failed" : "completed", error);
+      this.#completeOpenItems(project.id, active, error ? "failed" : "completed", error ? normalizeAgentError(error) : undefined);
       this.#activeTurns.delete(key);
       this.#setState(project.id, active.conversationId, error ? { status: "error", error } : { status: "idle" });
       this.events.publish(project.id, error ? "agent.error" : "agent.completed", error ? { error } : {}, eventScope(active));
@@ -1172,6 +1192,7 @@ export class AgentManager {
     const active = this.#activeTurns.get(conversationKey(projectId, conversationId));
     if (!active) return;
     if (event.type === "message_start" && isUserMessage(event.message)) {
+      active.userMessageStarted = true;
       const key = conversationKey(projectId, conversationId);
       const steering = this.#steeringPrompts.get(key) ?? [];
       const pending = this.#pendingPrompts.get(key) ?? [];
@@ -1197,6 +1218,8 @@ export class AgentManager {
       active.preparingToolItemIds.clear();
       active.toolItemIds.clear();
       active.retryItemId = undefined;
+      active.lastError = undefined;
+      active.retryAttempts = undefined;
       active.items.clear();
       this.#setState(projectId, conversationId, { status: "running" });
       const startedEvent = this.events.publish(
@@ -1308,6 +1331,7 @@ export class AgentManager {
       this.#updateItem(projectId, active, toolThreadItem(active.turnId, itemId, toolCall.id, toolCall.name, args, "preparing"));
     } else if (event.type === "message_end" && isAssistantMessage(event.message)) {
       const status = threadItemStatus(event.message.stopReason);
+      active.lastError = event.message.stopReason === "error" ? this.#turnError(active, assistantMessageError(event.message)) : undefined;
       for (const [contentIndex, itemId] of active.assistantItemIds) {
         if (status === "completed" && active.completedAssistantIndexes.has(contentIndex)) continue;
         const phase = assistantMessagePhase(
@@ -1320,7 +1344,7 @@ export class AgentManager {
           ...item,
           status,
           ...(phase ? { phase } : {}),
-          ...(event.message.stopReason === "error" ? { error: itemError(event.message.errorMessage || "The model request failed") } : {}),
+          ...(active.lastError ? { error: active.lastError } : {}),
         });
       }
       if (active.assistantItemIds.size === 0 && status !== "completed") {
@@ -1331,7 +1355,7 @@ export class AgentManager {
           type: "agentMessage",
           text: "",
           status,
-          ...(event.message.stopReason === "error" ? { error: itemError(event.message.errorMessage || "The model request failed") } : {}),
+          ...(active.lastError ? { error: active.lastError } : {}),
         };
         this.#startItem(projectId, active, { ...item, status: "inProgress" });
         this.#completeItem(projectId, active, item);
@@ -1340,6 +1364,7 @@ export class AgentManager {
       active.completedAssistantIndexes.clear();
       active.preparingToolItemIds.clear();
     } else if (event.type === "auto_retry_start") {
+      active.retryAttempts = (active.retryAttempts ?? 0) + 1;
       const item: Extract<ThreadItem, { type: "retry" }> = {
         id: `${active.turnId}:retry`,
         turnId: active.turnId,
@@ -1348,7 +1373,7 @@ export class AgentManager {
         attempt: event.attempt,
         maxAttempts: event.maxAttempts,
         delayMs: event.delayMs,
-        error: itemError(event.errorMessage),
+        error: this.#retryError(active, event.errorMessage),
       };
       active.retryItemId = item.id;
       this.#updateItem(projectId, active, item);
@@ -1358,7 +1383,7 @@ export class AgentManager {
         this.#completeItem(projectId, active, {
           ...item,
           status: event.success ? "completed" : "failed",
-          ...(event.finalError ? { error: itemError(event.finalError) } : {}),
+          ...(!event.success ? { error: this.#retryError(active, event.finalError ?? active.lastError?.message ?? item.error.message) } : {}),
         });
         if (event.success) active.items.delete(item.id);
       }
@@ -1388,7 +1413,7 @@ export class AgentManager {
           tokensBefore: event.result.tokensBefore,
           estimatedTokensAfter: event.result.estimatedTokensAfter,
         } : {}),
-        ...(error ? { error: itemError(error) } : {}),
+        ...(error ? { error: normalizeAgentError(error) } : {}),
       });
     } else if (event.type === "tool_execution_start") {
       if (event.toolName === "update_plan" || event.toolName === "questionnaire") return;
@@ -1461,10 +1486,10 @@ export class AgentManager {
     }
   }
 
-  #completeOpenItems(projectId: string, active: ActiveTurn, status: "completed" | "cancelled" | "failed", error?: string): void {
+  #completeOpenItems(projectId: string, active: ActiveTurn, status: "completed" | "cancelled" | "failed", error?: ThreadItemError): void {
     for (const item of active.items.values()) {
       if (item.type === "agentMessage" && item.status === "inProgress") {
-        this.#completeItem(projectId, active, { ...item, status, ...(status === "failed" && error ? { error: itemError(error) } : {}) });
+        this.#completeItem(projectId, active, { ...item, status, ...(status === "failed" && error ? { error } : {}) });
       } else if (item.type === "reasoning" && item.status === "inProgress") {
         this.#completeItem(projectId, active, { ...item, status: "completed" });
       } else if ((item.type === "dynamicToolCall" || item.type === "mcpToolCall") &&
@@ -1474,33 +1499,37 @@ export class AgentManager {
         this.#completeItem(projectId, active, {
           ...item,
           status: status === "completed" ? "completed" : status === "cancelled" ? "cancelled" : "failed",
-          ...(error ? { error: itemError(error) } : {}),
+          ...(error ? { error } : {}),
         });
       } else if (item.type === "retry" && item.status === "inProgress") {
         this.#completeItem(projectId, active, {
           ...item,
           status: status === "completed" ? "completed" : "failed",
-          ...(error ? { error: itemError(error) } : {}),
+          ...(error ? { error } : {}),
         });
       } else if (item.type === "userInputRequest" && item.status === "inProgress") {
         this.#completeItem(projectId, active, {
           ...item,
           status: status === "cancelled" ? "cancelled" : "failed",
-          ...(error ? { error: itemError(error) } : {}),
+          ...(error ? { error } : {}),
         });
       }
     }
   }
 
-  #ensureTerminalAgentItem(projectId: string, active: ActiveTurn, status: "cancelled" | "failed", error?: string): void {
-    if ([...active.items.values()].some((item) => item.type === "agentMessage" && item.status === status)) return;
+  #ensureTerminalAgentItem(projectId: string, active: ActiveTurn, status: "cancelled" | "failed", error?: ThreadItemError): void {
+    const previous = [...active.items.values()].findLast((item) => item.type === "agentMessage");
+    if (previous?.type === "agentMessage" && previous.status === status) {
+      if (error && previous.error !== error) this.#completeItem(projectId, active, { ...previous, error });
+      return;
+    }
     const item: Extract<ThreadItem, { type: "agentMessage" }> = {
       id: `${active.turnId}:status`,
       turnId: active.turnId,
       type: "agentMessage",
       text: "",
       status,
-      ...(error ? { error: itemError(error) } : {}),
+      ...(error ? { error } : {}),
     };
     this.#startItem(projectId, active, { ...item, status: "inProgress" });
     this.#completeItem(projectId, active, item);
@@ -1513,11 +1542,35 @@ export class AgentManager {
     this.events.publish(projectId, "agent.cancelled", {}, eventScope(active));
   }
 
-  #markError(projectId: string, active: ActiveTurn, error: string): void {
+  #retryError(active: ActiveTurn, message: string): ThreadItemError {
+    const error = normalizeAgentError(message);
+    return this.#turnError(active, active.lastError?.message === error.message ? active.lastError : error);
+  }
+
+  #turnError(active: ActiveTurn, error: ThreadItemError): ThreadItemError {
+    const model = this.#sessions.get(conversationKey(active.projectId, active.conversationId))?.session.model;
+    return normalizeAgentError(error.message, {
+      ...(model ? { provider: model.provider, model: model.id, endpoint: model.baseUrl } : {}),
+      ...error.diagnostics,
+      ...this.options.errorDiagnostics?.(),
+      ...(active.retryAttempts !== undefined ? { retryAttempts: active.retryAttempts } : {}),
+    });
+  }
+
+  #markError(projectId: string, active: ActiveTurn, failure: ThreadItemError): void {
+    const error = this.#turnError(active, failure);
     this.#completeOpenItems(projectId, active, "failed", error);
     this.#ensureTerminalAgentItem(projectId, active, "failed", error);
-    this.#setState(projectId, active.conversationId, { status: "error", error });
-    this.events.publish(projectId, "agent.error", { error }, eventScope(active));
+    try {
+      this.#sessions.get(conversationKey(projectId, active.conversationId))?.session.sessionManager?.appendCustomEntry(AGENT_ERROR_ENTRY, {
+        version: 1, error, ...(!active.userMessageStarted ? { beforeUserMessage: true } : {}),
+      });
+    } catch {
+      console.warn("Could not save agent failure diagnostics");
+    }
+    this.#setState(projectId, active.conversationId, { status: "error", error: error.message });
+    this.events.publish(projectId, "agent.error", { error: error.message }, eventScope(active));
+    this.options.onRunFailed?.(error, { projectId, conversationId: active.conversationId, turnId: active.turnId });
   }
 
   #setState(projectId: string, conversationId: string, state: ConversationAgentState): void {
@@ -1792,7 +1845,8 @@ function imageContent(content: unknown): PromptImage[] {
     const mediaType = (item as { mimeType?: unknown }).mimeType;
     const data = (item as { data?: unknown }).data;
     if (!isPromptImageMediaType(mediaType) || typeof data !== "string") return [];
-    return [{ mediaType, data }];
+    const url = (item as { url?: unknown }).url;
+    return [{ mediaType, data, ...(typeof url === "string" ? { url } : {}) }];
   });
 }
 
@@ -2082,15 +2136,6 @@ function questionnaireAnswers(
   });
 }
 
-function itemError(message: string, code?: ThreadItemError["code"]): ThreadItemError {
-  const resolvedCode = code ?? threadItemErrorCode(message);
-  return { message, ...(resolvedCode ? { code: resolvedCode } : {}) };
-}
-
-function threadItemErrorCode(message: string): ThreadItemError["code"] {
-  return /^No API key(?: found for the selected model)?\b/i.test(message) ? "model_not_configured" : undefined;
-}
-
 function questionnaireThreadItem(
   turnId: string,
   toolCallId: string,
@@ -2161,23 +2206,33 @@ export async function createPiSession(
   model?: RuntimeModel,
   agentDir = process.env.PI_CODING_AGENT_DIR ?? path.resolve(process.cwd(), ".data", "pi-agent"),
   resolvePluginSkills?: () => Promise<PluginSkillRegistration[]>,
+  mcp?: { factory: ExtensionFactory; host: PluginMcpHost },
 ): Promise<CodingSession> {
   // Trusted-local phase: cwd guides Pi but is not an OS security boundary.
   const { resourceLoader, sessionSettings, pluginSkills } = await createPiResourceLoader(project.workspacePath, agentDir, {
     resolvePluginSkills,
     appendSystemPrompt: appendSystemPromptForProject(project),
+    mcpFactory: mcp?.factory,
   });
+  const images = new SessionImages(sessionManager, path.join(agentDir, "request-image-previews"));
   const { session } = await createAgentSession({
     cwd: project.workspacePath,
     agentDir,
-    customTools,
+    customTools: [createProviderImageReadTool(project.workspacePath, sessionSettings) as ToolDefinition, createBashToolDefinition(project.workspacePath, {
+      shellPath: sessionSettings.getShellPath(),
+      commandPrefix: sessionSettings.getShellCommandPrefix(),
+      spawnHook: (context) => ({ ...context, env: projectProcessEnvironment(context.env) }),
+    }) as ToolDefinition, images.recallTool as ToolDefinition, ...customTools],
     model: model ? compatibleRuntimeModel(model) : undefined,
     modelRuntime,
     resourceLoader,
     sessionManager,
     settingsManager: sessionSettings,
   });
-  await session.bindExtensions({ mode: "rpc" });
+  installDeepSeekImageFiles(session, agentDir);
+  installSessionImageRequests(session, images, agentDir);
+  mcp?.host.manage(session);
+  try { await session.bindExtensions({ mode: "rpc" }); } catch (cause) { session.dispose(); throw cause; }
   return Object.assign(session, {
     getSkills: () => skillCatalog(resourceLoader.getSkills().skills, pluginSkills),
   });
@@ -2213,22 +2268,24 @@ async function createPiResourceLoader(
   options: {
     resolvePluginSkills?: () => Promise<PluginSkillRegistration[]>;
     appendSystemPrompt?: readonly string[];
+    mcpFactory?: ExtensionFactory;
   } = {},
 ): Promise<{ resourceLoader: DefaultResourceLoader; sessionSettings: SettingsManager; pluginSkills: PluginSkillRegistration[] }> {
   await ensureOhMyGamePiEnvironment(agentDir);
   const persistedSettings = SettingsManager.create(workspacePath, agentDir);
   const sessionSettings = SettingsManager.inMemory(persistedSettings.getGlobalSettings());
   sessionSettings.applyOverrides(persistedSettings.getProjectSettings());
-  sessionSettings.setPackages(withBundledMcpAdapter(
-    sessionSettings.getPackages(),
-    resolveBundledMcpAdapterPath(),
-  ));
+  sessionSettings.setPackages(withoutOhMyGameManagedPiPackages(sessionSettings.getPackages()).filter(entry => {
+    const source = typeof entry === "string" ? entry : entry.source;
+    return !source.replace(/\\/g, "/").endsWith("/pi-mcp-adapter");
+  }));
   const pluginSkills = await options.resolvePluginSkills?.() ?? [];
   const resourceLoader = new DefaultResourceLoader({
     cwd: workspacePath,
     agentDir,
     settingsManager: sessionSettings,
-    extensionFactories: [{ name: "openrouter-attribution", factory: openRouterAttributionExtension, hidden: true }],
+    extensionFactories: [{ name: "openrouter-attribution", factory: openRouterAttributionExtension, hidden: true },
+      ...(options.mcpFactory ? [{ name: "plugin-mcp", factory: options.mcpFactory, hidden: true }] : [])],
     additionalSkillPaths: pluginSkills.map((skill) => skill.path),
     appendSystemPrompt: options.appendSystemPrompt
       ? [...options.appendSystemPrompt]
@@ -2271,18 +2328,7 @@ function skillCatalog(
   });
 }
 
-export function lastAssistantError(messages: readonly unknown[]): string | undefined {
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index];
-    if (!message || typeof message !== "object") continue;
-    const candidate = message as { role?: unknown; stopReason?: unknown; errorMessage?: unknown };
-    if (candidate.role !== "assistant") continue;
-    if (candidate.stopReason === "error") {
-      return typeof candidate.errorMessage === "string" && candidate.errorMessage
-        ? candidate.errorMessage
-        : "The model request failed";
-    }
-    return undefined;
-  }
-  return undefined;
+export function lastAssistantError(messages: readonly unknown[]): ThreadItemError | undefined {
+  const message = messages.findLast(isAssistantMessage);
+  return message?.stopReason === "error" ? assistantMessageError(message) : undefined;
 }

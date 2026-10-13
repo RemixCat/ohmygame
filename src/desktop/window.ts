@@ -1,10 +1,20 @@
-import { BrowserWindow, shell } from "electron";
+import { BrowserWindow, nativeTheme, shell } from "electron";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DaemonRuntime } from "./daemon-process.js";
 
 const PLAYTEST_MAX_CONTENT_WIDTH = 1280;
 const PLAYTEST_MAX_CONTENT_HEIGHT = 800;
+const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
+const repositoryRoot = path.resolve(moduleDirectory, "../..");
+
+export function windowsTitleBarOverlay(isDark: boolean) {
+  return {
+    color: isDark ? "#1f1f1f" : "#f7f7f7",
+    symbolColor: isDark ? "#ffffff" : "#202020",
+    height: 32,
+  };
+}
 
 interface CreateWindowOptions {
   runtime: DaemonRuntime;
@@ -13,6 +23,8 @@ interface CreateWindowOptions {
   rendererFile?: string;
   rendererHash?: string;
   sidebarVibrancy?: boolean;
+  /** Hosts the application menu in a single custom Windows title bar. */
+  integratedMenuBar?: boolean;
   contentSize?: { width: number; height: number };
   aspectRatio?: number;
   minWidth?: number;
@@ -52,7 +64,7 @@ export async function createDesktopWindow(options: CreateWindowOptions): Promise
     `--ohmygame-daemon-url=${options.runtime.url}`,
     `--ohmygame-daemon-token=${options.runtime.token}`,
   ];
-  const macWindowOptions = process.platform === "darwin"
+  const platformWindowOptions = process.platform === "darwin"
     ? {
         titleBarStyle: "hiddenInset" as const,
         ...(options.sidebarVibrancy ? {
@@ -63,8 +75,14 @@ export async function createDesktopWindow(options: CreateWindowOptions): Promise
           visualEffectState: "active" as const,
         } : {}),
       }
+    : process.platform === "win32" && options.integratedMenuBar
+      ? {
+          titleBarStyle: "hidden" as const,
+          titleBarOverlay: windowsTitleBarOverlay(nativeTheme.shouldUseDarkColors),
+        }
     : {};
   const window = new BrowserWindow({
+    icon: path.resolve(repositoryRoot, "build/icon.ico"),
     width: options.contentSize?.width ?? 1440,
     height: options.contentSize?.height ?? 900,
     minWidth: options.minWidth ?? 960,
@@ -72,7 +90,7 @@ export async function createDesktopWindow(options: CreateWindowOptions): Promise
     ...(options.contentSize ? { useContentSize: true } : {}),
     backgroundColor: "#171717",
     show: false,
-    ...macWindowOptions,
+    ...platformWindowOptions,
     webPreferences: {
       preload: path.resolve(options.preloadPath),
       additionalArguments: runtimeArguments,

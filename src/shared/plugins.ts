@@ -1,6 +1,6 @@
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
-import type { PluginMention, ProjectType } from "./contracts.js";
+import { PROJECT_TYPE_IDS, type PluginMention, type ProjectType } from "./contracts.js";
 
 export type PluginOrigin =
   | { type: "github"; repository: string; commit: string; release?: string }
@@ -110,6 +110,8 @@ export interface PluginSummary {
   enabled: boolean;
   origin?: PluginOrigin;
   preinstalled?: boolean;
+  configurationStatus?: "ready" | "needs-configuration";
+  mcpServerCount?: number;
 }
 
 export interface PluginComponentSummary {
@@ -120,10 +122,13 @@ export interface PluginComponentSummary {
 }
 
 export interface PluginConnectionSummary extends PluginComponentSummary {
-  status?: "enabled" | "disabled" | "not-configured";
+  status?: "enabled" | "disabled" | "not-configured" | "connected" | "failed" | "needs-auth";
+  ownerPluginId?: string;
+  toolCount?: number;
+  transport?: "stdio" | "http";
 }
 
-export type ConfigurablePluginComponentType = "skill";
+export type ConfigurablePluginComponentType = "skill" | "mcp";
 
 export interface PluginSettings {
   enabled: boolean;
@@ -140,6 +145,9 @@ export interface PluginDetail extends PluginSummary {
   connections: PluginConnectionSummary[];
   defaultPrompts?: string[];
   projectTypes?: ProjectType[];
+  mcpServers?: PluginConnectionSummary[];
+  mcpConfigPath?: string;
+  configuration?: Record<string, PluginConfigurationField>;
 }
 
 export interface PluginSkillContent {
@@ -172,13 +180,39 @@ const InterfaceSchema = Type.Object({
   shortDescription: Type.Optional(Type.String({ minLength: 1 })),
   longDescription: Type.Optional(Type.String({ minLength: 1 })),
   defaultPrompt: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
-  projectTypes: Type.Optional(Type.Array(Type.Union([
-    Type.Literal("web-game"),
-    Type.Literal("godot-game"),
-    Type.Literal("interactive-story"),
-    Type.Literal("asset-canvas"),
-  ]), { minItems: 1, uniqueItems: true })),
+  projectTypes: Type.Optional(Type.Array(Type.Union(PROJECT_TYPE_IDS.map((type) => Type.Literal(type))), { minItems: 1, uniqueItems: true })),
 }, { additionalProperties: false });
+
+const ConfigurationFieldSchema = Type.Object({
+  type: Type.Union([Type.Literal("text"), Type.Literal("secret"), Type.Literal("path"), Type.Literal("boolean"), Type.Literal("select")]),
+  label: Type.String({ minLength: 1 }),
+  description: Type.Optional(Type.String()),
+  required: Type.Optional(Type.Boolean()),
+  default: Type.Optional(Type.Union([Type.String(), Type.Boolean()])),
+  options: Type.Optional(Type.Array(Type.String(), { minItems: 1, uniqueItems: true })),
+}, { additionalProperties: false });
+export type PluginConfigurationField = Static<typeof ConfigurationFieldSchema>;
+export type PluginConfigurationValues = Record<string, string | boolean | null>;
+export interface PluginConfigurationView {
+  fields: Record<string, PluginConfigurationField>;
+  values: Record<string, string | boolean>;
+  configuredSecrets: string[];
+  missing: string[];
+}
+export type McpServerDefinition = Record<string, unknown> & { command?: string; url?: string; disabled?: boolean };
+export interface CreateMcpPluginRequest {
+  name: string;
+  displayName?: string;
+  description?: string;
+  servers: Record<string, McpServerDefinition>;
+  configuration?: Record<string, PluginConfigurationField>;
+}
+export interface PluginMcpResult {
+  status: "connected" | "failed" | "needs-auth";
+  toolCount: number;
+  message?: string;
+  authorizationUrl?: string;
+}
 
 export const PluginManifestSchema = Type.Object({
   name: Type.String({ pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" }),
@@ -186,6 +220,8 @@ export const PluginManifestSchema = Type.Object({
   description: Type.String({ minLength: 1 }),
   skills: Type.Optional(Type.Union([RelativePathSchema, Type.Array(RelativePathSchema, { minItems: 1, uniqueItems: true })])),
   connections: Type.Optional(Type.Array(IdentifierSchema, { uniqueItems: true })),
+  mcpServers: Type.Optional(RelativePathSchema),
+  configuration: Type.Optional(Type.Record(IdentifierSchema, ConfigurationFieldSchema)),
   interface: Type.Optional(InterfaceSchema),
 }, { additionalProperties: false });
 
@@ -228,5 +264,11 @@ function parsedVersion(value: string): { core: number[]; prerelease?: string[] }
 }
 
 export function isPluginManifest(value: unknown): value is PluginManifest {
-  return Check(PluginManifestSchema, value);
+  if (!Check(PluginManifestSchema, value)) return false;
+  return Object.values(value.configuration ?? {}).every(field => {
+    if (field.type === "secret" && field.default !== undefined) return false;
+    if (field.type === "select" && (!field.options?.length || (field.default !== undefined && !field.options.includes(String(field.default))))) return false;
+    if (field.default !== undefined && (field.type === "boolean" ? typeof field.default !== "boolean" : typeof field.default !== "string")) return false;
+    return true;
+  });
 }

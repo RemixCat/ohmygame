@@ -3,12 +3,74 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   CodingWorkspace,
+  PreviewView,
+  playerViewport,
+  AssetsView,
   normalizePreviewPath,
   workspaceFileTree,
+  workspacePathAfterChange,
 } from "../src/renderer/coding-workspace.js";
 import { workspaceLanguage } from "../src/renderer/highlighted-code.js";
+import { filterAssets } from "../src/renderer/asset-browser.js";
 
 describe("coding workspace", () => {
+  const previewProject = { id: "game", name: "Game", type: "web-game" as const, updatedAt: new Date(0).toISOString(), workspacePath: "/tmp/game", preview: { status: "ready" as const, url: "http://127.0.0.1:43123" } };
+
+  it("unmounts the inline game while the player is opening or running", () => {
+    for (const playerOpen of [false, true]) {
+      const html = renderToStaticMarkup(createElement(PreviewView, { project: previewProject, reload: 0, revision: 0, url: previewProject.preview.url, viewport: "fit", suspended: true, playerOpen, pending: !playerOpen, onPlay: () => {} }));
+      expect(html).not.toContain("<iframe");
+      expect(html).toContain(playerOpen ? "Return to game" : "Opening game...");
+    }
+  });
+
+  it("waits for the Preview tab before creating another inline game", () => {
+    const props = { project: previewProject, reload: 0, revision: 0, url: previewProject.preview.url, viewport: "fit" as const };
+    expect(renderToStaticMarkup(createElement(PreviewView, { ...props, active: false }))).not.toContain("<iframe");
+    expect(renderToStaticMarkup(createElement(PreviewView, { ...props, active: true }))).toContain("<iframe");
+  });
+
+  it("uses device presets and bounds the fit viewport to supported dimensions", () => {
+    expect(playerViewport("mobile")).toEqual({ width: 375, height: 667 });
+    expect(playerViewport("tablet")).toEqual({ width: 768, height: 1024 });
+    expect(playerViewport("fit", { width: 930.4, height: 660.8 })).toEqual({ width: 930, height: 661 });
+    expect(playerViewport("fit", { width: 0, height: 0 })).toEqual({ width: 1280, height: 720 });
+    expect(playerViewport("fit", { width: 20000, height: 200 })).toEqual({ width: 8192, height: 240 });
+  });
+
+  it("browses project assets without file mutation menus and keeps a shared filter entry", () => {
+    const html = renderToStaticMarkup(createElement(AssetsView, {
+      projectId: "project", files: [{ path: "hero.png", size: 3, mediaType: "image", origin: "generated", purpose: "asset", prompt: "A long generation prompt" }],
+      loading: false, revision: 0, onShowInCode: () => undefined,
+    }));
+    expect(html).toContain('aria-label="Filter assets"');
+    expect(html).toContain("<strong>hero.png</strong>");
+    expect(html).not.toContain("Asset actions");
+    expect(html).not.toContain("Save to Library");
+    expect(html).not.toContain("Rename");
+    expect(html).not.toContain("Delete");
+  });
+
+  it("combines project source, use, media and search filters and includes references by default", () => {
+    const files = [
+      { path: "hero.png", size: 3, mediaType: "image" as const, origin: "generated" as const, purpose: "asset" as const },
+      { path: "reference.png", size: 4, mediaType: "image" as const, origin: "uploaded" as const, purpose: "reference" as const },
+      { path: "music.mp3", size: 5, mediaType: "audio" as const },
+    ];
+    expect(filterAssets(files, "all", "")).toEqual(files);
+    expect(filterAssets(files, "image", "REF", { origin: "uploaded", purpose: "reference" })).toEqual([files[1]]);
+    expect(filterAssets(files, "all", "", { origin: "workspace", purpose: "asset" })).toEqual([files[2]]);
+    expect(filterAssets(files, "audio", "", { origin: "generated" })).toEqual([]);
+  });
+
+  it("keeps selection attached to renamed files/folders and clears deleted paths", () => {
+    expect(workspacePathAfterChange("art/hero.png", { from: "art", to: "media" })).toBe("media/hero.png");
+    expect(workspacePathAfterChange("art/hero.png", { from: "art" })).toBeUndefined();
+    expect(workspacePathAfterChange("artwork/hero.png", { from: "art" })).toBe("artwork/hero.png");
+    expect(workspacePathAfterChange(undefined, { to: "src/new.ts" })).toBe("src/new.ts");
+    expect(workspacePathAfterChange("src/main.ts", {})).toBe("src/main.ts");
+  });
+
   it("shows the initial preview guidance while the workspace is empty", () => {
     const html = renderToStaticMarkup(
       createElement(CodingWorkspace, {
@@ -126,7 +188,28 @@ describe("coding workspace", () => {
     );
 
     expect(html).toContain("viewer-stage-mobile");
-    expect(html).toContain('src="http://127.0.0.1:43121/play"');
+    expect(html).toContain('src="http://127.0.0.1:43121/play?__ohmygame_client=');
+  });
+
+  it("respects the saved General preview capability when opening the workspace directly", () => {
+    const props = {
+      agentBusy: false, publishing: false, workspaceRevision: 0,
+      onPublish: async () => false, onOpenPublish: () => undefined,
+      onClosePublish: () => undefined, onRestart: () => undefined,
+    };
+    const project = { ...previewProject, type: "general" as const, preview: { status: "waiting" as const } };
+    const blank = renderToStaticMarkup(createElement(CodingWorkspace, { ...props, project }));
+    expect(blank).toContain('aria-label="Project settings"');
+    expect(blank).not.toContain(">Preview<");
+    expect(blank).not.toContain("<iframe");
+    expect(blank).toContain('title="Publish" aria-label="Publish"');
+    expect(blank).not.toContain('disabled="" title="Publish"');
+
+    const runnable = renderToStaticMarkup(createElement(CodingWorkspace, { ...props, project: { ...project, webPreviewEnabled: true, preview: previewProject.preview } }));
+    expect(runnable).toContain(">Preview<");
+    expect(runnable).toContain(`src="${previewProject.preview.url}/?__ohmygame_client=`);
+    expect(runnable).toContain('aria-label="Play"');
+    expect(runnable).not.toContain("Publishing requires a Web build");
   });
 
   it("keeps the preview panel mounted while the workspace is rendered", () => {

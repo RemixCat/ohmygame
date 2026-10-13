@@ -4,6 +4,7 @@ import { defineTool, type ToolDefinition as PiToolDefinition } from "@earendil-w
 import { Type } from "typebox";
 import { IMAGE_ASPECT_RATIOS, IMAGE_RESOLUTIONS, type Model3DAnimationAction, type PlanMode, type PlanState, type ProjectState, type PromptImage, type QuestionnaireResult, type RunVideoToolRequest, type ToolId } from "../shared/contracts.js";
 import { DEFAULT_ANIMATION_ACTION_IDS, DEFAULT_CHARACTER_HEIGHT_METERS, MAX_ANIMATION_ACTIONS } from "../shared/generation-config.js";
+import { supportsWebPreview } from "../shared/project-runtime.js";
 import type { PluginDetail } from "../shared/plugins.js";
 import type { ProjectManager } from "./projects.js";
 import type { ToolRunner } from "./tools.js";
@@ -14,6 +15,9 @@ import { createGameUseTool } from "./playtest-tools.js";
 import { addPlayableNode } from "./playable-add-node.js";
 import { validatePlayableProject } from "./playable-project.js";
 import { PLAYABLE_PRESET_IDS, PLAYABLE_PRESETS } from "./playable-presets.js";
+import { checkCanvasWorkspace } from "./canvas-check.js";
+import type { CanvasStore } from "./canvas-workspace.js";
+import { readCanvasAssets } from "./canvas-assets.js";
 
 const PI_TOOL_NAMES: Record<ToolId, string> = {
   "generate-image": "generate_image",
@@ -21,12 +25,12 @@ const PI_TOOL_NAMES: Record<ToolId, string> = {
   "generate-video": "generate_video",
   "animate-3d": "animate_3d_asset",
 };
-const PI_BUILTIN_TOOL_NAMES = new Set(["read", "write", "edit", "bash", "grep", "find", "ls", "web_search", "update_plan", "questionnaire", "install_plugin"]);
+const PI_BUILTIN_TOOL_NAMES = new Set(["read", "write", "edit", "bash", "grep", "find", "ls", "web_search", "update_plan", "questionnaire", "install_plugin", "generate_canvas_media"]);
 
 export function activePiToolNames(enabledTools: readonly ToolId[], registeredToolNames: readonly string[] = [], webSearchEnabled = true): string[] {
   const ohMyGameToolNames = new Set(Object.values(PI_TOOL_NAMES));
   const extensionTools = registeredToolNames.filter((name) => !ohMyGameToolNames.has(name) && !PI_BUILTIN_TOOL_NAMES.has(name));
-  return [...new Set([...extensionTools, "read", "write", "edit", "bash", ...(webSearchEnabled ? ["web_search"] : []), "update_plan", "install_plugin", ...enabledTools.map((id) => PI_TOOL_NAMES[id])])];
+  return [...new Set([...extensionTools, "read", "write", "edit", "bash", ...(webSearchEnabled ? ["web_search"] : []), "update_plan", "install_plugin", ...enabledTools.map((id) => PI_TOOL_NAMES[id]), ...(enabledTools.length && registeredToolNames.includes("generate_canvas_media") ? ["generate_canvas_media"] : [])])];
 }
 
 export function planningPiToolNames(webSearchEnabled = true): string[] {
@@ -40,7 +44,7 @@ export function projectPiToolNames(
   webSearchEnabled = true,
 ): string[] {
   return mode === "planning"
-    ? planningPiToolNames(webSearchEnabled)
+    ? [...planningPiToolNames(webSearchEnabled), ...(registeredToolNames.includes("canvas_check") ? ["canvas_check"] : [])]
     : activePiToolNames(enabledTools, registeredToolNames, webSearchEnabled);
 }
 
@@ -60,6 +64,11 @@ export type AskQuestionnaire = (
 export type InstallPlugin = (sourcePath: string) => Promise<PluginDetail>;
 export type SearchWeb = (input: WebSearchInput, signal?: AbortSignal) => Promise<WebSearchExecution>;
 
+const mediaModelParameter = () => Type.Object({
+  provider: Type.String({ description: "Model provider ID" }),
+  id: Type.String({ description: "Provider model ID" }),
+}, { description: "Override the project or global default generation model" });
+
 export function createAgentTools(
   project: ProjectState,
   tools: ToolRunner,
@@ -68,6 +77,7 @@ export function createAgentTools(
   installPlugin?: InstallPlugin,
   playtest?: { driver: GameRuntimeAdapter; resolveOpenTarget: () => Promise<GameUseOpenTarget> },
   searchWeb?: SearchWeb,
+  canvasStore?: CanvasStore,
 ): PiToolDefinition[] {
   return [defineTool({
     name: "questionnaire",
@@ -178,9 +188,10 @@ export function createAgentTools(
   }), defineTool({
     name: PI_TOOL_NAMES["generate-image"],
     label: "Generate Image",
-    description: "Generate an image and save it into the current project workspace.",
+    description: "Generate an image using the project or global default model and save it into the current project workspace.",
     parameters: Type.Object({
       prompt: Type.String({ description: "A detailed description of the image to generate" }),
+      imageModel: Type.Optional(mediaModelParameter()),
       size: Type.Optional(Type.Union([
         Type.Literal("1024x1024"),
         Type.Literal("1536x1024"),
@@ -206,7 +217,7 @@ export function createAgentTools(
           images.push({ mediaType: source.contentType, data: (await readFile(source.absolutePath)).toString("base64") });
         }
       }
-      const run = await tools.run("generate-image", { ...imageInput, ...(images !== undefined ? { images } : {}) }, signal);
+      const run = await tools.run("generate-image", { ...imageInput, ...(images !== undefined ? { images } : {}) }, signal, project.id);
       try {
         const output = run.files[0];
         if (!output) throw new Error("Image generator returned no output");
@@ -230,26 +241,39 @@ export function createAgentTools(
   }), defineTool({
     name: PI_TOOL_NAMES["image-to-3d"],
     label: "Generate 3D Asset",
-    description: "Turn a PNG or JPEG in the current project into a textured GLB model.",
+    description: "Generate a GLB from images or text, retexture a source GLB, or remesh it with Meshy/Tripo. Choose an available 3D model connection. Hyper3D retexture requires a source model and one image; Meshy/Tripo accept one image or a texture prompt. Cloud supports image generation only.",
     parameters: Type.Object({
-      imagePath: Type.String({ description: "Path to a PNG or JPEG image in the current project workspace" }),
+      operation: Type.Optional(Type.Union([Type.Literal("image"), Type.Literal("text"), Type.Literal("retexture"), Type.Literal("remesh")], { description: "Defaults to image" })),
+      imagePath: Type.Optional(Type.String({ description: "Path to a PNG/JPEG reference; required for image generation and Hyper3D retexture" })),
+      imagePaths: Type.Optional(Type.Array(Type.String(), { maxItems: 5, description: "Multiple generation views, instead of imagePath" })),
+      prompt: Type.Optional(Type.String({ description: "Object description for text generation, or material/style description for retexture" })),
+      sourcePath: Type.Optional(Type.String({ description: "Source GLB path for retexture/remesh" })),
+      targetPolycount: Type.Optional(Type.Integer({ minimum: 48, maximum: 2000000 })),
+      texture: Type.Optional(Type.Boolean()), pbr: Type.Optional(Type.Boolean()),
+      options: Type.Optional(Type.Object({ pose: Type.Optional(Type.Union([Type.Literal("a-pose"), Type.Literal("t-pose")])), textureModel: Type.Optional(Type.String()), textureQuality: Type.Optional(Type.Union([Type.Literal("fast"), Type.Literal("standard"), Type.Literal("detailed"), Type.Literal("extreme")])) })),
+      model: Type.Optional(mediaModelParameter()),
     }),
     execute: async (_toolCallId, input, signal) => {
       signal?.throwIfAborted();
-      const source = await getWorkspaceMedia(project.workspacePath, input.imagePath);
-      if (source.contentType !== "image/png" && source.contentType !== "image/jpeg") {
-        throw new Error("Image to 3D requires a PNG or JPEG image");
-      }
+      if (input.imagePath && input.imagePaths) throw new Error("Use imagePath or imagePaths, not both");
+      const imagePaths = input.imagePaths ?? (input.imagePath ? [input.imagePath] : []);
+      const images = await Promise.all(imagePaths.map(async (file) => {
+        const source = await getWorkspaceMedia(project.workspacePath, file);
+        if (source.contentType !== "image/png" && source.contentType !== "image/jpeg") throw new Error("3D references require PNG or JPEG");
+        return { mediaType: source.contentType as "image/png" | "image/jpeg", data: (await readFile(source.absolutePath)).toString("base64") };
+      }));
       const run = await tools.run("image-to-3d", {
-        images: [{ mediaType: source.contentType, data: (await readFile(source.absolutePath)).toString("base64") }],
-      }, signal);
+        model: input.model, operation: input.operation, prompt: input.prompt,
+        sourceAssetId: input.sourcePath ? await projects.ensureLibraryAsset(project.id, input.sourcePath) : undefined,
+        targetPolycount: input.targetPolycount, texture: input.texture, pbr: input.pbr, options: input.options, images,
+      }, signal, project.id);
       try {
         const output = run.files[0];
         if (!output) throw new Error("3D generator returned no output");
         const file = await tools.file(run.id, output.name);
         if (!file) throw new Error("Generated 3D model could not be read");
         signal?.throwIfAborted();
-        const sourcePrompt = await projects.generatedAssetPrompt(project.id, input.imagePath);
+        const sourcePrompt = input.prompt ?? (imagePaths[0] ? await projects.generatedAssetPrompt(project.id, imagePaths[0]) : undefined);
         const relativePath = await projects.addGeneratedAsset(project.id, `model-${run.id}.glb`, file.bytes, {
           ...(file.assetId ? { libraryAssetId: file.assetId } : {}),
           ...(sourcePrompt ? { prompt: sourcePrompt } : {}),
@@ -271,9 +295,13 @@ export function createAgentTools(
   }), defineTool({
     name: PI_TOOL_NAMES["animate-3d"],
     label: "Animate 3D Asset",
-    description: "Rig a textured humanoid GLB in the current project and bake preset animations into a new GLB, one named clip per action, ready for a three.js AnimationMixer. Only two-legged humanoid characters facing +Z can be rigged.",
+    description: "Rig a project GLB and bake preset animation clips using Meshy or Tripo (including explicitly enabled compatible connections). Meshy needs a textured humanoid up to 300k triangles, facing +Z. Tripo checks riggability and supports humanoid v1 or creature v2.5 rigs. Actions belong to the selected provider and rig version.",
     parameters: Type.Object({
       modelPath: Type.String({ description: "Path to a GLB model in the current project workspace" }),
+      model: Type.Optional(mediaModelParameter()),
+      rigModel: Type.Optional(Type.Union([Type.Literal("v1.0-20240301"), Type.Literal("v2.5-20260210")])),
+      rigType: Type.Optional(Type.Union([Type.Literal("biped"), Type.Literal("quadruped"), Type.Literal("hexapod"), Type.Literal("octopod"), Type.Literal("serpentine"), Type.Literal("aquatic")])),
+      animateInPlace: Type.Optional(Type.Boolean()),
       actions: Type.Optional(Type.Array(Type.String({ minLength: 1 }), {
         minItems: 1,
         maxItems: MAX_ANIMATION_ACTIONS,
@@ -285,13 +313,16 @@ export function createAgentTools(
       signal?.throwIfAborted();
       const source = await getWorkspaceMedia(project.workspacePath, input.modelPath);
       if (source.contentType !== "model/gltf-binary") throw new Error("Only GLB models can be animated");
-      const library = await tools.animationActions();
+      const options = input.rigModel || input.rigType || input.animateInPlace !== undefined ? { rigModel: input.rigModel, rigType: input.rigType, animateInPlace: input.animateInPlace } : undefined;
+      const library = await tools.animationActions(input.model, options);
       const actions = input.actions
         ? input.actions.map((name) => findAnimationAction(library, name))
+        : library.some((action) => typeof action.id === "string") ? library.filter((action) => ["Idle", "Walk", "Run", "Jump", "Slash", "Hurt", "Fall", "March"].includes(action.name))
         : DEFAULT_ANIMATION_ACTION_IDS.flatMap((id) => library.filter((action) => action.id === id));
       const assetId = await projects.ensureLibraryAsset(project.id, input.modelPath);
       const run = await tools.run("animate-3d", {
         assetId,
+        model: input.model, options,
         actionIds: [...new Set(actions.map((action) => action.id))],
         ...(input.heightMeters !== undefined ? { heightMeters: input.heightMeters } : {}),
       }, signal);
@@ -318,10 +349,7 @@ export function createAgentTools(
     description: "Generate a video from a text prompt, optionally animating a PNG, JPEG, or WebP image from the current project.",
     parameters: Type.Object({
       prompt: Type.String({ description: "Describe the motion and camera movement" }),
-      model: Type.Object({
-        provider: Type.String({ description: "Model provider ID" }),
-        id: Type.String({ description: "Provider model ID" }),
-      }, { description: "Video model reference" }),
+      model: Type.Optional(mediaModelParameter()),
       imagePath: Type.Optional(Type.String({ description: "Optional path to a PNG, JPEG, or WebP image in the current project workspace" })),
       duration: Type.Optional(Type.Integer({ minimum: 1, maximum: 30, description: "Video duration in seconds" })),
       aspectRatio: Type.Optional(Type.Union([Type.Literal("adaptive"), Type.Literal("21:9"), Type.Literal("16:9"), Type.Literal("4:3"), Type.Literal("3:2"), Type.Literal("1:1"), Type.Literal("2:3"), Type.Literal("3:4"), Type.Literal("9:16"), Type.Literal("9:21")], { description: "Video aspect ratio" })),
@@ -342,7 +370,7 @@ export function createAgentTools(
         resolution: input.resolution,
         ...(assetId ? { references: [{ type: "image", assetId }] } : {}),
       };
-      const run = await tools.run("generate-video", request, signal);
+      const run = await tools.run("generate-video", request, signal, project.id);
       try {
         const output = run.files[0];
         if (!output) throw new Error("Video generator returned no output");
@@ -417,7 +445,57 @@ export function createAgentTools(
         ].join("\n");
       return { content: [{ type: "text", text }], details: { playableCheck: { mode, ok: result.ok, issues } } };
     },
-  })] : []), ...(playtest?.driver.available && playtest.driver.capabilities.projectTypes.includes(project.type)
+  })] : []), defineTool({
+    name: "canvas_check",
+    label: "Check Canvas",
+    description: "Validate the canvas workspace files, node/document/table references and local media paths. Run after editing canvas files and fix every reported issue. This tool only reads files.",
+    parameters: Type.Object({}),
+    execute: async (_toolCallId, _input, signal) => {
+      signal?.throwIfAborted();
+      const result = await checkCanvasWorkspace(project.workspacePath);
+      return { content: [{ type: "text", text: result.ok ? "Canvas files and references are valid." : result.issues.map((issue) => `${issue.file}: ${issue.message}`).join("\n") }], details: { canvasCheck: result } };
+    },
+  }), ...(canvasStore ? [defineTool({
+    name: "canvas_initialize",
+    label: "Initialize Canvas",
+    description: "Initialize the canvas file contract and an empty board when the requested design or asset work needs a canvas. Preserves existing boards, documents, tables and assets. Read canvas/AGENTS.md, index.json and schemas/ afterwards. Do not use for casual conversation or planning-only requests.",
+    parameters: Type.Object({}),
+    execute: async (_toolCallId, _input, signal) => {
+      signal?.throwIfAborted();
+      const workspace = await canvasStore.workspace(project.id);
+      return {
+        content: [{ type: "text", text: `Canvas ready. Read canvas/AGENTS.md, canvas/index.json and canvas/schemas/. Boards: ${JSON.stringify(workspace.boards)}.` }],
+        details: {},
+      };
+    },
+  }), defineTool({
+    name: "generate_canvas_media",
+    label: "Generate Canvas Media",
+    description: "Generate the saved image, video, 3D or animation node using its current prompt, model and references. A game-creation request includes its needed media unless the user narrows the scope; editing a prompt or reference alone does not request generation. Saves output into the project, updates the node and shares the canvas generation history. Edit ordinary canvas files before calling this tool.",
+    parameters: Type.Object({ boardId: Type.String({ minLength: 1, maxLength: 100 }), nodeId: Type.String({ minLength: 1, maxLength: 120 }) }),
+    execute: async (_toolCallId, input, signal) => {
+      signal?.throwIfAborted();
+      const job = await canvasStore.generateNode(project.id, input.boardId, input.nodeId);
+      const cancel = () => { void canvasStore.cancel(project.id, job.id).catch(() => {}); };
+      signal?.addEventListener("abort", cancel, { once: true });
+      if (signal?.aborted) cancel();
+      try {
+        let current = job;
+        while (current.status === "running") {
+          signal?.throwIfAborted();
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          const next = (await canvasStore.jobs(project.id)).find((candidate) => candidate.id === job.id);
+          if (!next) throw new Error("Generation job is no longer available");
+          current = next;
+        }
+        signal?.throwIfAborted();
+        if (current.status !== "succeeded") throw new Error(current.error || "Generation failed");
+        const manifest = await readCanvasAssets(project.workspacePath);
+        const paths = current.run?.files.map((file) => file.assetId && manifest.assets[file.assetId]?.path).filter(Boolean) ?? [];
+        return { content: [{ type: "text", text: `Generated media for node ${input.nodeId}. Saved: ${paths.join(", ")}. Read relevant image files to inspect the actual result.` }], details: { canvasGeneration: current } };
+      } finally { signal?.removeEventListener("abort", cancel); }
+    },
+  })] : []), ...(playtest?.driver.available && playtest.driver.capabilities.projectTypes.includes(project.type) && (project.type !== "general" || supportsWebPreview(project))
     ? [createGameUseTool(playtest.driver, playtest.resolveOpenTarget, { bridge: project.type === "interactive-story" ? "reset" : "full" })]
     : [])];
 }

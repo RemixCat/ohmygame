@@ -1,3 +1,5 @@
+import { runtimeConnection, subscribeRuntimeConnection } from "./runtime-connection.js";
+import type { DesktopRuntimeService } from "../shared/desktop-runtime.js";
 import {
   RUNTIME_EVENT_TYPES,
   type AgentContextUsage,
@@ -9,26 +11,34 @@ import {
   type ConversationCapabilities,
   type CreateLibraryImageRequest,
   type LibraryAsset,
+  type LibraryAssetPurpose,
+  type LibraryAssetSummary,
   type LibraryUploadMediaType,
+  type MediaModelDefaults,
   type ImageModel,
+  type ImageModelCatalog,
+  type ImageModelRef,
   type ModelAuthEvent,
   type ModelAuthMethod,
   type ModelProviderEndpointSettings,
   type ProviderModelSettings,
+  type Model3DDefinition,
   type CustomProviderModel,
+  type CustomProviderDetails,
+  type SaveCustomProviderRequest,
+  type DiscoverProviderModelsRequest,
+  type DiscoveredProviderModels,
   type ProviderSummary,
   type CreateProjectRequest,
   type CommunityGame,
   type ConversationDetail,
   type ConversationSummary,
-  type PreviewViewport,
-  type ProjectPackageManager,
+  type ProjectRunSettings,
   type ProjectFileOpenMode,
   type ProjectAgentActivity,
+  type ProjectCoverMode,
+  type ProjectCoverState,
   type ProjectState,
-  type AssetCanvasDocument,
-  type AssetCanvasTextGenerationRequest,
-  type AssetCanvasTextGenerationResponse,
   type UpdateAgentDefaultsRequest,
   type PublishProjectRequest,
   type PublishResult,
@@ -55,14 +65,32 @@ import type { DesktopUpdateState } from "../shared/desktop-update.js";
 import type { ExampleSummary } from "../shared/examples.js";
 import type { PlaytestWatchState } from "../shared/playtest.js";
 import type { NodeRuntimeResponse } from "../shared/playable-player-protocol.js";
-import type { NodeCodebase, NodeCodebaseUpdate } from "../shared/playable-codebase.js";
+import type { NodeCodebaseDetail, NodeCodebaseUpdate } from "../shared/playable-codebase.js";
 import type { PlayableAddedNode, PlayablePresetSummary, PlayableProjectValidationResult as PlayableProjectValidation, PlayableThumbnailManifest } from "../shared/playable-editor.js";
 import type { InstallPluginRequest, PluginCatalog, PluginDetail, PluginInstallInspection, PluginSettings, PluginSkillContent } from "../shared/plugins.js";
-import type { Connection, SaveConnectionRequest } from "../shared/connections.js";
 import type { UpdateWebSearchSettings, WebSearchSettings } from "../shared/web-search.js";
 import type { DesktopClipboardFile } from "../shared/file-transfer.js";
+import type { WebGamePlayerBridge } from "../shared/web-game-player.js";
+import type { NetworkConnectionTest, NetworkSettings, NetworkSettingsState } from "../shared/network-settings.js";
+import { composerDrafts } from "./composer-drafts.js";
 
 const API_BASE = "/api";
+
+export function getNetworkSettings(): Promise<NetworkSettingsState> {
+  return request("/settings/network");
+}
+
+export function updateNetworkSettings(settings: NetworkSettings): Promise<NetworkSettingsState> {
+  return request("/settings/network", { method: "PUT", body: JSON.stringify(settings) });
+}
+
+export function detectNetworkProxy(): Promise<NetworkSettingsState> {
+  return request("/settings/network/detect", { method: "POST" });
+}
+
+export function testNetworkConnection(settings: NetworkSettings): Promise<NetworkConnectionTest> {
+  return request("/settings/network/test", { method: "POST", body: JSON.stringify(settings) });
+}
 
 interface DesktopRuntime {
   daemonUrl: string;
@@ -74,8 +102,16 @@ declare global {
     ohMyGameDesktop?: {
       platform: string;
       runtime: DesktopRuntime;
+      runtimeService?: DesktopRuntimeService;
       openExternal: (url: string) => Promise<void>;
       setAppearance: (appearance: "system" | "light" | "dark") => Promise<void>;
+      restartApp?: () => Promise<void>;
+      onPrepareClose?: (listener: () => Promise<void>) => () => void;
+      onCancelClose?: (listener: (error: string) => void) => () => void;
+      windowMenu?: {
+        icon: () => Promise<string>;
+        popup: (label: string, x: number, y: number) => Promise<void>;
+      };
       openProjectFile: (projectId: string, filePath: string, mode?: ProjectFileOpenMode) => Promise<void>;
       browsePluginDirectory: (pluginId: string) => Promise<void>;
       revealPluginSkill: (pluginId: string, skillId: string) => Promise<void>;
@@ -87,10 +123,13 @@ declare global {
       };
       capturePage: (bounds: { x: number; y: number; width: number; height: number }) => Promise<Uint8Array>;
       /** Captures a Node's thumbnail in a hidden window; `false` when it could not. */
-      captureNodeThumbnail?: (projectId: string, nodeId: string, viewport: { width: number; height: number }) => Promise<boolean>;
+      captureNodeThumbnail?: (projectId: string, nodeId: string, viewport: { width: number; height: number }, batchId: string) => Promise<boolean>;
+      /** Cancels active and queued captures in a batch. */
+      cancelNodeThumbnails?: (batchId: string) => Promise<void>;
       /** Called by the hidden thumbnail window once its capture is stored or failed. */
       finishNodeThumbnail?: (captured: boolean) => Promise<void>;
       openPlaytest: (projectId: string, viewport: { width: number; height: number }) => Promise<void>;
+      webGamePlayer?: WebGamePlayerBridge;
       /** Called from a Playtest window: shows the Node in the main window's editor. */
       openPlayableNode?: (projectId: string, nodeId: string) => Promise<void>;
       /** Called in the main window when a Playtest asks to open a Node. */
@@ -156,13 +195,7 @@ export async function updateProjectStartupDirectory(projectId: string, startupDi
   });
 }
 
-export async function updateProjectRunSettings(projectId: string, input: {
-  startupDirectory: string;
-  startupScript: string;
-  packageManager?: ProjectPackageManager;
-  previewPath: string;
-  previewViewport: PreviewViewport;
-}): Promise<ProjectState> {
+export async function updateProjectRunSettings(projectId: string, input: ProjectRunSettings): Promise<ProjectState> {
   return request(`/projects/${projectId}/settings/run`, {
     method: "PUT",
     body: JSON.stringify(input),
@@ -175,6 +208,7 @@ export async function duplicateProject(projectId: string): Promise<ProjectState>
 
 export async function deleteProject(projectId: string): Promise<void> {
   await request(`/projects/${projectId}`, { method: "DELETE" });
+  composerDrafts.deleteProject(projectId);
 }
 
 export async function listModels(): Promise<AgentModelCatalog> {
@@ -189,6 +223,11 @@ export async function updateAgentDefaults(input: UpdateAgentDefaultsRequest): Pr
 }
 
 export const MODELS_CHANGED_EVENT = "ohmygame-models-changed";
+export async function syncCloudSession(session: { accessToken: string; userId: string } | null): Promise<void> {
+  await request("/cloud/session", { method: "PUT", body: JSON.stringify(session) });
+  notifyAgentModelsChanged();
+}
+export async function getCloudQuotas(): Promise<import("../shared/cloud-models.js").CloudQuotaSnapshot | null> { return request("/cloud/quotas"); }
 
 export function notifyAgentModelsChanged(): void {
   window.dispatchEvent(new Event(MODELS_CHANGED_EVENT));
@@ -196,6 +235,31 @@ export function notifyAgentModelsChanged(): void {
 
 export async function listProviders(): Promise<ProviderSummary[]> {
   return request("/settings/providers");
+}
+
+export async function setProviderEnabled(providerId: string, enabled: boolean): Promise<ProviderSummary> {
+  const result = await request<ProviderSummary>(`/settings/models/providers/${encodeURIComponent(providerId)}/enabled`, { method: "PATCH", body: JSON.stringify({ enabled }) });
+  notifyAgentModelsChanged();
+  return result;
+}
+
+export async function getCustomProvider(providerId: string): Promise<CustomProviderDetails> {
+  return request(`/settings/models/providers/${encodeURIComponent(providerId)}/custom`);
+}
+
+export async function discoverCustomProviderModels(settings: DiscoverProviderModelsRequest, signal?: AbortSignal): Promise<DiscoveredProviderModels> {
+  return request("/settings/models/providers/discover", { method: "POST", body: JSON.stringify(settings), signal });
+}
+
+export async function saveCustomProvider(settings: SaveCustomProviderRequest, providerId?: string): Promise<CustomProviderDetails> {
+  const result = await request<CustomProviderDetails>(providerId ? `/settings/models/providers/${encodeURIComponent(providerId)}/custom` : "/settings/models/providers/custom", { method: providerId ? "PUT" : "POST", body: JSON.stringify(settings) });
+  notifyAgentModelsChanged();
+  return result;
+}
+
+export async function removeProvider(providerId: string): Promise<void> {
+  await request(`/settings/models/providers/${encodeURIComponent(providerId)}`, { method: "DELETE" });
+  notifyAgentModelsChanged();
 }
 
 export async function getProviderModels(providerId: string): Promise<ProviderModelSettings> {
@@ -208,8 +272,20 @@ export async function setProviderModelVisibility(providerId: string, ids: string
   return result;
 }
 
-export async function addCustomProviderModel(providerId: string, model: CustomProviderModel): Promise<ProviderModelSettings> {
+export async function addCustomProviderModel(providerId: string, model: CustomProviderModel | Model3DDefinition): Promise<ProviderModelSettings> {
   const result = await request<ProviderModelSettings>(`/settings/models/providers/${encodeURIComponent(providerId)}/models/custom`, { method: "POST", body: JSON.stringify(model) });
+  notifyAgentModelsChanged();
+  return result;
+}
+
+export async function updateProviderModel3D(providerId: string, model: Model3DDefinition): Promise<ProviderModelSettings> {
+  const result = await request<ProviderModelSettings>(`/settings/models/providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(model.id)}`, { method: "PUT", body: JSON.stringify(model) });
+  notifyAgentModelsChanged();
+  return result;
+}
+
+export async function resetProviderModel3D(providerId: string, modelId: string): Promise<ProviderModelSettings> {
+  const result = await request<ProviderModelSettings>(`/settings/models/providers/${encodeURIComponent(providerId)}/models/${encodeURIComponent(modelId)}/overrides`, { method: "DELETE" });
   notifyAgentModelsChanged();
   return result;
 }
@@ -231,11 +307,16 @@ export async function updateOpenAIEndpointSettings(baseUrl: string): Promise<Mod
   });
 }
 
-export async function updateMeshyApiKey(apiKey: string): Promise<{ configured: boolean }> {
-  return request("/settings/models/providers/meshy", { method: "PUT", body: JSON.stringify({ apiKey }) });
+export async function updateModel3DProviderApiKey(providerId: string, apiKey: string): Promise<{ configured: boolean }> {
+  const result = await request<{ configured: boolean }>(`/settings/models/providers/${encodeURIComponent(providerId)}`, { method: "PUT", body: JSON.stringify({ apiKey }) });
+  notifyAgentModelsChanged();
+  return result;
 }
-export async function clearMeshyApiKey(): Promise<void> {
-  await request("/settings/models/providers/meshy", { method: "DELETE" });
+export async function updateSeedanceApiKey(providerId: string, apiKey: string): Promise<{ configured: boolean }> {
+  return request(`/settings/models/providers/${encodeURIComponent(providerId)}/seedance-key`, {
+    method: "PUT",
+    body: JSON.stringify({ apiKey }),
+  });
 }
 
 export async function startModelProviderLogin(providerId: string, method: ModelAuthMethod): Promise<string> {
@@ -257,10 +338,6 @@ export async function cancelModelAuth(operationId: string): Promise<void> {
   await request(`/settings/model-auth/${encodeURIComponent(operationId)}`, { method: "DELETE" });
 }
 
-export async function disconnectModelProvider(providerId: string): Promise<void> {
-  await request(`/settings/models/providers/${encodeURIComponent(providerId)}/credential`, { method: "DELETE" });
-}
-
 export function subscribeToModelAuth(
   operationId: string,
   handlers: { onEvent: (event: ModelAuthEvent) => void; onError: () => void },
@@ -279,8 +356,18 @@ export async function listVideoModels(): Promise<VideoModel[]> {
 }
 
 /** Image models grouped by connected provider, with the reason a provider has none. */
-export async function listImageModelCatalog(): Promise<MediaModelCatalog<ImageModel>> {
+export async function listImageModelCatalog(): Promise<ImageModelCatalog> {
   return request("/image-models/catalog");
+}
+
+export async function setDefaultMediaModel(usage: "image" | "video" | "3d", model?: AgentModelRef): Promise<void> {
+  const endpoint = usage === "image" ? "/image-models/default" : usage === "video" ? "/video-models/default" : "/model3d-models/default";
+  await request(endpoint, model ? { method: "PUT", body: JSON.stringify(model) } : { method: "DELETE" });
+  notifyAgentModelsChanged();
+}
+
+export async function updateProjectMediaModelDefaults(projectId: string, defaults: MediaModelDefaults): Promise<ProjectState> {
+  return request(`/projects/${encodeURIComponent(projectId)}/settings/generation-models`, { method: "PUT", body: JSON.stringify(defaults) });
 }
 
 export async function listVideoModelCatalog(): Promise<MediaModelCatalog<VideoModel>> {
@@ -292,8 +379,14 @@ export async function listModel3DCatalog(): Promise<MediaModelCatalog<Model3DMod
 }
 
 /** Preset moves for rigged humanoids; empty until a 3D provider is set up. */
-export async function listModel3DAnimations(): Promise<Model3DAnimationAction[]> {
-  return request("/model3d-animations");
+export async function listModel3DAnimations(model?: AgentModelRef, options?: import("../shared/contracts.js").Model3DOptions): Promise<Model3DAnimationAction[]> {
+  const query = new URLSearchParams({ ...(model ? { provider: model.provider, id: model.id } : {}),
+    ...(options?.rigModel ? { rigModel: options.rigModel } : {}), ...(options?.rigType ? { rigType: options.rigType } : {}) });
+  return request(`/model3d-animations?${query}`);
+}
+export async function listModel3DOperations(): Promise<Model3DModel[]> { return request("/model3d-operations"); }
+export async function model3DBalance(model: AgentModelRef): Promise<import("../shared/contracts.js").Model3DBalance> {
+  return request(`/model3d-balance?${new URLSearchParams({ provider: model.provider, id: model.id })}`);
 }
 
 export async function getWebSearchSettings(): Promise<WebSearchSettings> {
@@ -329,10 +422,6 @@ export async function getHomeComposerCapabilities(): Promise<ConversationCapabil
   return request("/composer/capabilities");
 }
 
-export async function createPluginAuthoringSession(): Promise<{ projectId: string; conversationId: string }> {
-  return request("/plugins/authoring-session", { method: "POST" });
-}
-
 export async function installPlugin(input: InstallPluginRequest): Promise<PluginDetail> {
   return request("/plugins/install", { method: "POST", body: JSON.stringify(input) });
 }
@@ -357,25 +446,6 @@ export async function uninstallPlugin(id: string): Promise<void> {
   await request(`/plugins/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
-export async function listConnections(): Promise<Connection[]> {
-  return request("/settings/connections");
-}
-
-export async function createConnection(input: SaveConnectionRequest): Promise<Connection> {
-  return request("/settings/connections", { method: "POST", body: JSON.stringify(input) });
-}
-
-export async function updateConnection(id: string, input: SaveConnectionRequest): Promise<Connection> {
-  return request(`/settings/connections/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(input) });
-}
-
-export async function setConnectionEnabled(id: string, enabled: boolean): Promise<void> {
-  await request(`/settings/connections/${encodeURIComponent(id)}/enabled`, { method: "PATCH", body: JSON.stringify({ enabled }) });
-}
-
-export async function removeConnection(id: string): Promise<void> {
-  await request(`/settings/connections/${encodeURIComponent(id)}`, { method: "DELETE" });
-}
 
 export async function startToolJob(toolId: ToolId, input: RunToolRequest, title?: string, context?: ToolJobContext): Promise<ToolJob> {
   return request(`/tools/${toolId}/jobs`, { method: "POST", body: JSON.stringify({ ...input, ...(title ? { title } : {}), ...(context ? { projectId: context.projectId, nodeId: context.nodeId } : {}) }) });
@@ -424,11 +494,15 @@ export async function getProject(projectId: string): Promise<ProjectState> {
   return request(`/projects/${projectId}`);
 }
 
+export async function ensureProjectPreview(projectId: string): Promise<{ url: string; title: string }> {
+  return request(`/projects/${encodeURIComponent(projectId)}/preview?reuse=1`, { method: "POST" });
+}
+
 export async function getNodeRuntime(projectId: string): Promise<NodeRuntimeResponse> {
   return request(`/projects/${projectId}/playable`);
 }
 
-export async function getNodeCodebase(projectId: string): Promise<NodeCodebase> {
+export async function getNodeCodebase(projectId: string): Promise<NodeCodebaseDetail> {
   return request(`/projects/${projectId}/playable/codebase`);
 }
 
@@ -474,26 +548,15 @@ export async function setPlayableThumbnail(projectId: string, nodeId: string, ha
   if (!response.ok) throw await responseError(response);
 }
 
+/** Rejects with status 409 when the project changed since `codebase.revision` was read. */
 export async function updateNodeCodebase(
   projectId: string,
-  codebase: NodeCodebaseUpdate,
-): Promise<void> {
-  await request(`/projects/${projectId}/playable/codebase`, {
+  codebase: NodeCodebaseUpdate & { revision: string },
+): Promise<{ revision: string }> {
+  return request(`/projects/${projectId}/playable/codebase`, {
     method: "PUT",
     body: JSON.stringify(codebase),
   });
-}
-
-export async function getAssetCanvas(projectId: string): Promise<AssetCanvasDocument> {
-  return request(`/projects/${projectId}/asset-canvas`);
-}
-
-export async function updateAssetCanvas(projectId: string, document: AssetCanvasDocument): Promise<void> {
-  await request(`/projects/${projectId}/asset-canvas`, { method: "PUT", body: JSON.stringify(document) });
-}
-
-export async function generateAssetCanvasText(projectId: string, input: AssetCanvasTextGenerationRequest): Promise<AssetCanvasTextGenerationResponse> {
-  return request(`/projects/${projectId}/asset-canvas/text/generate`, { method: "POST", body: JSON.stringify(input) });
 }
 
 export async function getProjectCover(projectId: string): Promise<Blob | undefined> {
@@ -503,8 +566,13 @@ export async function getProjectCover(projectId: string): Promise<Blob | undefin
   return response.blob();
 }
 
-export async function setProjectCover(projectId: string, cover: Blob): Promise<void> {
-  const response = await fetch(apiUrl(`/projects/${projectId}/cover`), {
+export async function getProjectCoverState(projectId: string): Promise<ProjectCoverState> {
+  return request(`/projects/${projectId}/cover/state`);
+}
+
+export async function setProjectCover(projectId: string, cover: Blob, source: ProjectCoverMode = "custom"): Promise<void> {
+  const suffix = source === "auto" ? "?source=auto" : "";
+  const response = await fetch(apiUrl(`/projects/${projectId}/cover${suffix}`), {
     method: "PUT",
     headers: { "content-type": "image/webp", ...runtimeHeaders() },
     body: cover,
@@ -512,22 +580,35 @@ export async function setProjectCover(projectId: string, cover: Blob): Promise<v
   if (!response.ok) throw await responseError(response);
 }
 
+export async function restoreAutomaticProjectCover(projectId: string): Promise<void> {
+  await request(`/projects/${projectId}/cover`, { method: "DELETE" });
+}
+
 export async function listWorkspaceFiles(projectId: string): Promise<WorkspaceFile[]> {
   return request(`/projects/${projectId}/files`);
 }
 
-export async function renameAsset(projectId: string, filePath: string, name: string): Promise<{ path: string }> {
-  return request(`/projects/${projectId}/assets?path=${encodeURIComponent(filePath)}`, {
-    method: "PATCH",
-    body: JSON.stringify({ name }),
-  });
+export async function createWorkspaceEntry(projectId: string, parent: string, name: string, kind: "file" | "folder"): Promise<{ path: string }> {
+  return request(`/projects/${encodeURIComponent(projectId)}/files`, { method: "POST", body: JSON.stringify({ parent, name, kind }) });
 }
 
-export async function deleteAsset(projectId: string, filePath: string): Promise<void> {
-  await request(`/projects/${projectId}/assets?path=${encodeURIComponent(filePath)}`, { method: "DELETE" });
+export async function renameWorkspaceEntry(projectId: string, filePath: string, name: string): Promise<{ path: string }> {
+  return request(`/projects/${encodeURIComponent(projectId)}/files?path=${encodeURIComponent(filePath)}`, { method: "PATCH", body: JSON.stringify({ name }) });
 }
 
-export async function listLibraryAssets(): Promise<LibraryAsset[]> {
+export async function deleteWorkspaceEntry(projectId: string, filePath: string): Promise<void> {
+  await request(`/projects/${encodeURIComponent(projectId)}/files?path=${encodeURIComponent(filePath)}`, { method: "DELETE" });
+}
+
+export async function saveProjectAssetToLibrary(projectId: string, filePath: string): Promise<LibraryAsset> {
+  return request(`/projects/${encodeURIComponent(projectId)}/assets/library?path=${encodeURIComponent(filePath)}`, { method: "POST" });
+}
+
+export async function saveLibraryAsset(assetId: string): Promise<LibraryAsset> {
+  return request(`/library/assets/${encodeURIComponent(assetId)}/save`, { method: "POST" });
+}
+
+export async function listLibraryAssets(): Promise<LibraryAssetSummary[]> {
   return request("/library/assets");
 }
 
@@ -535,9 +616,10 @@ export async function createLibraryImage(input: CreateLibraryImageRequest): Prom
   return request("/library/assets", { method: "POST", body: JSON.stringify(input) });
 }
 
-export async function uploadLibraryAsset(file: File, mediaType: LibraryUploadMediaType, duration?: number): Promise<LibraryAsset> {
+export async function uploadLibraryAsset(file: File, mediaType: LibraryUploadMediaType, duration?: number, purpose?: LibraryAssetPurpose): Promise<LibraryAsset> {
   const query = new URLSearchParams({ name: file.name, mediaType });
   if (duration !== undefined) query.set("duration", String(duration));
+  if (purpose !== undefined) query.set("purpose", purpose);
   return request(`/library/assets/upload?${query}`, {
     method: "POST",
     headers: { "content-type": "application/octet-stream" },
@@ -580,6 +662,15 @@ export async function forceDeleteLibraryAsset(assetId: string): Promise<void> {
 
 export async function getWorkspaceFile(projectId: string, filePath: string): Promise<WorkspaceFileContent> {
   return request(`/projects/${projectId}/files/content?path=${encodeURIComponent(filePath)}`);
+}
+
+export async function getConversationImage(url: string, signal?: AbortSignal): Promise<Blob> {
+  if (!/^\/projects\/[^/]+\/conversation-images\/[a-f0-9]{64}\.(png|jpg|webp|gif)$/.test(url)) {
+    throw new Error("Invalid conversation image reference");
+  }
+  const response = await fetch(apiUrl(url), { headers: runtimeHeaders(), signal });
+  if (!response.ok) throw await responseError(response);
+  return response.blob();
 }
 
 export async function getWorkspaceAsset(projectId: string, filePath: string): Promise<Blob> {
@@ -643,8 +734,8 @@ export async function setConversationReasoning(
   return result.level;
 }
 
-export async function startPreview(projectId: string): Promise<{ url: string }> {
-  return request(`/projects/${projectId}/preview`, { method: "POST" });
+export async function startPreview(projectId: string, reinstall = false): Promise<{ url: string }> {
+  return request(`/projects/${projectId}/preview${reinstall ? "?reinstall=1" : ""}`, { method: "POST" });
 }
 
 export async function sendPrompt(
@@ -762,6 +853,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly code?: string,
   ) {
     super(message);
   }
@@ -782,8 +874,8 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
 }
 
 async function responseError(response: Response): Promise<ApiError> {
-  const body = await response.json().catch(() => ({})) as { error?: string; message?: string };
-  return new ApiError(body.message ?? body.error ?? `Request failed with ${response.status}`, response.status);
+  const body = await response.json().catch(() => ({})) as { error?: string; message?: string; code?: string };
+  return new ApiError(body.message ?? body.error ?? `Request failed with ${response.status}`, response.status, body.code);
 }
 
 async function streamProjectEvents(
@@ -798,11 +890,21 @@ async function streamProjectEvents(
   },
 ): Promise<void> {
   let cursor = initialCursor;
+  let generation = runtimeConnection().generation;
   while (!signal.aborted) {
+    const connection = new AbortController();
+    const unsubscribe = subscribeRuntimeConnection(() => connection.abort());
+    const connectionSignal = AbortSignal.any([signal, connection.signal]);
     try {
+      const current = runtimeConnection();
+      if (current.status !== "ready") throw new Error("Background service unavailable");
+      if (current.generation !== generation) {
+        generation = current.generation;
+        cursor = handlers.onReset ? await handlers.onReset() : 0;
+      }
       const response = await fetch(apiUrl(`/projects/${projectId}/events?cursor=${cursor}`), {
         headers: { accept: "text/event-stream", ...runtimeHeaders() },
-        signal,
+        signal: connectionSignal,
       });
       if (response.status === 409 && handlers.onReset) {
         cursor = await handlers.onReset();
@@ -812,12 +914,17 @@ async function streamProjectEvents(
         throw new ApiError(`Event stream failed with ${response.status}`, response.status);
       }
       handlers.onOpen();
-      cursor = await consumeEventStream(response.body, cursor, handlers.onEvent, signal);
+      await consumeEventStream(response.body, (event) => {
+        if (event.id <= cursor) return;
+        cursor = Math.max(cursor, event.id);
+        handlers.onEvent(event);
+      }, connectionSignal);
       if (!signal.aborted) handlers.onError();
     } catch {
       if (signal.aborted) return;
       handlers.onError();
     }
+    finally { unsubscribe(); }
     await reconnectDelay(signal);
   }
 }
@@ -835,9 +942,12 @@ async function streamModelAuthEvents(
         signal,
       });
       if (!response.ok || !response.body) throw new ApiError(`Authentication stream failed with ${response.status}`, response.status);
-      const result = await consumeModelAuthStream(response.body, cursor, handlers.onEvent, signal);
-      cursor = result.cursor;
-      if (result.finished || signal.aborted) return;
+      const finished = await consumeModelAuthStream(response.body, (event) => {
+        if (event.id <= cursor) return;
+        cursor = Math.max(cursor, event.id);
+        handlers.onEvent(event);
+      }, signal);
+      if (finished || signal.aborted) return;
     } catch {
       if (signal.aborted) return;
       handlers.onError();
@@ -848,13 +958,11 @@ async function streamModelAuthEvents(
 
 async function consumeModelAuthStream(
   body: ReadableStream<Uint8Array>,
-  initialCursor: number,
   onEvent: (event: ModelAuthEvent) => void,
   signal: AbortSignal,
-): Promise<{ cursor: number; finished: boolean }> {
+): Promise<boolean> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
-  let cursor = initialCursor;
   let buffer = "";
   let finished = false;
   try {
@@ -867,7 +975,6 @@ async function consumeModelAuthStream(
       for (const block of blocks) {
         const event = parseModelAuthEvent(block);
         if (!event) continue;
-        cursor = Math.max(cursor, event.id);
         onEvent(event);
         if (event.type === "completed" || event.type === "cancelled" || event.type === "error") finished = true;
       }
@@ -875,18 +982,16 @@ async function consumeModelAuthStream(
   } finally {
     reader.releaseLock();
   }
-  return { cursor, finished };
+  return finished;
 }
 
 async function consumeEventStream(
   body: ReadableStream<Uint8Array>,
-  initialCursor: number,
   onEvent: (event: RuntimeEvent) => void,
   signal: AbortSignal,
-): Promise<number> {
+): Promise<void> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
-  let cursor = initialCursor;
   let buffer = "";
   try {
     while (!signal.aborted) {
@@ -898,14 +1003,12 @@ async function consumeEventStream(
       for (const block of blocks) {
         const event = parseRuntimeEvent(block);
         if (!event) continue;
-        cursor = Math.max(cursor, event.id);
         onEvent(event);
       }
     }
   } finally {
     reader.releaseLock();
   }
-  return cursor;
 }
 
 function parseRuntimeEvent(block: string): RuntimeEvent | undefined {
@@ -967,7 +1070,11 @@ function modelRef(model: AgentModelRef): AgentModelRef {
 }
 
 function desktopRuntime(): DesktopRuntime | undefined {
-  return window.ohMyGameDesktop?.runtime;
+  const desktop = window.ohMyGameDesktop;
+  if (!desktop) return;
+  const state = runtimeConnection();
+  if (state.status !== "ready") throw new Error("The background service is unavailable. Wait for recovery or restart it.");
+  return state.runtime ? { daemonUrl: state.runtime.url, token: state.runtime.token } : desktop.runtime;
 }
 
 function reconnectDelay(signal: AbortSignal): Promise<void> {
@@ -986,4 +1093,73 @@ function reconnectDelay(signal: AbortSignal): Promise<void> {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+export async function createMcpPlugin(input: import("../shared/plugins.js").CreateMcpPluginRequest): Promise<PluginDetail> {
+  return request("/plugins/mcp", { method: "POST", body: JSON.stringify(input) });
+}
+export async function readPluginConfiguration(id: string): Promise<import("../shared/plugins.js").PluginConfigurationView> {
+  return request(`/plugins/${encodeURIComponent(id)}/configuration`);
+}
+export async function savePluginConfiguration(id: string, values: import("../shared/plugins.js").PluginConfigurationValues): Promise<import("../shared/plugins.js").PluginConfigurationView> {
+  return request(`/plugins/${encodeURIComponent(id)}/configuration`, { method: "PUT", body: JSON.stringify({ values }) });
+}
+export async function testPluginMcp(id: string, server: string, action: "test" | "auth-start" | "auth-complete" = "test", input?: string): Promise<import("../shared/plugins.js").PluginMcpResult> {
+  return request(`/plugins/${encodeURIComponent(id)}/mcp/${encodeURIComponent(server)}/${action}`, { method: "POST", body: JSON.stringify(input ? { input } : {}) });
+}
+export async function createPluginSetup(pluginId?: string): Promise<import("../shared/plugin-setup.js").PluginSetupState> {
+  return request("/plugins/setup-sessions", { method: "POST", body: JSON.stringify({ pluginId }) });
+}
+export async function readPluginSetup(id: string): Promise<import("../shared/plugin-setup.js").PluginSetupState> {
+  return request(`/plugins/setup-sessions/${encodeURIComponent(id)}`);
+}
+export async function deletePluginSetup(id: string): Promise<void> {
+  await request(`/plugins/setup-sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+export async function promptPluginSetup(id: string, prompt: string, model: AgentModelRef, reasoningLevel?: import("../shared/contracts.js").AgentReasoningLevel): Promise<import("../shared/plugin-setup.js").PluginSetupState> {
+  return request(`/plugins/setup-sessions/${encodeURIComponent(id)}/prompt`, { method: "POST", body: JSON.stringify({ prompt, model, reasoningLevel }) });
+}
+export async function abortPluginSetup(id: string): Promise<void> {
+  await request(`/plugins/setup-sessions/${encodeURIComponent(id)}/abort`, { method: "POST" });
+}
+
+export async function listPluginSetups(): Promise<import("../shared/plugin-setup.js").PluginSetupSummary[]> {
+  return request("/plugins/setup-sessions");
+}
+export async function readPluginDraft(id: string): Promise<import("../shared/plugin-setup.js").PluginDraft> {
+  return request(`/plugins/setup-sessions/${encodeURIComponent(id)}/draft`);
+}
+export async function readPluginDraftFile(id: string, path: string): Promise<{ path: string; content: string }> {
+  return request(`/plugins/setup-sessions/${encodeURIComponent(id)}/file?${new URLSearchParams({ path })}`);
+}
+export async function installPluginDraft(id: string, revision: string): Promise<import("../shared/plugin-setup.js").PluginSetupState> {
+  return request(`/plugins/setup-sessions/${encodeURIComponent(id)}/install`, { method: "POST", body: JSON.stringify({ revision }) });
+}
+export async function readPluginDraftConfiguration(id: string): Promise<import("../shared/plugins.js").PluginConfigurationView> {
+  return request(`/plugins/setup-sessions/${encodeURIComponent(id)}/configuration`);
+}
+export async function savePluginDraftConfiguration(id: string, values: import("../shared/plugins.js").PluginConfigurationValues): Promise<import("../shared/plugins.js").PluginConfigurationView> {
+  return request(`/plugins/setup-sessions/${encodeURIComponent(id)}/configuration`, { method: "PUT", body: JSON.stringify({ values }) });
+}
+export async function testPluginDraft(id: string, server: string, revision: string): Promise<import("../shared/plugins.js").PluginMcpResult> {
+  return request(`/plugins/setup-sessions/${encodeURIComponent(id)}/test/${encodeURIComponent(server)}`, { method: "POST", body: JSON.stringify({ revision }) });
+}
+export async function readPluginMcpDefinition(id: string, server: string): Promise<{ definition: import("../shared/plugins.js").McpServerDefinition }> {
+  return request(`/plugins/${encodeURIComponent(id)}/mcp/${encodeURIComponent(server)}/definition`);
+}
+export async function savePluginMcpDefinition(id: string, server: string, definition: import("../shared/plugins.js").McpServerDefinition): Promise<PluginDetail> {
+  return request(`/plugins/${encodeURIComponent(id)}/mcp/${encodeURIComponent(server)}/definition`, { method: "PUT", body: JSON.stringify({ definition }) });
+}
+
+export async function stopPreview(projectId: string): Promise<{ preview: ProjectState["preview"] }> {
+  return request(`/projects/${projectId}/preview`, { method: "DELETE" });
+}
+export async function acquirePreview(projectId: string, leaseId: string, automatic = false, paused = false): Promise<void> {
+  await request(`/projects/${projectId}/preview/leases/${leaseId}`, { method: "PUT", body: JSON.stringify({ automatic, paused }) });
+}
+export async function releasePreview(projectId: string, leaseId: string): Promise<void> {
+  await request(`/projects/${projectId}/preview/leases/${leaseId}`, { method: "DELETE" });
+}
+export async function inspectProjectPreview(projectId: string, settings: ProjectRunSettings): Promise<{ mode?: string; manager?: string; source?: string; error?: string }> {
+  return request(`/projects/${projectId}/preview/inspect`, { method: "POST", body: JSON.stringify(settings) });
 }

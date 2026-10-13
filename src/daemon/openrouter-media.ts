@@ -10,16 +10,16 @@ import {
   type ImageModel,
   type ImageOutputCount,
   type ImageResolution,
-  type VideoAspectRatio,
   type VideoModel,
-  type VideoResolution,
 } from "../shared/contracts.js";
 import { withOpenRouterAttribution } from "./openrouter-attribution.js";
+import { knownImageReferenceLimit } from "../shared/image-reference-limits.js";
 
 export interface OpenRouterMediaSource {
   baseUrl: string;
   apiKey: string;
   headers: Record<string, string>;
+  authentication?: "api_key" | "none";
 }
 
 interface CapabilityDescriptor {
@@ -100,7 +100,7 @@ export async function listOpenRouterVideoModels(source: OpenRouterMediaSource, r
 export function openRouterHeaders(source: OpenRouterMediaSource, json = false): Record<string, string> {
   return {
     ...withOpenRouterAttribution(source.headers),
-    authorization: `Bearer ${source.apiKey}`,
+    ...(source.authentication === "none" ? {} : { authorization: `Bearer ${source.apiKey}` }),
     ...(json ? { "content-type": "application/json" } : {}),
   };
 }
@@ -120,7 +120,7 @@ function imageModel(record: OpenRouterImageRecord): ImageModel[] {
   const usableAspectRatios: readonly ImageAspectRatio[] = aspectRatios.length ? aspectRatios : ["1:1"];
   const inputReferences = rangeMax(parameters.input_references);
   const supportsImageInput = stringArray(record.architecture?.input_modalities).includes("image");
-  const maxReferenceImages = inputReferences ?? (supportsImageInput ? 1 : 0);
+  const maxReferenceImages = inputReferences ?? (supportsImageInput ? knownImageReferenceLimit(id) ?? 1 : 0);
   const outputMax = Math.max(1, Math.min(4, rangeMax(parameters.n) ?? 1));
   const maxOutputs = [...IMAGE_OUTPUT_COUNTS].reverse().find((count) => count <= outputMax) ?? 1;
   return [{

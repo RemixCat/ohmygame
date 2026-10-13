@@ -93,17 +93,12 @@ export function reduceRuntimeEvent(state: RendererState, event: RuntimeEvent): R
         }],
       };
     case "project.renamed":
+    case "project.updated":
       return project?.id === event.data.project.id
         ? { ...next, project: event.data.project }
         : next;
-    case "preview.starting":
-      return project ? { ...next, project: { ...project, preview: { status: "starting" } } } : next;
-    case "preview.ready":
-      return project ? { ...next, project: { ...project, preview: { status: "ready", url: event.data.url } } } : next;
-    case "preview.error":
-      return project ? { ...next, project: { ...project, preview: { status: "error", error: event.data.error } } } : next;
-    case "preview.stopped":
-      return project ? { ...next, project: { ...project, preview: { status: "stopped" } } } : next;
+    case "preview.updated":
+      return project ? { ...next, project: { ...project, preview: event.data.preview } } : next;
     case "agent.started": {
       if (!event.turnId || !conversation) return next;
       const replacementId = event.data.revision === "last-turn"
@@ -254,11 +249,17 @@ function upsertTurnItem(state: RendererState, conversationId: string, turnId: st
 }
 
 function updateTurnItem(state: RendererState, id: string, update: (item: ThreadItem) => ThreadItem): RendererState {
-  return { ...state, turns: state.turns.map((turn) => ({ ...turn, items: turn.items.map((item) => item.id === id ? update(item) : item) })) };
+  const turns = state.turns.map((turn) => turn.items.some((item) => item.id === id)
+    ? { ...turn, items: turn.items.map((item) => item.id === id ? update(item) : item) }
+    : turn);
+  return turns.every((turn, index) => turn === state.turns[index]) ? state : { ...state, turns };
 }
 
 function removeTurnItem(state: RendererState, id: string): RendererState {
-  return { ...state, turns: state.turns.map((turn) => ({ ...turn, items: turn.items.filter((item) => item.id !== id) })) };
+  const turns = state.turns.map((turn) => turn.items.some((item) => item.id === id)
+    ? { ...turn, items: turn.items.filter((item) => item.id !== id) }
+    : turn);
+  return turns.every((turn, index) => turn === state.turns[index]) ? state : { ...state, turns };
 }
 
 function shouldRemoveCompletedItem(item: ThreadItem): boolean {

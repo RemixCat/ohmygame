@@ -2,17 +2,25 @@ import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { addPlayableNode } from "../src/daemon/playable-add-node.js";
 import {
+  changeNodeCodebase,
   createNodeCodebase,
   createPlayableStarterCodebase,
+  NodeCodebaseConflictError,
+  openNodeCodebaseDetail,
   readNodeCodebase,
+  readNodeCodebaseDetail,
   writeNodeCodebase,
 } from "../src/daemon/playable-codebase.js";
 import { buildPlayableProject } from "../src/daemon/playable-project.js";
+import { PLAYABLE_PROJECT_STYLE_FILES } from "../src/daemon/playable-style.js";
 import { EDITOR_LAYOUT_SCHEMA } from "../src/shared/editor-layout-schema.js";
 import { PLAYABLE_GRAPH_SCHEMA } from "../src/shared/playable-graph-schema.js";
+import { createStarterCodebaseWithScene } from "./playable-fixture.js";
 
 const temporaryRoots: string[] = [];
+const PROJECT_STYLE_MIGRATION_FILE = "schemas/project-style.version.json";
 
 afterEach(async () => {
   await Promise.all(
@@ -23,45 +31,157 @@ afterEach(async () => {
 });
 
 describe("Playable codebase", () => {
-  it("creates a complete blank project that compiles", async () => {
+  it("creates a new project with the Project Style and no Scenes yet", async () => {
     const workspace = await temporaryWorkspace();
-    const starter = createPlayableStarterCodebase("A < B & C", { width: 720, height: 1280 });
-    starter.graph.nodes[0]!.title = "A < B & C";
-    await createNodeCodebase(workspace, starter);
+    await createNodeCodebase(workspace, createPlayableStarterCodebase("A < B & C", { width: 720, height: 1280 }));
 
     expect(await tree(workspace)).toEqual([
       "AGENTS.md",
       "README.md",
       "editor/layout.json",
       "graph.json",
-      "nodes/start/index.html",
-      "nodes/start/node.js",
-      "nodes/start/style.css",
       "schemas/editor-layout.schema.json",
       "schemas/graph.schema.json",
+      "schemas/project-style.version.json",
       "shared/style/components.css",
       "shared/style/components.js",
       "shared/style/theme.css",
     ]);
     const codebase = await readNodeCodebase(workspace);
-    expect(codebase.graph).toMatchObject({
-      title: "A < B & C",
-      entryNodeId: "start",
-      nodes: [{ id: "start" }],
-    });
-    expect(Object.keys(codebase.editorLayout.nodes)).toEqual(["start"]);
+    expect(codebase.graph).toMatchObject({ title: "A < B & C", nodes: [], edges: [] });
+    expect(codebase.editorLayout.nodes).toEqual({});
     expect(await readJson(workspace, "schemas/graph.schema.json")).toEqual(PLAYABLE_GRAPH_SCHEMA);
     expect(await readJson(workspace, "schemas/editor-layout.schema.json")).toEqual(EDITOR_LAYOUT_SCHEMA);
-    // The first Node is the Blank Template: a background that continues to `next`.
-    expect(await readFile(path.join(workspace, "nodes/start/index.html"), "utf8"))
-      .toContain('<div class="backdrop is-night" data-media="backdrop"></div>');
-    expect(codebase.graph.nodes[0]!.signals).toEqual([{ id: "next", label: "Next" }]);
     expect(await readFile(path.join(workspace, "AGENTS.md"), "utf8"))
       .toContain("Every Node follows the same protocol");
     expect(await readFile(path.join(workspace, "README.md"), "utf8"))
       .toContain("context.navigation.emit(signalId)");
+    // An empty project is a valid draft.
+    await expect(buildPlayableProject(workspace, "draft")).resolves.toBeDefined();
+  });
+
+  it("writes a starting Scene from the Blank Template", async () => {
+    const workspace = await temporaryWorkspace();
+    await createNodeCodebase(workspace, createStarterCodebaseWithScene("Story", { width: 1280, height: 720 }));
+
+    expect(await readFile(path.join(workspace, "nodes/start/index.html"), "utf8"))
+      .toContain('<div class="backdrop is-night" data-media="backdrop"></div>');
     // Its `next` Exit goes nowhere yet, which a draft allows.
     await expect(buildPlayableProject(workspace, "draft")).resolves.toBeDefined();
+  });
+
+  it("restores the missing Project Style when a Scene is added to a legacy project", async () => {
+    const workspace = await temporaryWorkspace();
+    await createNodeCodebase(
+      workspace,
+      createPlayableStarterCodebase("Legacy", { width: 1280, height: 720 }),
+    );
+    await rm(path.join(workspace, "shared"), { recursive: true });
+    await rm(path.join(workspace, PROJECT_STYLE_MIGRATION_FILE));
+
+    await addPlayableNode(workspace, { preset: "hotspot", id: "hotspot" });
+
+    for (const [relative, content] of Object.entries(
+      PLAYABLE_PROJECT_STYLE_FILES,
+    )) {
+      expect(await readFile(path.join(workspace, relative), "utf8")).toBe(
+        content,
+      );
+    }
+    await expect(
+      buildPlayableProject(workspace, "draft"),
+    ).resolves.toBeDefined();
+  });
+
+  it("keeps reads pure and migrates the missing Project Style when a legacy project is opened", async () => {
+    const workspace = await temporaryWorkspace();
+    await createNodeCodebase(
+      workspace,
+      createPlayableStarterCodebase("Broken", { width: 1280, height: 720 }),
+    );
+    await addPlayableNode(workspace, { preset: "hotspot", id: "hotspot" });
+    await rm(path.join(workspace, "shared"), { recursive: true });
+    await rm(path.join(workspace, PROJECT_STYLE_MIGRATION_FILE));
+
+    await readNodeCodebase(workspace);
+    await expect(
+      readFile(path.join(workspace, "shared/style/components.js"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readFile(path.join(workspace, PROJECT_STYLE_MIGRATION_FILE), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+
+    await openNodeCodebaseDetail(workspace);
+
+    await expect(
+      buildPlayableProject(workspace, "draft"),
+    ).resolves.toBeDefined();
+    expect(
+      await readFile(path.join(workspace, PROJECT_STYLE_MIGRATION_FILE), "utf8"),
+    ).toBe('{\n  "version": 1\n}\n');
+  });
+
+  it("preserves customized Project Style files and does not repeat the migration", async () => {
+    const workspace = await temporaryWorkspace();
+    await createNodeCodebase(
+      workspace,
+      createPlayableStarterCodebase("Customized", { width: 1280, height: 720 }),
+    );
+    const customTheme = ":host { --color-page: rebeccapurple; }\n";
+    await writeFile(
+      path.join(workspace, "shared/style/theme.css"),
+      customTheme,
+    );
+    await rm(path.join(workspace, "shared/style/components.js"));
+    await rm(path.join(workspace, PROJECT_STYLE_MIGRATION_FILE));
+
+    await openNodeCodebaseDetail(workspace);
+
+    expect(
+      await readFile(path.join(workspace, "shared/style/theme.css"), "utf8"),
+    ).toBe(customTheme);
+    expect(
+      await readFile(
+        path.join(workspace, "shared/style/components.js"),
+        "utf8",
+      ),
+    ).toBe(PLAYABLE_PROJECT_STYLE_FILES["shared/style/components.js"]);
+
+    await rm(path.join(workspace, "shared/style/components.js"));
+    await rm(path.join(workspace, ".ohmygame"), {
+      recursive: true,
+      force: true,
+    });
+    await openNodeCodebaseDetail(workspace);
+    await expect(
+      readFile(path.join(workspace, "shared/style/components.js"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("can retry the Project Style migration after a failed open", async () => {
+    const workspace = await temporaryWorkspace();
+    await createNodeCodebase(
+      workspace,
+      createPlayableStarterCodebase("Retry", { width: 1280, height: 720 }),
+    );
+    await rm(path.join(workspace, "shared"), { recursive: true });
+    await rm(path.join(workspace, PROJECT_STYLE_MIGRATION_FILE));
+    await mkdir(path.join(workspace, PROJECT_STYLE_MIGRATION_FILE), {
+      recursive: true,
+    });
+
+    await expect(openNodeCodebaseDetail(workspace)).rejects.toBeDefined();
+    await expect(
+      readFile(path.join(workspace, "shared/style/components.js"), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+
+    await rm(path.join(workspace, PROJECT_STYLE_MIGRATION_FILE), {
+      recursive: true,
+    });
+    await expect(openNodeCodebaseDetail(workspace)).resolves.toBeDefined();
+    expect(
+      await readFile(path.join(workspace, "shared/style/components.js"), "utf8"),
+    ).toBe(PLAYABLE_PROJECT_STYLE_FILES["shared/style/components.js"]);
   });
 
   it("preserves user documentation and refreshes generated schemas", async () => {
@@ -75,7 +195,7 @@ describe("Playable codebase", () => {
 
     await createNodeCodebase(
       workspace,
-      createPlayableStarterCodebase("Story", { width: 1280, height: 720 }),
+      createStarterCodebaseWithScene("Story", { width: 1280, height: 720 }),
     );
 
     expect(await readFile(path.join(workspace, "README.md"), "utf8")).toBe("User README\n");
@@ -90,7 +210,7 @@ describe("Playable codebase", () => {
 
     await expect(createNodeCodebase(
       workspace,
-      createPlayableStarterCodebase("Story", { width: 1280, height: 720 }),
+      createStarterCodebaseWithScene("Story", { width: 1280, height: 720 }),
     )).rejects.toThrow("Playable project files already exist: graph.json");
 
     expect(await readFile(path.join(workspace, "graph.json"), "utf8")).toBe("existing graph\n");
@@ -109,7 +229,7 @@ describe("Playable codebase", () => {
     const missingSource = await temporaryWorkspace();
     await createNodeCodebase(
       missingSource,
-      createPlayableStarterCodebase("Story", { width: 1280, height: 720 }),
+      createStarterCodebaseWithScene("Story", { width: 1280, height: 720 }),
     );
     await rm(path.join(missingSource, "nodes/start/node.js"));
     await expect(readNodeCodebase(missingSource)).rejects.toThrow("does not exist");
@@ -117,7 +237,7 @@ describe("Playable codebase", () => {
     const mismatchedLayout = await temporaryWorkspace();
     await createNodeCodebase(
       mismatchedLayout,
-      createPlayableStarterCodebase("Story", { width: 1280, height: 720 }),
+      createStarterCodebaseWithScene("Story", { width: 1280, height: 720 }),
     );
     const layout = await readJson(mismatchedLayout, "editor/layout.json") as {
       nodes: Record<string, unknown>;
@@ -138,7 +258,7 @@ describe("Playable codebase", () => {
     const workspace = await temporaryWorkspace();
     await createNodeCodebase(
       workspace,
-      createPlayableStarterCodebase("Story", { width: 1280, height: 720 }),
+      createStarterCodebaseWithScene("Story", { width: 1280, height: 720 }),
     );
     const codebase = await readNodeCodebase(workspace);
     codebase.graph.title = "Revised";
@@ -161,7 +281,7 @@ describe("Playable codebase", () => {
     const workspace = await temporaryWorkspace();
     await createNodeCodebase(
       workspace,
-      createPlayableStarterCodebase("Initial", { width: 1280, height: 720 }),
+      createStarterCodebaseWithScene("Initial", { width: 1280, height: 720 }),
     );
     const initial = await readNodeCodebase(workspace);
     const operations: Array<Promise<void | { title: string; x: number }>> = [];
@@ -170,7 +290,7 @@ describe("Playable codebase", () => {
       const version = structuredClone(initial);
       version.graph.title = `Version ${index}`;
       version.editorLayout.nodes.start = { x: index, y: 0 };
-      operations.push(writeNodeCodebase(workspace, version));
+      operations.push(writeNodeCodebase(workspace, version).then(() => undefined));
       operations.push(readNodeCodebase(workspace).then((codebase) => ({
         title: codebase.graph.title,
         x: codebase.editorLayout.nodes.start!.x,
@@ -190,11 +310,93 @@ describe("Playable codebase", () => {
     expect((await tree(workspace)).some((file) => file.includes(".tmp-"))).toBe(false);
   });
 
+  it("refuses to write over a graph that changed on disk since it was read", async () => {
+    const workspace = await temporaryWorkspace();
+    await createNodeCodebase(
+      workspace,
+      createStarterCodebaseWithScene("Story", { width: 1280, height: 720 }),
+    );
+    const loaded = await readNodeCodebaseDetail(workspace);
+
+    // The Agent edits graph.json with its file tools, which the daemon never sees.
+    const agentGraph = structuredClone(loaded.graph);
+    agentGraph.title = "Changed by the Agent";
+    await writeFile(path.join(workspace, "graph.json"), `${JSON.stringify(agentGraph, null, 2)}\n`);
+    const layoutBefore = await readFile(path.join(workspace, "editor/layout.json"), "utf8");
+
+    const stale = structuredClone(loaded);
+    stale.editorLayout.nodes.start = { x: 400, y: 400 };
+    await expect(writeNodeCodebase(workspace, stale)).rejects.toBeInstanceOf(NodeCodebaseConflictError);
+    expect(await readJson(workspace, "graph.json")).toEqual(agentGraph);
+    expect(await readFile(path.join(workspace, "editor/layout.json"), "utf8")).toBe(layoutBefore);
+
+    const latest = await readNodeCodebaseDetail(workspace);
+    expect(latest.revision).not.toBe(loaded.revision);
+    const revision = await writeNodeCodebase(workspace, { ...latest, editorLayout: stale.editorLayout });
+    await expect(readNodeCodebaseDetail(workspace)).resolves.toEqual({
+      graph: agentGraph,
+      editorLayout: stale.editorLayout,
+      revision,
+    });
+  });
+
+  it("changes the codebase in one step that no other save lands inside", async () => {
+    const workspace = await temporaryWorkspace();
+    await createNodeCodebase(
+      workspace,
+      createStarterCodebaseWithScene("Story", { width: 1280, height: 720 }),
+    );
+    const editor = await readNodeCodebaseDetail(workspace);
+    const moved = { ...editor.editorLayout, nodes: { start: { x: 400, y: 400 } } };
+
+    // The Agent adds a Scene while the editor autosaves a move made on the graph it loaded.
+    const [added, autosaved] = await Promise.allSettled([
+      addPlayableNode(workspace, { preset: "blank", id: "second" }),
+      writeNodeCodebase(workspace, { ...editor, editorLayout: moved }),
+    ]);
+
+    // The Scene is added whole, and the autosave is the one told to start again from it.
+    expect(added.status).toBe("fulfilled");
+    expect(autosaved).toMatchObject({ status: "rejected", reason: expect.any(NodeCodebaseConflictError) });
+    const latest = await readNodeCodebaseDetail(workspace);
+    expect(latest.graph.nodes.map((node) => node.id)).toEqual(["start", "second"]);
+
+    // A save queued first is what the change is made from.
+    await Promise.all([
+      writeNodeCodebase(workspace, { ...latest, graph: { ...latest.graph, title: "Saved first" } }),
+      changeNodeCodebase(workspace, (codebase) => ({
+        ...codebase,
+        editorLayout: { ...codebase.editorLayout, nodes: { ...codebase.editorLayout.nodes, start: { x: 400, y: 400 } } },
+      })),
+    ]);
+    const saved = await readNodeCodebase(workspace);
+    expect(saved.graph.title).toBe("Saved first");
+    expect(saved.editorLayout.nodes.start).toEqual({ x: 400, y: 400 });
+
+    const before = await readNodeCodebaseDetail(workspace);
+    await changeNodeCodebase(workspace, () => undefined);
+    expect((await readNodeCodebaseDetail(workspace)).revision).toBe(before.revision);
+  });
+
+  it("writes without a revision whatever the files hold", async () => {
+    const workspace = await temporaryWorkspace();
+    await createNodeCodebase(
+      workspace,
+      createStarterCodebaseWithScene("Story", { width: 1280, height: 720 }),
+    );
+    const codebase = await readNodeCodebase(workspace);
+    await writeNodeCodebase(workspace, { ...codebase, graph: { ...codebase.graph, title: "First" } });
+
+    await writeNodeCodebase(workspace, { ...codebase, graph: { ...codebase.graph, title: "Second" } });
+
+    expect((await readNodeCodebase(workspace)).graph.title).toBe("Second");
+  });
+
   it("creates declared Node source files in the same codebase update", async () => {
     const workspace = await temporaryWorkspace();
     await createNodeCodebase(
       workspace,
-      createPlayableStarterCodebase("Story", { width: 1280, height: 720 }),
+      createStarterCodebaseWithScene("Story", { width: 1280, height: 720 }),
     );
     const codebase = await readNodeCodebase(workspace);
     codebase.graph.nodes.push({
@@ -228,7 +430,7 @@ describe("Playable codebase", () => {
     const workspace = await temporaryWorkspace();
     await createNodeCodebase(
       workspace,
-      createPlayableStarterCodebase("Story", { width: 1280, height: 720 }),
+      createStarterCodebaseWithScene("Story", { width: 1280, height: 720 }),
     );
     const codebase = await readNodeCodebase(workspace);
     const graphBefore = await readFile(path.join(workspace, "graph.json"), "utf8");
@@ -248,12 +450,12 @@ describe("Playable codebase", () => {
     const outside = await temporaryWorkspace();
     await createNodeCodebase(
       workspace,
-      createPlayableStarterCodebase("Story", { width: 1280, height: 720 }),
+      createStarterCodebaseWithScene("Story", { width: 1280, height: 720 }),
     );
     await rm(path.join(workspace, "nodes/start"), { recursive: true });
     await symlink(outside, path.join(workspace, "nodes/start"), "dir");
     const codebase = await readNodeCodebase(workspace).catch(() => (
-      createPlayableStarterCodebase("Story", { width: 1280, height: 720 })
+      createStarterCodebaseWithScene("Story", { width: 1280, height: 720 })
     ));
 
     await expect(writeNodeCodebase(workspace, {
@@ -272,7 +474,7 @@ describe("Playable codebase", () => {
     const workspace = await temporaryWorkspace();
     await createNodeCodebase(
       workspace,
-      createPlayableStarterCodebase("Story", { width: 1280, height: 720 }),
+      createStarterCodebaseWithScene("Story", { width: 1280, height: 720 }),
     );
     const codebase = await readNodeCodebase(workspace);
     codebase.graph.nodes.push({
@@ -306,7 +508,7 @@ describe("Playable codebase", () => {
     const workspace = await temporaryWorkspace();
     await createNodeCodebase(
       workspace,
-      createPlayableStarterCodebase("Story", { width: 1280, height: 720 }),
+      createStarterCodebaseWithScene("Story", { width: 1280, height: 720 }),
     );
     const codebase = await readNodeCodebase(workspace);
 

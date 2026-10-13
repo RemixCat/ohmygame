@@ -3,16 +3,19 @@ import type {
   CompiledNodeGraph,
   CompiledPlayableSurface,
 } from "../src/shared/playable-compiled.js";
-import type { PlayableNodeContext } from "../src/shared/playable-nodes.js";
+import type { NodeGraph, PlayableNodeContext } from "../src/shared/playable-nodes.js";
 import {
   MemoryPlayableSaveStore,
+  MemoryPlayableSeenStore,
   NodeRuntime,
   type NodeRuntimeOptions,
   type PlayableMountedSurface,
   type PlayableSave,
   type PlayableSaveStore,
+  type PlayableSeenStore,
   type PlayableSurfaceHost,
 } from "../src/shared/playable-runtime.js";
+import type { PlayableSeen } from "../src/shared/playable-story-map.js";
 import { createNodeGraphFixture } from "./playable-fixture.js";
 
 type NodeContext = Omit<PlayableNodeContext, "root">;
@@ -410,6 +413,75 @@ describe("Node Runtime", () => {
     ).rejects.toMatchObject({ code: "no-save" });
   });
 
+  it("keeps the save where the player left the story when they go Home", async () => {
+    const { runtime, host } = createRuntime();
+    await runtime.start();
+    await nodeContext(host, "menu").navigation.emit("start");
+    await nodeContext(host, "lobby").state.set("hasKey", true);
+
+    await nodeContext(host, "lobby").navigation.emit("home");
+    expect(runtime.snapshot()).toMatchObject({ currentNodeId: "menu", state: { hasKey: true } });
+    await nodeContext(host, "menu").session.continue();
+
+    expect(runtime.snapshot()).toMatchObject({
+      currentNodeId: "lobby",
+      backStack: [],
+      state: { hasKey: true },
+    });
+  });
+
+  it("keeps a saved game when the player goes around the game from the menu and Back", async () => {
+    const saved = createSave({
+      currentNodeId: "lobby",
+      state: { hasKey: true, clues: ["ledger"], profile: { name: "Ada" } },
+    });
+    const saveStore = new MemoryPlayableSaveStore(saved);
+    // The archive is a side screen of the menu, as a Story map is.
+    const { runtime, host } = createRuntime({ saveStore, graph: createGraphWithArchiveAside() });
+    await runtime.start();
+
+    await nodeContext(host, "menu").navigation.emit("inspect");
+    await nodeContext(host, "archive").navigation.back();
+    expect(await saveStore.load()).toEqual(saved);
+    expect(nodeContext(host, "menu").session.hasSave()).toBe(true);
+    await nodeContext(host, "menu").session.continue();
+
+    expect(runtime.snapshot()).toMatchObject({
+      currentNodeId: "lobby",
+      backStack: [],
+      state: saved.state,
+    });
+  });
+
+  it("offers nothing to continue after only going around the game", async () => {
+    const { runtime, host } = createRuntime({ graph: createGraphWithArchiveAside() });
+    await runtime.start();
+
+    await nodeContext(host, "menu").navigation.emit("inspect");
+    await nodeContext(host, "archive").navigation.back();
+
+    expect(nodeContext(host, "menu").session.hasSave()).toBe(false);
+    expect(runtime.snapshot().save).toEqual({ present: false });
+  });
+
+  it("checkpoints Back from a step in the story, and Back past where the player left it", async () => {
+    const saveStore = new MemoryPlayableSaveStore();
+    const { runtime, host } = createRuntime({ saveStore });
+    await runtime.start();
+
+    await nodeContext(host, "menu").navigation.emit("inspect");
+    await nodeContext(host, "archive").navigation.back();
+    expect(await saveStore.load()).toMatchObject({ currentNodeId: "menu", backStack: [] });
+
+    await nodeContext(host, "menu").navigation.emit("inspect");
+    await nodeContext(host, "archive").navigation.emit("home");
+    expect(await saveStore.load()).toMatchObject({ currentNodeId: "archive", backStack: ["menu"] });
+    await nodeContext(host, "menu").navigation.back();
+
+    expect(runtime.snapshot()).toMatchObject({ currentNodeId: "menu", backStack: [] });
+    expect(await saveStore.load()).toMatchObject({ currentNodeId: "menu", backStack: [] });
+  });
+
   it("resets in place and restarts at the Entry Node", async () => {
     const { runtime, host } = createRuntime();
     await runtime.start();
@@ -486,6 +558,95 @@ describe("Node Runtime", () => {
   });
 });
 
+
+describe("Node Runtime connected Signals", () => {
+  it("tells a Node which of its Signals go somewhere", async () => {
+    const host = new FakeSurfaceHost();
+    const { runtime } = createRuntime({ host });
+    await runtime.start();
+    const menu = nodeContext(host, "menu");
+
+    expect(menu.navigation.connected("start")).toBe(true);
+    expect(menu.navigation.connected("missing")).toBe(false);
+    await menu.navigation.emit("start");
+    // Another Node's Signal is not this one's, even with an edge.
+    expect(nodeContext(host, "lobby").navigation.connected("start")).toBe(false);
+    expect(() => menu.navigation.connected("start")).toThrowError(expect.objectContaining({ code: "stale-surface" }));
+  });
+});
+
+describe("Node Runtime Story Map", () => {
+  it("remembers the Nodes entered and edges taken, and maps them", async () => {
+    const seenStore = new MemoryPlayableSeenStore();
+    const { runtime, host } = createRuntime({ seenStore });
+    await runtime.start();
+    await nodeContext(host, "menu").navigation.emit("start");
+
+    const map = nodeContext(host, "lobby").story.map();
+    expect(map.nodes.map((node) => [node.id, node.row, node.seen, node.ending])).toEqual([
+      ["menu", 0, true, false],
+      ["lobby", 1, true, false],
+      ["archive", 2, false, true],
+    ]);
+    expect(map.edges).toEqual([
+      { from: "menu", to: "lobby", seen: true },
+      { from: "lobby", to: "archive", seen: false },
+    ]);
+    await runtime.dispose();
+    expect(await seenStore.load()).toEqual({
+      version: 1,
+      nodes: { menu: "2026-09-28T00:00:00.000Z", lobby: "2026-09-28T00:00:00.000Z" },
+      edges: { "start-game": "2026-09-28T00:00:00.000Z" },
+    });
+  });
+
+  it("keeps what was seen when a new game starts", async () => {
+    const seenStore = new MemoryPlayableSeenStore(seenRecord(["menu", "lobby", "archive"]));
+    const { runtime, host } = createRuntime({ seenStore });
+    await runtime.start();
+    await nodeContext(host, "menu").session.restart();
+
+    expect(nodeContext(host, "menu").story.map().nodes.every((node) => node.seen)).toBe(true);
+  });
+
+  it("shows the whole map in a preview without adding to what was seen", async () => {
+    const saved: PlayableSeen[] = [];
+    const seenStore: PlayableSeenStore = {
+      load: async () => seenRecord(["menu"]),
+      save: async (seen) => { saved.push(seen); },
+    };
+    const { runtime, host } = createRuntime({ seenStore, policy: "report", startNodeId: "lobby" });
+    await runtime.start();
+    await nodeContext(host, "lobby").navigation.emit("archive");
+
+    const map = nodeContext(host, "lobby").story.map();
+    expect(map.nodes.every((node) => node.seen) && map.edges.every((edge) => edge.seen)).toBe(true);
+    await runtime.dispose();
+    expect(saved).toEqual([]);
+  });
+
+  it("plays on when what was seen cannot be read or kept", async () => {
+    const errors: unknown[] = [];
+    const seenStore: PlayableSeenStore = {
+      load: async () => { throw new Error("storage is unavailable"); },
+      save: async () => { throw new Error("storage is full"); },
+    };
+    const { runtime, host } = createRuntime({ seenStore, onError: (error) => errors.push(error) });
+    await runtime.start();
+    await nodeContext(host, "menu").navigation.emit("start");
+    await runtime.dispose();
+
+    expect(runtime.snapshot().errors.map((error) => error.message)).toEqual([
+      "storage is unavailable",
+      "storage is full",
+    ]);
+    expect(errors).toHaveLength(2);
+  });
+});
+
+function seenRecord(nodes: string[]): PlayableSeen {
+  return { version: 1, nodes: Object.fromEntries(nodes.map((id) => [id, "2026-09-27T00:00:00.000Z"])), edges: {} };
+}
 
 describe("NodeRuntime preview tooling", () => {
   it("reports Signals under the report policy without leaving the Node", async () => {
@@ -568,8 +729,10 @@ describe("NodeRuntime preview tooling", () => {
 
 function createRuntime(
   options: {
+    graph?: NodeGraph;
     host?: FakeSurfaceHost;
     saveStore?: PlayableSaveStore;
+    seenStore?: PlayableSeenStore;
     assetUrls?: Record<string, string>;
     onError?: (error: unknown) => void;
     policy?: NodeRuntimeOptions["policy"];
@@ -580,7 +743,7 @@ function createRuntime(
   runtime: NodeRuntime;
   host: FakeSurfaceHost;
 } {
-  const graph = createNodeGraphFixture();
+  const graph = options.graph ?? createNodeGraphFixture();
   const host = options.host ?? new FakeSurfaceHost();
   return {
     host,
@@ -590,6 +753,7 @@ function createRuntime(
       graphSignature: "fixture-v1",
       surfaceHost: host,
       saveStore: options.saveStore ?? new MemoryPlayableSaveStore(),
+      ...(options.seenStore ? { seenStore: options.seenStore } : {}),
       assetUrls: options.assetUrls ?? {
         background: "asset://background",
         theme: "asset://theme",
@@ -619,6 +783,14 @@ function createCompiledGraph(): CompiledNodeGraph {
       archive: surface("archive"),
     },
   };
+}
+
+/** The fixture with the menu's archive entry as a navigation Signal instead of a step in the story. */
+function createGraphWithArchiveAside(): NodeGraph {
+  const graph = createNodeGraphFixture();
+  const inspect = graph.nodes.find((node) => node.id === "menu")!.signals.find((signal) => signal.id === "inspect")!;
+  inspect.role = "navigation";
+  return graph;
 }
 
 function nodeContext(host: FakeSurfaceHost, id: string): NodeContext {

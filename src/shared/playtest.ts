@@ -22,7 +22,7 @@ export interface GameUseCapabilities {
 
 export const WEB_GAME_USE_CAPABILITIES: GameUseCapabilities = {
   runtime: "web",
-  projectTypes: ["web-game", "interactive-story"],
+  projectTypes: ["web-game", "interactive-story", "general"],
   input: ["pointer", "keyboard", "text", "touch", "resize"],
   observation: ["screenshot", "dom", "canvas", "console", "network"],
   deterministic: [],
@@ -106,7 +106,7 @@ export interface PlaytestSnapshot extends GameUseSnapshot {
 
 export interface PlaytestCapture {
   sessionId: string;
-  mediaType: "image/png";
+  mediaType: "image/jpeg";
   data: string;
   width: number;
   height: number;
