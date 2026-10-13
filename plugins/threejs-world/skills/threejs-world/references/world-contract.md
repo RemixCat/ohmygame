@@ -14,42 +14,86 @@ Deliver an editable web project that realizes the expanded design. High-detail, 
 
 ## Visual completion
 
-Follow [the expansion guide](world-expansion.md) to select the required Meshy subjects. For an actual new-world build with OhMyGame's Meshy tools and credentials available, complete at least 15 independent major subjects across at least three significant object categories, covering every major region and core visual focus, and complete the entire required set even when it is larger. Prioritize buildings and major structures in settlements. Meshy must supply their main visible forms; evaluating it and choosing procedural modeling for all subjects does not meet this requirement. Three.js still owns scene organization, layout, rendering, and interaction. Prepare shipped GLB or glTF assets with `web-3d-asset-pipeline` when the world uses them.
+Follow [the expansion guide](world-expansion.md) and [provider selection](#3d-asset-provider-selection) to select the required subjects. For an actual new-world build, if Meshy, Hyper3D, or currently available free Hyper3D access is usable, complete at least 15 independent major generated subjects across at least three significant object categories, covering every major region and core visual focus, and complete the entire required set even when it is larger. Count qualifying Meshy and Hyper3D subjects together. Prioritize buildings and major structures in settlements. A generated provider must supply each counted subject's main visible form; evaluating it and choosing procedural modeling for all subjects does not meet this requirement. Three.js still owns scene organization, layout, rendering, and interaction. Prepare shipped GLB or glTF assets with `web-3d-asset-pipeline` when the world uses them.
 
 - **World scale:** make boundaries, region relationships, entrances, routes, and overall composition readable. Organize foreground, midground, and background with spatial depth and fully designed open surfaces.
 - **Middle scale:** give buildings, landmarks, environmental structures, and hero subjects recognizable silhouettes, proportions, construction or anatomy, and connected parts.
 - **Close range:** show material differences, surface variation, seams, wear appropriate to the setting, local components, and traces of activity. These must hold up in the intended close-up views, not only as distant silhouettes.
-- **Detail distribution:** connect props and surface changes to their activity or environment. Give core areas, connections, distant regions, and open surfaces appropriate visual information; uniform scattering and neatly cloned detail do not establish richness.
+- **Detail distribution:** connect props and surface changes to their activity or environment. Give core areas, connections, distant regions, and open surfaces appropriate visual information; uniform scattering and neatly cloned detail do not establish richness. Buildings should vary their orientation in response to roads, rivers, terrain boundaries, parcel shape, public spaces, and neighboring structures rather than forming an all-orthogonal grid; keep entrances and routes readable.
 - **Visual unity:** coordinate lighting, materials, shadows, fog, color, and motion to express the theme, reveal volume, and direct attention. Preserve plausible grounding and spatial relationships.
 
 Implement by region or core subject. Before treating one as complete, return to `.world/expanded-prompt.md` and its key visible features table to check the silhouette, important parts, material variation, and near-view details. Record the relevant code locations for those features in the existing [validation report](validation.md). Code presence is implementation evidence; runtime views must still show the promised result. If the feature cannot be seen, fix it or record the shortcoming rather than marking it visually complete.
 
 A generic box, cylinder, or smooth tube carrying a subject's name does not realize its appearance. Blockouts can support construction, but refine or replace the parts that define the subject before claiming completion. Shared geometry and generators are useful only when they preserve each object's key differences. Express thatch, fabric, or masonry repairs through visible construction and surface cues appropriate to the style, using geometry, textures, decals, or assets as needed; a color change alone does not realize those material descriptions. Remaining placeholders, default materials, and debug panels do not count as visual finish.
 
-When implementation requires a design change, retain the original requirement and record the replacement, reason, and impact in the design, with the remaining deviation in the validation report. A different technical method is acceptable if it preserves the intended visible result and the required Meshy contribution. Disclosing a missing or substituted feature does not make that requirement pass; do not erase a promise to claim agreement between design and implementation.
+When implementation requires a design change, retain the original requirement and record the replacement, reason, and impact in the design, with the remaining deviation in the validation report. A different technical method is acceptable if it preserves the intended visible result and any explicitly required provider contribution. Disclosing a missing or substituted feature does not make that requirement pass; do not erase a promise to claim agreement between design and implementation.
 
 ### Open surfaces and information density
 
-Allow low object density, never unresolved low information density across major visible areas. Design open surfaces according to their function and viewing distance, without fixed objects-per-square-meter rules or uniform random scatter:
+Allow low object density, never unresolved low information density across major visible areas. Every region must communicate its surface type, use, ecology, and spatial scale. Consider foreground contact details, midrange groups and activity, and distant silhouettes or material transitions. Even lake surfaces, fields, grassland, wetlands, mountain tops, distant valleys, plaza centers, and road passages need appropriate environmental elements and boundary or surface information; keeping passage clear is not a reason to deliver a blank plane.
 
-- Rivers: shaped banks, bed depth and shallows, rocks, reeds, water variation, bridge piers and reflections where appropriate.
-- Fields: crop rows, field ridges, irrigation, track marks, fences and occasional trees.
-- Grass slopes: microterrain, clustered vegetation, exposed soil, rocks, paths and shadow variation.
-- Distant regions: readable silhouettes, material bands, vegetation belts and atmospheric depth.
+### Semantic environmental fill
 
-Maintain continuity from core areas through connections to the distance. Use `InstancedMesh` and a few suitable Meshy tree prototypes for ordinary groves; select distinct Meshy core trees for significant near-view roles. Build clusters around terrain edges, roads, building groups and ecological transitions. Do not preemptively remove promised information for presumed performance reasons.
+After terrain, roads, visible water, major assets, and key buildings are complete, perform one explicit fill pass before final validation:
 
-### Count completed Meshy subjects
+1. Inspect panorama, overhead, midrange, route, and low-angle views. Mark each major visible region's surface type, use, current information density, and missing environmental cues.
+2. Choose elements that explain the region's purpose, ecology, and scale. Use Three.js geometry/materials/instancing, existing project assets, or assets from an available provider. Build visible variation within each asset family through distinct prototypes or controlled changes to scale, rotation, pose, material, color, maturity, wear, grouping, and density. Instancing may share geometry and materials for performance, but the final scene must not read as copy-paste repetition. The examples below are options, not a mandatory object checklist.
+3. Place elements along meaningful groups, edges, paths, and ecological transitions; preserve entrances, road passages, bridge relationships, water views, and main sightlines. Do not use uniform random scatter or noise to conceal missing design.
+4. Use stable seeds or explicit deterministic parameters, instance repeated trees/grass/rocks/props from low-cost prototypes, and set quantity budgets. Record quantities, instance regions, distributions, resource paths, and loading locations. Do not rebuild large batches of procedural geometry every frame. Measure initialization and rendering before reducing density.
+5. Recheck panorama, routes, midrange, low-angle views, and local contacts after filling. Record deficient regions, additions, providers, parameters, performance, before/after findings, and unresolved items in the existing handoff and validation report. If inspection finds no missing information, record the evidence rather than inventing unrelated props.
+
+| Surface or region | Suitable environmental elements | Distribution and constraints |
+| --- | --- | --- |
+| River or lake surface | Boats, ducks, buoys, docks, reeds, water ripples | Follow plausible channels, banks, and docks; preserve open water views and bridge clearance. |
+| Riverbank or wetland | Reeds, shallow-water stones, boardwalks, shrubs, birds, aquatic details | Form a gradual land-to-water transition with connected banks and shallows. |
+| Farmland or grassland | Crop rows, field ridges, irrigation channels, fences, hay, tools | Follow field direction and boundaries rather than even scatter; choose elements appropriate to actual land use. |
+| Plaza or station forecourt | Benches, lamps, planters, tree pits, signs, paving variation, public amenities | Organize around paths, edges, and resting places; preserve the circulation center. |
+| Hillside or valley | Tree groups, shrubs, rocks, grass layers, erosion traces, trails | Form natural communities and height layers rather than regular grids over a slope. |
+| Road or shoulder | Signs, guardrails, lamps, drains, vehicles, roadside props | Follow roads and junctions without blocking entrances, turns, or bridge sightlines. |
+| Forest or forest edge | Instanced tree prototypes, shrubs, stones, fallen wood, ground cover | Transition density and materials naturally between forest interior, edge, and neighboring regions. |
+| Distance or open area | Low-cost tree groups, ground-material variation, silhouettes, occasional landmarks | Preserve readable scale and layers without monochrome planes or meaningless noise. |
+
+### Water dynamics and environmental response
+
+Water should not be an unexplained static blue plane. Select effects according to the water type, surrounding environment, weather, viewing distance, and requested interaction; each water body does not need every effect:
+
+- wind can create moving surface ripples;
+- water can show soft, blurred reflections of nearby terrain, vegetation, buildings, or sky;
+- shallow water can pick up shoreline colors while deeper water transitions toward a darker blue or other designed deep-water color;
+- rain can produce droplets and localized surface response when rainy weather is part of the design;
+- fish can swim below the surface and ducks can move on suitable water;
+- small boats can drift with the water where the setting supports them;
+- a mouse click on the water can create an expanding ripple when interaction is requested.
+
+Keep water animation and interaction within the project's measured performance budget. Update runtime properties or lightweight effects rather than rebuilding the structural terrain, riverbed, bank, or shoreline geometry every frame. Record which effects are implemented, intentionally omitted, or not applicable.
+
+### Road continuity and building clearance
+
+Buildings must not be placed on roads or occupy the road's passage space. Building footprints, foundations, steps, platforms, decorative objects, and environmental fill assets must not cut across or block a road. Roads must remain continuous and connect building entrances, building groups, bridges, plazas, and other major regions. A painted road surface or visible line is insufficient: the requested main routes must be physically traversable, with enough clear space for the intended movement and turning. Record and repair any building or asset that intrudes into a road or interrupts a required connection.
+
+### Count completed generated subjects
 
 - Count independent major source subjects, not scene nodes, GLB files, downloads, or API calls. Repeated placements, rotations, scale or color variants, LODs of the same model, and regenerated candidates do not add subjects. A subject split into several generated parts for production or interaction still counts as one. Significant core trees can qualify; background instances do not add subjects.
-- Meshy must realize the subject's main visible form. A generated ornament attached to a procedural building does not make that building a Meshy subject. Do not generate door handles, ordinary signs, connectors, or other accessory details as standalone Meshy tasks. Those details may occur naturally within a complete generated subject.
+- The selected generation provider must realize the subject's main visible form. A generated ornament attached to a procedural building does not make that building a generated subject. Do not generate door handles, ordinary signs, connectors, or other accessory details as standalone generation tasks. Those details may occur naturally within a complete generated subject.
 - Generation or copying a file into the project is insufficient. Count a subject as complete only after integration into the final scene, confirmed model and texture loading from the final static output, and the relevant visual and spatial checks. Temporary blockouts and unverified subjects do not count as completed.
-- Suitable existing Meshy models may be reused with their actual provenance recorded. Do not label an ordinary GLB of unknown or other origin as a Meshy result.
+- Suitable existing generated models from the selected provider may be reused with their actual provenance recorded. Do not label an ordinary GLB of unknown or other origin as a generated-provider result.
 - Check the minimum count, region and focal-point coverage, completion of every required subject, and visual quality separately; one cannot compensate for another. Important procedural buildings outside the required set must also meet the design and cannot remain rough placeholders.
+
+## 3D asset provider selection
+
+Use Three.js procedural geometry and existing project resources alongside Meshy, Hyper3D, or an equivalent provider actually exposed by OhMyGame. Choose from current tool availability, platform-reported configured environment credentials, remaining quota, asset type, quality needs, and runtime limits. Do not assume any provider exists or search for a tool by a fixed role or provider name.
+
+- A user or project's explicit provider requirement takes precedence; record an unavailable required provider as a blocker rather than silently substituting it.
+- If only Meshy is usable, use Meshy for generated assets; if only Hyper3D is usable, use Hyper3D. If both are usable, select according to the scene and task constraints and record the choice.
+- Check whether the current platform exposes a Hyper3D partnership entry or free generation quota. Prefer it for suitable environmental assets only when that entry is actually available and the platform confirms usable quota. Unknown or unavailable quota is not free capacity; never treat it as a permanent dependency.
+- If no Meshy, Hyper3D, or free Hyper3D access is currently usable and the user has not explicitly declined to provide either API, direct the user to `Providers & Models` and wait; do not silently substitute a procedural scene. Only when the user explicitly declines to provide both APIs and Meshy, Hyper3D, and free Hyper3D access are all unavailable may existing resources or procedural assets implement the entire scene. Record that explicit fallback decision and its reason. Do not read, copy, print, request, or write API keys; credentials are managed by the platform. Use only currently exposed platform generation tools, never a direct HTTP workaround.
+- Record the actual provider, generated assets, resource paths, scene loading/placement locations, and integration/visual checks in the handoff and validation report. Report availability and quota uncertainty without credential values.
+
+The minimum and counting rules above apply to all usable generated providers for a new-world build. Meshy and Hyper3D subjects count together; provider choice does not reduce the minimum, category requirement, regional coverage, required-set completion, or visual checks. Environment-fill props do not count as major subjects. Only the explicit-user-refusal plus no-provider/no-free-Hyper3D fallback permits an all-procedural scene and removes the generated-subject count requirement; record that exception rather than treating it as an ordinary provider result.
 
 ## Meshy reference images and generation
 
-Use only OhMyGame's existing `generate_image` and `generate_3d_asset` tools for generation, or reuse suitable existing reference images or models under the counting rules above. An actual build request suffices when tools and platform credentials are available, without another written authorization. Discussion, prompt-only, plan-only, and explicit no-generation tasks do not authorize generation. Missing credentials are configured by the user in `Providers & Models`; never read, store, pass, or request a plaintext API key, add a credential `.env`, or implement direct provider HTTP calls. Three.js plus Meshy remains the pipeline; do not introduce Blender, `bpy`, or `.blend` files.
+For Meshy, use OhMyGame's exposed image and 3D generation workflow (currently `generate_image` and `generate_3d_asset`), or reuse suitable existing references/models under the counting rules. For Hyper3D or another provider, follow its actual exposed tool contract instead of assuming Meshy inputs or tool names. An actual build request suffices when tools and platform credentials are available, without another written authorization. Discussion, prompt-only, plan-only, and explicit no-generation tasks do not authorize generation. Missing credentials are configured by the user in `Providers & Models`; never read, store, pass, or request a plaintext API key, add a credential `.env`, or implement direct provider HTTP calls. Three.js remains the scene implementation; do not introduce Blender, `bpy`, or `.blend` files.
 
 Prepare and inspect a reference image before submitting it:
 
@@ -61,7 +105,7 @@ Prepare and inspect a reference image before submitting it:
 
 Confirm tool availability, credentials, and that the project-local image exists in a supported actual format. `generate_image` may return WebP, while `generate_3d_asset` accepts PNG/JPEG. If conversion is needed, use available local image processing to change the actual encoding; renaming the extension is insufficient. Pass the compatible project-local path as `imagePath` to `generate_3d_asset` and reuse the platform's request, waiting, download, and save behavior.
 
-The current agent tool exposes only `imagePath`; leave model version, face count, topology, textures, and PBR to the platform defaults. Do not duplicate or override that configuration in the skill, assume a canvas node's custom settings are inherited, or add a Meshy client, credential store, or background task system. Do not impose fixed generation rounds, automatic batch retries, or a separate per-object approval workflow.
+In the current Meshy workflow, the agent tool exposes only `imagePath`; leave model version, face count, topology, textures, and PBR to the platform defaults. Do not duplicate or override that configuration in the skill, assume a canvas node's custom settings are inherited, or add a Meshy client, credential store, or background task system. Do not impose fixed generation rounds, automatic batch retries, or a separate per-object approval workflow.
 
 Readable API configuration does not prove that generation will succeed. If tools, credentials, format conversion, generation, download, or integration fail, record the affected subject, specific blocker, and incomplete state in `.world/validation-report.md`. Do not count a temporary substitute or lower the requirements to mark a failure as passed. Distinguish reference-image defects, generated-model defects, and integration defects when choosing a repair; changing model versions, increasing face counts, or relaxing design requirements is not evidence of success. Meshy quality, including back sides, thin parts, and required interiors, must be checked in the scene.
 
@@ -70,7 +114,7 @@ Readable API configuration does not prove that generation will succeed. If tools
 For new scenes, load selected models directly. Use temporary blockouts only when needed to check layout, dimensions, or passage space; they are not the final visual delivery. For an existing scene, first read the affected design and code to establish the subject's named region, location, target size, orientation, and interaction relationships. Load and check the replacement before removing the original visible geometry.
 
 - Reuse the project's GLB/glTF loading approach and existing asset preparation guidance; do not introduce a general asset framework.
-- Set scale, orientation, origin, and intended contact points. Inspect foundations, steps, and porches against the actual terrain or bearing surface using the grounding requirements below; bounding boxes alone do not establish contact.
+- Set scale, orientation, origin, and intended contact points. Inspect wall feet, entrances, and any designed foundations, steps, and porches against the actual terrain or bearing surface using the grounding requirements below; bounding boxes alone do not establish contact.
 - Check building entrances against connecting roads, surrounding passage space, and adjacent structures. Provide usable interiors, doors, and interaction parts when the design requires entering, passing through, or opening them. An exterior shell or a painted doorway does not prove a required interior is usable.
 - Coordinate materials, textures, lighting, and shadows with the scene. Inspect floating or intersecting parts, distorted proportions, and conflicting baked shadows at the intended viewing distance.
 - Reuse simple collision shapes where the existing experience needs them. Do not automatically use the detailed visible mesh as collision geometry or add a physics system.
@@ -81,7 +125,7 @@ Record the existing subject name, reference image and model paths, final scene r
 
 ## Terrain, roads, water, and asset placement
 
-For a new outdoor terrain world, execute [terrain-workflow.md](terrain-workflow.md) and the [direct-Astra handoff](terrain-direct-astra.md): actually view the selected references and generated top-down semantic image, pass the complete image and spatial brief directly to Astra, and let Astra modify the real Three.js project. The image is a macro design input, not a pixel mask or fixed shape vocabulary. Inspect macro landforms and the integrated road and water system from above, in panorama, and at a low angle before mass asset placement. Local revisions do not require a fresh image pipeline or 15 new subjects.
+For a new outdoor terrain world, execute [terrain-workflow.md](terrain-workflow.md) and the [agent handoff](terrain-agent-handoff.md): actually view the selected references and generated top-down semantic image, pass the complete image and spatial brief directly to the agent, and let the agent modify the real Three.js project. The image is a macro design input, not a pixel mask or fixed shape vocabulary. Inspect macro landforms and the integrated road and water system from above, in panorama, and at a low angle before mass asset placement. Local revisions do not require a fresh image pipeline or 15 new subjects.
 
 Terrain, roads, and the water system are one spatial system even when represented by separate meshes. Determine road alignments, grading, bridge approaches, crossings, and tunnel openings as well as river main stems, tributaries, lakes, riverbeds, banks, and shorelines together with the terrain, and finalize their supporting geometry during scene initialization. Roads and watercourses may participate in local terrain shaping; roads must not be added later as floating planes, and visible water must not be added without finalized beds, banks, and shores.
 
@@ -89,11 +133,17 @@ Use the same final terrain-road-water supporting geometry for rendering and supp
 
 ## Ground contact and connected support
 
-Make contact and support credible at the intended observation scale. Distinguish a foundation that fails to meet its bearing surface from an object whose supporting structure is missing; they need different corrections.
+Buildings default to direct contact with the finalized terrain, road, plaza, or other designed real bearing surface. A support-surface query locates that contact; it does not require adding another layer of geometry. Keep the project's own support queries or equivalent logic without imposing a fixed terrain API or schema.
+
+Add foundations, stepped bases, retaining walls, platforms, or raised supports only when the building design and local terrain justify them. Explain their relationship to slope, structure, local materials, entrances, roads, drainage, and neighbors. Do not generalize a special hillside solution to every building.
+
+Do not automatically add a uniform concrete slab, footprint-shaped rectangular pad, square base, shared generic platform, thick plane, or decorative foundation merely to hide grounding defects. A slab or rectangular foundation is allowed when the particular design, material, structure, and terrain justify it. First inspect model origin, transforms, placement, local terrain, entrance steps, retaining relationships, and real structural support. Repeated unexplained or automatically identical bases are a defect to repair, not a completed grounding solution.
+
+Verify building perimeter, entrance, and wall-foot contacts against the actual visible bearing surface, with a treatment appropriate to each building. Foundation presence alone does not pass. Distinguish an existing foundation that misses its bearing surface from genuinely missing designed support; they need different corrections.
 
 | Placement case | Required treatment |
 | --- | --- |
-| Long wall, broad base, or building on uneven terrain | Check footprint boundaries, endpoints, and intermediate positions as needed for its size and terrain variation, not only the center. Use a downward foundation, stepped base, local grading with retaining walls, or raised supports consistent with the design. |
+| Long wall, broad base, or building on uneven terrain | Check footprint boundaries, endpoints, and intermediate positions as needed for its size and terrain variation, not only the center. First correct placement and local ground contact. Add a foundation, stepped base, retaining wall, or raised support only when the particular design and terrain require it. |
 | Multiple posts or legs on a slope | Determine the bearing height at each foot and connect each support to the common upper structure; do not reuse a single center height for all feet. |
 | Object on a tabletop, deck, or platform | Locate its bottom against that actual bearing surface, accounting for local coordinates, scale, and rotation rather than using bare terrain height. |
 | Raised top, roof, platform, or suspended part | Build the required legs, cabinet, beams, brackets, or suspension and check that both ends connect. Scene-graph parenting alone does not establish geometric contact. |

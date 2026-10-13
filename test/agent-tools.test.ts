@@ -188,7 +188,7 @@ describe("agent tools", () => {
       prompt: expected.prompt, resolution: "2K", aspectRatio: "3:2",
       referenceImagePaths: images.map((extension) => `assets/generated/reference.${extension}`),
     }, controller.signal, undefined, {} as never);
-    expect(run).toHaveBeenCalledWith("generate-image", expected, controller.signal);
+    expect(run).toHaveBeenCalledWith("generate-image", expected, controller.signal, project.id);
     expect(generate).toHaveBeenCalledWith(expected, controller.signal);
     expect(result.details).toMatchObject({ artifact: { type: "image", mediaType: "image/png" } });
     expect(await readdir(path.join(dataDirectory, "tools", "runs"))).toEqual([]);
