@@ -1,4 +1,4 @@
-import type { CanvasGroup } from "./studio.js";
+import { validateHierarchy, type CanvasGroup } from "./studio.js";
 import type { CanvasTable } from "./canvas-table.js";
 import { Type } from "typebox";
 import { canvasNodeLayout } from "./canvas-node-layout.js";
@@ -108,6 +108,7 @@ export function mergeCanvasDocument(base: AssetCanvasDocument, local: AssetCanva
   const groups = mergeMap<CanvasGroup>(groupMap(base), groupMap(local), groupMap(remote));
   const groupLayout = mergeMap(base.editorLayout.groups ?? {}, local.editorLayout.groups ?? {}, remote.editorLayout.groups ?? {});
   if (!groups || !groupLayout || nodes.some((n) => n.groupId && !groups[n.groupId])) return;
+  try { validateHierarchy(Object.values(groups)); } catch { return; }
   const viewport = merge(base.viewport, local.viewport, remote.viewport);
   if (!viewport) return undefined;
   const ids = new Set(nodes.map((node) => node.id));

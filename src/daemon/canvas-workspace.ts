@@ -1,5 +1,5 @@
 import { captureWorkflow, instantiateWorkflow } from "../shared/studio-templates.js";
-import { PRODUCTION_SCHEMA, type WorkflowTemplate, type GenerationReceipt } from "../shared/studio.js";
+import { PRODUCTION_SCHEMA, renderPrompt, type WorkflowTemplate, type GenerationReceipt } from "../shared/studio.js";
 import type { StudioStore } from "./studio-store.js";
 import { CANVAS_TABLE_SCHEMA, createCanvasTable, isCanvasTable, canvasTablePath, type CanvasTable, type CanvasTableDetail } from "../shared/canvas-table.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -443,6 +443,10 @@ export class CanvasStore {
       if (current.revision !== expected) throw new CanvasError("Board changed before template insertion",409);
       for (const input of template.inputs) if (input.mediaType !== "text") {
         const asset = this.library.get(bindings[input.name]); if (!asset || asset.mediaType !== input.mediaType) throw new CanvasError(`Invalid input: ${input.name}`);
+      }
+      if (template.kind === "prompt") {
+        const source = createAssetCanvasDocument(); const node: AssetCanvasNode = { id: randomUUID(), type: "text", title: template.name, position: { x: 96, y: 96 }, template: { id: template.id, revision: template.revision }, data: { text: renderPrompt(template,values), instruction: "" } }; source.nodes = [node]; source.editorLayout.nodes[node.id] = node.position;
+        template = { ...template, kind: "workflow", board: source, variables: [], inputs: [] };
       }
       const fragment = instantiateWorkflow(template, values, bindings, { x: Math.max(0, ...current.board.nodes.map((n) => n.position.x + 560)), y: 96 });
       const docs = new Map<string,string>(), tables = new Map<string,string>();

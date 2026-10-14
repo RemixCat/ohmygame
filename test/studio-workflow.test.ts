@@ -1,4 +1,5 @@
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { TEST_GLB } from "./model3d-fixture.js";
+import { mkdtemp, rm, readFile, copyFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -56,10 +57,13 @@ async function fixture() {
   const generate = vi
     .fn()
     .mockResolvedValue({ bytes: Buffer.from("png"), mediaType: "image/png" });
+  const generate3D = vi
+    .fn()
+    .mockResolvedValue({ bytes: TEST_GLB, mediaType: "model/gltf-binary" });
   const tools = new ToolRunner(
     directory,
     { generate },
-    undefined,
+    { generate: generate3D },
     undefined,
     library,
     undefined,
@@ -78,6 +82,7 @@ async function fixture() {
     projects,
     studio,
     generate,
+    generate3D,
     tools,
     canvas,
     project,
@@ -311,6 +316,19 @@ describe("nested board groups", () => {
       (await f.canvas.board(f.project.id, f.boardId)).board.groups,
     ).toHaveLength(1);
     expect((await checkCanvasWorkspace(f.project.workspacePath)).ok).toBe(true);
+    for (const directory of ["boards", "editor"]) {
+      const base = path.join(
+        f.project.workspacePath,
+        "canvas",
+        directory,
+        f.boardId,
+      );
+      await copyFile(`${base}.v1-backup.json`, `${base}.json`);
+    }
+    const restored = await f.canvas.board(f.project.id, f.boardId);
+    expect(restored.board.version).toBe(1);
+    expect(restored.board.groups ?? []).toHaveLength(0);
+    expect((await checkCanvasWorkspace(f.project.workspacePath)).ok).toBe(true);
   });
 });
 
@@ -389,6 +407,144 @@ describe("production generation and workflow templates", () => {
     expect(receipts[0]?.receipt?.standard?.revision).toBe(1);
     expect(receipts[1]?.receipt?.standard?.revision).toBe(2);
   });
+  it("applies active reference images to Agent size requests and records animation direction", async () => {
+    const f = await fixture();
+    await standard(f);
+    const bytes = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF9sAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const reference = await f.library.add("fox.png", bytes);
+    const data = await f.studio.read<ProjectProduction>(f.project.id);
+    data.value.standards[0]!.draft.referenceIds = [reference.id];
+    data.value.standards[0]!.revisions.push({
+      revision: 2,
+      createdAt: "later",
+      content: structuredClone(data.value.standards[0]!.draft),
+    });
+    data.value.standards[0]!.activeRevision = 2;
+    await f.studio.save(data.value, data.revision, f.project.id);
+    await f.tools.run(
+      "generate-image",
+      { prompt: "Fox", size: "1536x1024" },
+      undefined,
+      f.project.id,
+    );
+    expect(f.generate.mock.calls[0]![0]).toMatchObject({
+      resolution: "1K",
+      aspectRatio: "3:2",
+      images: [{ data: bytes.toString("base64") }],
+    });
+    const imageModel = await f.tools.prepare(
+      "image-to-3d",
+      {
+        operation: "image",
+        images: [{ mediaType: "image/png", data: bytes.toString("base64") }],
+        prompt: undefined,
+      },
+      f.project.id,
+    );
+    expect(imageModel).not.toHaveProperty("prompt", expect.any(String));
+    expect(f.tools.productionFor(imageModel)?.effectivePrompt).toBe("");
+    const textModel = await f.tools.prepare(
+      "image-to-3d",
+      { operation: "text", images: [], prompt: "Fox" },
+      f.project.id,
+    );
+    expect(textModel).toHaveProperty("images", []);
+    expect(textModel).toHaveProperty(
+      "prompt",
+      expect.stringContaining("Copper and teal"),
+    );
+    const animation = await f.tools.prepare(
+      "animate-3d",
+      { assetId: reference.id, actionIds: ["walk"] },
+      f.project.id,
+    );
+    expect(f.tools.productionFor(animation)?.standard?.revision).toBe(2);
+  });
+  it("carries a reviewed character candidate through three views and 3D without inferring game integration", async () => {
+    const f = await fixture();
+    await standard(f);
+    const bytes = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF9sAAAAASUVORK5CYII=",
+      "base64",
+    );
+    f.generate.mockResolvedValue({ bytes, mediaType: "image/png" });
+    const d = await f.canvas.board(f.project.id, f.boardId);
+    const node = createAssetGenerationNode("image", { x: 96, y: 96 });
+    node.data.prompt = "Copper fox candidate";
+    d.board.nodes.push(node);
+    d.board.editorLayout.nodes[node.id] = node.position;
+    await f.canvas.saveBoard(f.project.id, d.board, d.revision);
+    const candidateJob = await f.canvas.generateNode(
+      f.project.id,
+      f.boardId,
+      node.id,
+    );
+    expect((await wait(f.canvas, f.project.id, candidateJob.id)).status).toBe(
+      "succeeded",
+    );
+    const candidateId = f.library.list()[0]!.id;
+    const seriesId = (await f.studio.read()).value.assets[candidateId]!
+      .seriesId!;
+    const p = await f.studio.read<ProjectProduction>(f.project.id);
+    p.value.reviews[candidateId] = {
+      ...emptyReview(),
+      roles: ["design"],
+      status: "approved",
+    };
+    p.value.selectedVersions[seriesId] = candidateId;
+    await f.studio.save(p.value, p.revision, f.project.id);
+    const target = await f.canvas.board(f.project.id, f.boardId);
+    await f.canvas.insertTemplate(
+      f.project.id,
+      f.boardId,
+      BUILTIN_WORKFLOWS[0]!,
+      { subject: "Copper fox" },
+      {},
+      target.revision,
+    );
+    const inserted = await f.canvas.board(f.project.id, f.boardId);
+    for (const view of inserted.board.nodes.filter(
+      (n) => n.id !== node.id && n.type === "image",
+    )) {
+      if (view.type !== "image") continue;
+      view.data.images.push({ type: "library", assetId: candidateId });
+    }
+    await f.canvas.saveBoard(f.project.id, inserted.board, inserted.revision);
+    const viewIds = inserted.board.nodes
+      .filter((n) => n.id !== node.id && n.type === "image")
+      .map((n) => n.id);
+    expect(viewIds).toHaveLength(3);
+    for (const id of viewIds) {
+      const job = await f.canvas.generateNode(f.project.id, f.boardId, id);
+      expect((await wait(f.canvas, f.project.id, job.id)).status).toBe(
+        "succeeded",
+      );
+    }
+    const result = await f.tools.run(
+      "image-to-3d",
+      {
+        images: [{ mediaType: "image/png", data: bytes.toString("base64") }],
+        targetPolycount: 8000,
+      },
+      undefined,
+      f.project.id,
+    );
+    expect(f.generate3D).toHaveBeenCalledOnce();
+    const modelId = result.files[0]!.assetId!;
+    expect(
+      (await f.studio.read()).value.assets[modelId]?.receipt?.standard
+        ?.revision,
+    ).toBe(1);
+    expect(
+      (await f.studio.read<ProjectProduction>(f.project.id)).value.reviews[
+        modelId
+      ]?.integration ?? "none",
+    ).toBe("none");
+    expect((await checkCanvasWorkspace(f.project.workspacePath)).ok).toBe(true);
+  });
   it("captures outside inputs, strips old results and clones template instances without execution", async () => {
     const { b, n, child } = grouped();
     if (n.type !== "image") throw new Error();
@@ -438,7 +594,11 @@ describe("production generation and workflow templates", () => {
     const f = await fixture(),
       doc = await f.canvas.createDocument(f.project.id, "Brief"),
       table = await f.canvas.createTable(f.project.id, "Stats");
-    doc.document.markdown = "A copper fox";
+    const reference = await f.library.add("reference.png", Buffer.from("png"));
+    await f.canvas.insertAsset(f.project.id, doc.document.id, reference.id);
+    const currentDoc = (await f.canvas.read(f.project.id, doc.document.id))!;
+    doc.document.markdown = "A copper fox" + currentDoc.document.markdown;
+    doc.revision = currentDoc.revision;
     await f.canvas.save(
       f.project.id,
       doc.document,
@@ -491,9 +651,87 @@ describe("production generation and workflow templates", () => {
     );
     const w = await f.canvas.workspace(f.other.id);
     expect(w.documents[0]?.id).not.toBe(doc.document.id);
-    expect(w.documents[0]?.markdown).toBe("A copper fox");
+    expect(w.documents[0]?.markdown).toContain("A copper fox");
+    expect(w.documents[0]?.markdown).toContain("../../assets/");
+    expect(w.assets).toHaveLength(1);
     expect(w.tables?.[0]?.id).not.toBe(table.table.id);
     expect((await checkCanvasWorkspace(f.other.workspacePath)).ok).toBe(true);
+  });
+  it("batches global tags and independent project reviews with query context and conflicts", async () => {
+    const f = await fixture();
+    const asset = await f.library.add("fox.png", Buffer.from("png"));
+    const data = await f.studio.read();
+    data.value.tags.push({ id: "copper", name: "Copper" });
+    data.value.smart.push({
+      id: "approved",
+      name: "Approved",
+      reviewProjectId: f.project.id,
+      filter: { status: "approved" },
+    });
+    const saved = await f.studio.save(data.value, data.revision);
+    await f.studio.batch({
+      assetIds: [asset.id],
+      revision: saved.revision,
+      addTags: ["copper"],
+      favorite: true,
+    });
+    await expect(
+      f.studio.batch({
+        assetIds: [asset.id],
+        revision: saved.revision,
+        favorite: false,
+      }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+    const first = await f.studio.read<ProjectProduction>(f.project.id);
+    await f.studio.batch({
+      assetIds: [asset.id],
+      revision: first.revision,
+      projectId: f.project.id,
+      roles: ["design"],
+      status: "approved",
+    });
+    const second = await f.studio.read<ProjectProduction>(f.other.id);
+    await f.studio.batch({
+      assetIds: [asset.id],
+      revision: second.revision,
+      projectId: f.other.id,
+      roles: ["reference"],
+      status: "rejected",
+    });
+    expect(
+      await f.studio.query(
+        { status: "approved", tags: ["copper"], favorite: true },
+        f.project.id,
+      ),
+    ).toHaveLength(1);
+    expect(
+      await f.studio.query({ status: "approved" }, f.other.id),
+    ).toHaveLength(0);
+    expect(await f.studio.query({ projectId: f.other.id })).toHaveLength(0);
+    expect((await f.studio.read()).value.smart[0]?.reviewProjectId).toBe(
+      f.project.id,
+    );
+  });
+  it("keeps outside image inputs in their original slots when instantiating templates", () => {
+    const { b, n, child } = grouped();
+    if (n.type !== "image") throw new Error();
+    n.data.images = [
+      { type: "node", nodeId: "front" },
+      { type: "library", assetId: "side" },
+      { type: "node", nodeId: "back" },
+    ];
+    const template = captureWorkflow(b, child, "Views");
+    expect(template.inputs.map((i) => i.index)).toEqual([0, 2]);
+    const instance = instantiateWorkflow(
+      template,
+      {},
+      { input_1: "bound-front", input_2: "bound-back" },
+    );
+    expect(instance.nodes[0]!.data).toHaveProperty("images", [
+      { type: "library", assetId: "bound-front" },
+      { type: "library", assetId: "side" },
+      { type: "library", assetId: "bound-back" },
+    ]);
   });
   it("serves organization routes with revision conflicts and bad-input validation", async () => {
     const f = await fixture(),

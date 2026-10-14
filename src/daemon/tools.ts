@@ -1,6 +1,6 @@
 import type { StudioStore } from "./studio-store.js";
 import type { GenerationReceipt } from "../shared/studio.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
@@ -225,12 +225,15 @@ export class ToolRunner {
   async prepare(toolId: string, input: RunToolRequest, projectId?: string, receipt?: GenerationReceipt, alreadyProduction = false): Promise<RunToolRequest> {
     if (!isToolId(toolId)) throw new ToolRunError("Tool not found", 404);
     const resolved = structuredClone(this.resolveInput ? await this.resolveInput(toolId, input, projectId) : input);
-    if (!this.studio || toolId === "animate-3d") return resolved;
+    if (!this.studio) return resolved;
     const { images: _images, references: _refs, prompt: _prompt, ...parameters } = resolved as RunToolRequest & { images?: unknown; references?: unknown; prompt?: string };
     const production = receipt ?? await this.studio.receipt(projectId, "prompt" in resolved ? resolved.prompt ?? "" : "", parameters);
-    if ("prompt" in resolved) resolved.prompt = production.effectivePrompt;
+    const modelOperation = toolId === "image-to-3d" ? (resolved as Run3DToolRequest).operation ?? "image" : undefined;
+    const acceptsPrompt = toolId === "generate-image" || toolId === "generate-video" || modelOperation === "text" || modelOperation === "retexture";
+    if (acceptsPrompt && "prompt" in resolved) resolved.prompt = production.effectivePrompt;
+    else if (!acceptsPrompt) production.effectivePrompt = production.originalPrompt;
     if (!alreadyProduction && production.referenceIds.length && this.assetLibrary) {
-      if (toolId === "generate-image" || (toolId === "image-to-3d" && (!("operation" in resolved) || !resolved.operation || resolved.operation === "image" || resolved.operation === "text"))) {
+      if (toolId === "generate-image" || (toolId === "image-to-3d" && (modelOperation === "image" || modelOperation === "retexture"))) {
         const images = "images" in resolved ? [...(resolved.images ?? [])] : [];
         for (const id of production.referenceIds) {
           const source = await this.assetLibrary.content(id);
@@ -238,11 +241,21 @@ export class ToolRunner {
           images.push({ mediaType: source.asset.contentType as PromptImage["mediaType"], data: (await readFile(source.absolutePath)).toString("base64") });
         }
         (resolved as RunToolRequest & { images: PromptImage[] }).images = images;
+        if (toolId === "generate-image") {
+          const image = resolved as RunImageToolRequest;
+          if (image.resolution === undefined && image.aspectRatio === undefined) {
+            const size = image.size ?? "1024x1024";
+            if (!isImageSize(size)) throw new ToolRunError("Unsupported image size", 400);
+            Object.assign(image, { resolution: "1K", aspectRatio: size === "1536x1024" ? "3:2" : size === "1024x1536" ? "2:3" : "1:1" });
+            delete image.size;
+          }
+        }
       } else if (toolId === "generate-video") {
         const video = resolved as RunVideoToolRequest;
         video.references = [...(video.references ?? []), ...production.referenceIds.map((assetId) => ({ type: "image" as const, assetId }))];
       }
     }
+    if (!alreadyProduction) production.references = [...("images" in resolved ? resolved.images ?? [] : []).map((image) => ({ mediaType: image.mediaType, sha256: createHash("sha256").update(Buffer.from(image.data, "base64")).digest("hex") })), ...("references" in resolved ? resolved.references ?? [] : []).map((r) => ({ mediaType: r.type, assetId: r.assetId }))];
     if (!alreadyProduction) { const { images: _i, references: _r, prompt: _p, ...actual } = resolved as RunToolRequest & { images?: unknown; references?: unknown; prompt?: string }; production.parameters = structuredClone(actual); }
     this.receipts.set(resolved, production); return resolved;
   }

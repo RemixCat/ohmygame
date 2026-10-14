@@ -43,6 +43,36 @@ export function registerStudioRoutes(
       }
     });
   }
+  app.post<{
+    Body: {
+      filter: import("../shared/studio.js").StudioFilter;
+      projectId?: string;
+    };
+  }>("/library/studio/query", async (req, reply) => {
+    try {
+      if (!req.body || typeof req.body.filter !== "object" || !req.body.filter)
+        throw new CanvasError("A filter is required");
+      return await store.query(req.body.filter, req.body.projectId);
+    } catch (e) {
+      return reply
+        .code(e instanceof CanvasError ? e.statusCode : 400)
+        .send({ error: String(e) });
+    }
+  });
+  app.post<{ Body: Parameters<StudioStore["batch"]>[0] }>(
+    "/library/studio/batch",
+    async (req, reply) => {
+      try {
+        if (!req.body || typeof req.body.revision !== "string")
+          throw new CanvasError("A revision is required");
+        return await store.batch(req.body);
+      } catch (e) {
+        return reply
+          .code(e instanceof CanvasError ? e.statusCode : 400)
+          .send({ error: String(e) });
+      }
+    },
+  );
   if (canvas) {
     app.post<{
       Params: { projectId: string };

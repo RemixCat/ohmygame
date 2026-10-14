@@ -42,6 +42,8 @@ export interface ProductionStandard {
   activeRevision?: number;
 }
 export interface AssetReview {
+  specificationStatus?: "pending" | "pass" | "fail";
+  specificationNotes?: string;
   roles: (typeof ASSET_ROLES)[number][];
   status: (typeof REVIEW_STATES)[number];
   notes: string;
@@ -56,6 +58,7 @@ export interface ProjectProduction {
   selectedVersions: Record<string, string>;
 }
 export interface GenerationReceipt {
+  references?: { assetId?: string; sha256?: string; mediaType: string }[];
   createdAt: string;
   originalPrompt: string;
   effectivePrompt: string;
@@ -114,6 +117,7 @@ export interface StudioFilter {
   includeReferences?: boolean;
 }
 export interface SmartCollection {
+  reviewProjectId?: string;
   id: string;
   name: string;
   filter: StudioFilter;
@@ -125,6 +129,7 @@ export interface TemplateVariable {
   required: boolean;
 }
 export interface TemplateInput {
+  index?: number;
   name: string;
   nodeId: string;
   field: "images" | "references" | "source" | "promptSource";
@@ -253,6 +258,8 @@ export const PRODUCTION_SCHEMA = obj({
   defaultStandardId: Type.Optional(id),
   reviews: record(
     obj({
+      specificationStatus: Type.Optional(choice(["pending", "pass", "fail"])),
+      specificationNotes: Type.Optional(text),
       roles: Type.Array(choice(ASSET_ROLES), { uniqueItems: true }),
       status: choice(REVIEW_STATES),
       notes: text,
@@ -287,6 +294,15 @@ const filter = obj({
   includeReferences: Type.Optional(Type.Boolean()),
 });
 const receipt = obj({
+  references: Type.Optional(
+    Type.Array(
+      obj({
+        assetId: Type.Optional(id),
+        sha256: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
+        mediaType: name,
+      }),
+    ),
+  ),
   overrides: Type.Optional(
     Type.Array(obj({ scope: text, content: STANDARD_OVERRIDES_SCHEMA })),
   ),
@@ -331,7 +347,10 @@ export const STUDIO_LIBRARY_SCHEMA = obj({
     maxItems: 2000,
   }),
   tags: Type.Array(obj({ id, name }), { maxItems: 2000 }),
-  smart: Type.Array(obj({ id, name, filter }), { maxItems: 200 }),
+  smart: Type.Array(
+    obj({ id, name, filter, reviewProjectId: Type.Optional(id) }),
+    { maxItems: 200 },
+  ),
   series: Type.Array(obj({ id, name, sourceKey: Type.Optional(text) }), {
     maxItems: 20000,
   }),
@@ -369,6 +388,7 @@ export const STUDIO_LIBRARY_SCHEMA = obj({
           nodeId: id,
           field: choice(["images", "references", "source", "promptSource"]),
           mediaType: choice(["image", "video", "model", "text"]),
+          index: Type.Optional(Type.Integer({ minimum: 0, maximum: 1000 })),
         }),
         { maxItems: 100 },
       ),
@@ -446,9 +466,15 @@ export function validateStudioLibrary(
   const p = value as unknown as StudioLibrary;
   validateHierarchy(p.folders);
   if (p.templateHistory?.length) {
-    const copy = { ...p, templateHistory: [], templates: p.templateHistory };
-    if (!Check(STUDIO_LIBRARY_SCHEMA, copy))
-      throw new Error("Invalid template history");
+    for (let index = 0; index < p.templateHistory.length; index += 500) {
+      const copy = {
+        ...p,
+        templateHistory: [],
+        templates: p.templateHistory.slice(index, index + 500),
+      };
+      if (!Check(STUDIO_LIBRARY_SCHEMA, copy))
+        throw new Error("Invalid template history");
+    }
   }
   for (const items of [p.tags, p.smart, p.series, p.templates])
     validateHierarchy(items);

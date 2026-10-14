@@ -15,6 +15,10 @@ import { canvasPath, CanvasError } from "./canvas-files.js";
 import { isAssetCanvasDocument } from "../shared/asset-canvas.js";
 import { isCanvasTable } from "../shared/canvas-table.js";
 import {
+  matchesStudioFilter,
+  emptyReview,
+  type StudioFilter,
+  type AssetReview,
   emptyProduction,
   emptyStudioLibrary,
   emptyAssetOrganization,
@@ -99,6 +103,7 @@ export class StudioStore {
     revision: string,
     projectId?: string,
   ): Promise<StudioEnvelope<T>> {
+    value = structuredClone(value);
     return this.serialize(projectId ?? "library", async () => {
       const current = await this.read<T>(projectId);
       if (current.revision !== revision)
@@ -114,9 +119,11 @@ export class StudioStore {
           production.selectedVersions,
         ))
           if (
-            !organization.series.some((s) => s.id === seriesId) ||
-            organization.assets[assetId]?.seriesId !== seriesId ||
-            !this.library.get(assetId)
+            production.selectedVersions[seriesId] !==
+              (current.value as ProjectProduction).selectedVersions[seriesId] &&
+            (!organization.series.some((s) => s.id === seriesId) ||
+              organization.assets[assetId]?.seriesId !== seriesId ||
+              !this.library.get(assetId))
           )
             throw new CanvasError("Selected version must belong to its series");
         for (const standard of production.standards)
@@ -209,6 +216,90 @@ export class StudioStore {
       value: structuredClone(value),
       revision: createHash("sha256").update(text).digest("hex"),
     };
+  }
+  async query(filter: StudioFilter, projectId?: string) {
+    const organization = (await this.read()).value;
+    const associations = await this.projects.libraryAssetAssociations(() => {});
+    const production = projectId
+      ? (await this.read<ProjectProduction>(projectId)).value
+      : undefined;
+    return this.library
+      .list()
+      .map((asset) => ({
+        ...asset,
+        projects: associations.get(asset.id)?.projects ?? [],
+        referenceOnly:
+          asset.purpose === "reference" &&
+          !associations.get(asset.id)?.hasAssetUsage,
+      }))
+      .filter((asset) =>
+        matchesStudioFilter(asset, organization, filter, production),
+      )
+      .map((asset) => ({
+        ...asset,
+        organization: organization.assets[asset.id] ?? emptyAssetOrganization(),
+        ...(production
+          ? {
+              review: production.reviews[asset.id] ?? emptyReview(),
+              current:
+                !!organization.assets[asset.id]?.seriesId &&
+                production.selectedVersions[
+                  organization.assets[asset.id]!.seriesId!
+                ] === asset.id,
+            }
+          : {}),
+      }));
+  }
+  async batch(input: {
+    assetIds: string[];
+    revision: string;
+    projectId?: string;
+    addTags?: string[];
+    removeTags?: string[];
+    addFolders?: string[];
+    removeFolders?: string[];
+    favorite?: boolean;
+    roles?: AssetReview["roles"];
+    status?: AssetReview["status"];
+  }) {
+    if (
+      !Array.isArray(input.assetIds) ||
+      input.assetIds.length > 1000 ||
+      !input.assetIds.length ||
+      input.assetIds.some((id) => !this.library.get(id))
+    )
+      throw new CanvasError("Choose existing assets for batch editing");
+    if (input.projectId) {
+      if (
+        input.addTags ||
+        input.removeTags ||
+        input.addFolders ||
+        input.removeFolders ||
+        input.favorite !== undefined
+      )
+        throw new CanvasError("Use the global endpoint for organization");
+      const data = await this.read<ProjectProduction>(input.projectId);
+      for (const id of input.assetIds) {
+        const review = (data.value.reviews[id] ??= emptyReview());
+        if (input.roles) review.roles = input.roles;
+        if (input.status) review.status = input.status;
+      }
+      return this.save(data.value, input.revision, input.projectId);
+    }
+    if (input.roles || input.status)
+      throw new CanvasError("Project context is required for review");
+    const data = await this.read();
+    for (const id of input.assetIds) {
+      const a = (data.value.assets[id] ??= emptyAssetOrganization());
+      a.tags = [...new Set([...a.tags, ...(input.addTags ?? [])])].filter(
+        (id) => !input.removeTags?.includes(id),
+      );
+      a.folders = [
+        ...new Set([...a.folders, ...(input.addFolders ?? [])]),
+      ].filter((id) => !input.removeFolders?.includes(id));
+      if (input.favorite !== undefined) a.favorite = input.favorite;
+    }
+    return this.save(data.value, input.revision);
   }
   async receipt(
     projectId: string | undefined,

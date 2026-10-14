@@ -191,18 +191,39 @@ export function captureWorkflow(
       const key = `${node.id}:${field}:${ref.type === "node" ? ref.nodeId : ref.assetId}`;
       if (!inputs.has(key)) {
         inputs.add(key);
+        const original = board.nodes.find((n) => n.id === node.id);
+        const references =
+          original && field in original.data
+            ? (original.data as unknown as Record<string, unknown>)[field]
+            : undefined;
+        const index = Array.isArray(references)
+          ? references.findIndex(
+              (r) => JSON.stringify(r) === JSON.stringify(ref),
+            )
+          : -1;
         template.inputs.push({
+          ...(index >= 0 ? { index } : {}),
           name: `input_${template.inputs.length + 1}`,
           nodeId: node.id,
           field,
           mediaType:
-            field === "promptSource" ||
-            node.type === "text" ||
-            node.type === "document"
+            field === "promptSource"
               ? "text"
               : field === "source"
                 ? "model"
-                : "image",
+                : field === "images" || node.type === "video"
+                  ? "image"
+                  : (() => {
+                      const target =
+                        ref.type === "node"
+                          ? board.nodes.find((n) => n.id === ref.nodeId)
+                          : undefined;
+                      return target?.type === "image" ||
+                        (target?.type === "asset" &&
+                          target.data.mediaType === "image")
+                        ? "image"
+                        : "text";
+                    })(),
         });
       }
       return undefined;
@@ -243,17 +264,43 @@ export function instantiateWorkflow(
         (node.type === "text" || node.type === "document") &&
         input.field === "references"
       )
-        (node.data.references ??= []).push({ type: "node", nodeId: source.id });
+        (node.data.references ??= []).splice(
+          input.index ?? node.data.references.length,
+          0,
+          { type: "node", nodeId: source.id },
+        );
     } else {
       const ref = { type: "library" as const, assetId: value };
       if (
         input.field === "images" &&
         (node.type === "image" || node.type === "model-3d")
       )
-        node.data.images.push(ref);
+        node.data.images.splice(input.index ?? node.data.images.length, 0, ref);
       else if (input.field === "references" && node.type === "video")
-        node.data.references.push(ref);
+        node.data.references.splice(
+          input.index ?? node.data.references.length,
+          0,
+          ref,
+        );
       else if (
+        input.field === "references" &&
+        (node.type === "text" || node.type === "document")
+      ) {
+        const source: AssetCanvasNode = {
+          id: crypto.randomUUID(),
+          type: "asset",
+          position: { x: node.position.x - 550, y: node.position.y },
+          ...(node.groupId ? { groupId: node.groupId } : {}),
+          data: { assetId: value, mediaType: input.mediaType },
+        };
+        board.nodes.push(source);
+        board.editorLayout.nodes[source.id] = source.position;
+        (node.data.references ??= []).splice(
+          input.index ?? node.data.references.length,
+          0,
+          { type: "node", nodeId: source.id },
+        );
+      } else if (
         input.field === "source" &&
         (node.type === "model-3d" || node.type === "animate-3d")
       )
@@ -311,6 +358,7 @@ export const BUILTIN_WORKFLOWS: WorkflowTemplate[] = [
     n.id = `step_${i}`;
     n.data.prompt = prompt;
     n.groupId = "production";
+    n.title = id === "object-views" ? ["Front", "Side", "Back"][i] : id;
     return n;
   });
   board.editorLayout.nodes = Object.fromEntries(
