@@ -137,6 +137,11 @@ Library references. IDs, Markdown, media and layout are preserved. It leaves
 current projects alone. The application only reads the current format.
 
 Both editors share nodes, documents, metadata, generation, history, clipboard,
-file uploads and external file synchronization. Asset Canvas uses one default
-board and retains automatic covers and sending assets to projects. Game
+file uploads and external file synchronization. Asset Canvas supports multiple
+boards and retains automatic covers and sending assets to projects. Game
 projects expose multiple boards and an optional main game design document.
+
+
+## Production extensions
+
+Format 2 boards support nested groups, node/group standard selection and local direction overrides. Layout group positions and collapse state remain in `canvas/editor`. Project `canvas/production.json` stores draft/activated standards, per-project review and selected versions. Preserve historical revisions and receipts. See [studio-workflow.md](studio-workflow.md) and [rollback](studio-rollback.md).

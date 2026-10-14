@@ -238,3 +238,8 @@ bun run dev:desktop    # Electron 桌面应用
 ## 许可证
 
 [Apache-2.0](LICENSE)。OhMyGame 的名称和标志不在该许可证的授权范围内。
+
+
+### 素材与制作规范
+
+项目包含独立“规范”页，素材库支持收藏夹、标签、项目审阅与版本系列，画板支持多画板、嵌套组和制作模板。参阅 [制作工作流](docs/studio-workflow.zh-CN.md) 与 [回退说明](docs/studio-rollback.md)。

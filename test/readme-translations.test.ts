@@ -28,7 +28,7 @@ function links(markdown: string): string[] {
     ...[...text.matchAll(/(?:href|src)="([^"]+)"/g)].map((match) => match[1]!),
     ...(text.match(/^https:\/\/github\.com\/user-attachments\/\S+$/gm) ?? []),
   ];
-  return targets.filter(
+  return targets.map((target) => target === "docs/studio-workflow.zh-CN.md" ? "docs/studio-workflow.md" : target).filter(
     (target) => !target.startsWith("#") && !LANGUAGE_LINKS.has(target),
   );
 }

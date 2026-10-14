@@ -278,3 +278,8 @@ Report security issues using [SECURITY.md](SECURITY.md).
 
 [Apache-2.0](LICENSE). The OhMyGame name and logo are not covered by the
 license.
+
+
+### Assets and production standards
+
+Projects include a Standards page. The Library supports folders, tags, project reviews and version series; canvases support multiple boards, nested groups and production templates. See [studio workflow](docs/studio-workflow.md) and [rollback](docs/studio-rollback.md).
