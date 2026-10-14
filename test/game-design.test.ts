@@ -14,6 +14,7 @@ import { ImageGenerationError, type ImageGenerator } from "../src/daemon/openai-
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createCanvasDocument, canvasDocumentPath, mergeCanvasDocumentContent } from "../src/shared/canvas-document.js";
 import { createAssetGenerationNode } from "../src/shared/asset-canvas.js";
+import { THREE_VIEWS, viewPrompt } from "../src/shared/canvas-quick-actions.js";
 import { fitCanvasLayout, mergeCanvasDocument } from "../src/shared/canvas-workspace.js";
 import { isCanvasDocument } from "../src/shared/canvas-document-schema.js";
 import type { AssetCanvasNode, ProjectType, ToolRun, RunToolRequest } from "../src/shared/contracts.js";
@@ -44,6 +45,53 @@ async function waitForJob(store: CanvasStore, projectId: string) {
   return (await store.jobs(projectId))[0]!;
 }
 describe("Markdown design workspace", () => {
+  it("generates independent shortcut outputs with readable Library and project names, preserving batch metadata", async () => {
+    const generate = vi.fn(fakeGenerator.generate);
+    const { store, project, boardId, library } = await runtime({ generate });
+    await mkdir(path.join(project.workspacePath, "assets"), { recursive: true });
+    await writeFile(path.join(project.workspacePath, "assets/reference.png"), "reference image");
+    await writeFile(path.join(project.workspacePath, "canvas/assets.json"), JSON.stringify({ version: 1, assets: { reference: { name: "Ship reference", path: "assets/reference.png" } } }));
+    const detail = await store.board(project.id, boardId);
+    const images = THREE_VIEWS.map((view, index) => {
+      const image = createAssetGenerationNode("image", { x: 480, y: index * 560 });
+      if (image.type !== "image") throw new Error("Expected image node");
+      image.title = `Ship - ${view}`;
+      image.quickAction = { kind: "views", sourceNodeId: "source", groupId: "controller", itemId: view };
+      image.data.images = [{ type: "node", nodeId: "source" }];
+      image.data.promptSource = { type: "node", nodeId: "controller" };
+      image.data.prompt = viewPrompt(view);
+      return image;
+    });
+    detail.board.nodes = [
+      { id: "source", type: "asset", position: { x: 0, y: 0 }, data: { mediaType: "image", assetId: "reference" } },
+      { id: "controller", type: "text", position: { x: 0, y: 560 }, data: { text: "Silver ship", instruction: "" }, quickAction: { kind: "views", sourceNodeId: "source" } },
+      ...images,
+    ];
+    detail.board.editorLayout.nodes = Object.fromEntries(detail.board.nodes.map((node) => [node.id, node.position]));
+    await store.saveBoard(project.id, detail.board, detail.revision);
+    for (const image of images) {
+      await store.generateNode(project.id, boardId, image.id);
+      expect((await waitForJob(store, project.id)).status).toBe("succeeded");
+    }
+    const jobs = await store.jobs(project.id);
+    expect(new Set(jobs.map((job) => job.run!.files[0]!.assetId)).size).toBe(3);
+    expect(generate).toHaveBeenCalledTimes(3);
+    for (const [input] of generate.mock.calls) {
+      expect(input.images).toEqual([{ mediaType: "image/png", data: Buffer.from("reference image").toString("base64") }]);
+      expect(input.prompt).toContain("Silver ship");
+    }
+    const assets = await readCanvasAssets(project.workspacePath);
+    const reloaded = await store.board(project.id, boardId);
+    for (const image of images) {
+      const output = jobs.find((job) => job.context?.nodeId === image.id)!.run!.files[0]!;
+      expect(output.name).toBe(`${image.title}.png`);
+      expect(library.get(output.assetId!)?.name).toBe(output.name);
+      expect(assets.assets[output.assetId!]).toMatchObject({ name: output.name });
+      expect(await readFile(path.join(project.workspacePath, assets.assets[output.assetId!]!.path), "utf8")).toBe("image");
+      expect(reloaded.board.nodes.find((candidate) => candidate.id === image.id)).toMatchObject({ quickAction: image.quickAction, data: { assetId: output.assetId } });
+    }
+  });
+
   it("persists node sizes in layout files and merges resizing with content edits", async () => {
     const { store, project, boardId } = await runtime();
     const detail = await store.board(project.id, boardId);

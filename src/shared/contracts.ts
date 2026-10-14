@@ -452,6 +452,28 @@ export interface AssetCanvasTextGenerationResponse {
   model: AgentModelRef;
 }
 
+/** Optional canvas shortcuts expand to ordinary nodes; generation uses their normal data. */
+export interface CanvasRecognizedObject {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  selected: boolean;
+}
+
+export interface CanvasQuickAction {
+  kind: "describe" | "objects" | "views" | "image" | "model-3d";
+  sourceNodeId: string;
+  /** Output nodes point to their text controller. */
+  groupId?: string;
+  itemId?: string;
+  objects?: CanvasRecognizedObject[];
+  imageModel?: ImageModelRef;
+  resolution?: ImageResolution;
+  aspectRatio?: ImageAspectRatio;
+  background?: "plain" | "transparent";
+}
+
 export type AssetCanvasNode = (
   | { id: string; type: "table"; position: AssetCanvasPosition; data: { tableId: string } }
   | { id: string; type: "document"; position: AssetCanvasPosition; data: { documentId: string; references?: AssetCanvasTextReference[] } }
@@ -510,7 +532,7 @@ export type AssetCanvasNode = (
     actionIds: Model3DActionId[];
     assetId?: string;
   } }
-) & { title?: string; description?: string; width?: number; height?: number };
+) & { title?: string; description?: string; width?: number; height?: number; quickAction?: CanvasQuickAction };
 
 export interface AssetCanvasEdge {
   id: string;

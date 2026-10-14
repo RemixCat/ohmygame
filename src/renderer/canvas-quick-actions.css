@@ -1,0 +1,104 @@
+.canvas-quick-panel {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  bottom: 60px;
+  z-index: 12;
+  width: min(360px, calc(100% - 24px));
+  overflow-y: auto;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: 0 12px 36px #0003;
+  font-size: 12px;
+}
+.canvas-quick-panel header,
+.canvas-quick-object-heading,
+.canvas-quick-results li > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.canvas-quick-panel header {
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+.canvas-quick-panel p {
+  line-height: 1.6;
+  opacity: 0.8;
+  margin: 8px 0;
+}
+.canvas-quick-panel label {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0;
+}
+.canvas-quick-panel input:not([type="checkbox"]),
+.canvas-quick-panel select,
+.canvas-quick-panel textarea {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px;
+  font: inherit;
+}
+.canvas-quick-panel textarea {
+  min-height: 58px;
+  resize: vertical;
+}
+.canvas-quick-panel button {
+  font: inherit;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: inherit;
+  border-radius: 6px;
+  padding: 7px 9px;
+  cursor: pointer;
+}
+.canvas-quick-panel button:disabled,
+.canvas-quick-panel fieldset:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.canvas-quick-panel fieldset {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 12px 0;
+  padding: 10px;
+}
+.canvas-quick-panel .canvas-quick-error {
+  color: var(--danger);
+  opacity: 1;
+  overflow-wrap: anywhere;
+}
+.canvas-quick-panel a {
+  color: var(--accent);
+}
+.canvas-quick-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.canvas-quick-results {
+  padding: 0;
+  list-style: none;
+}
+.canvas-quick-results li {
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.canvas-quick-results [data-status="succeeded"] {
+  color: #64b98c;
+}
+.canvas-quick-results [data-status="failed"] {
+  color: #e78585;
+}

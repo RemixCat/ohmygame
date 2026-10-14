@@ -56,6 +56,7 @@ import { clipboardFiles, hasTransferredFiles, pasteNativeFiles, transferredFiles
 import { CanvasContextMenu, EditorCanvas, isTextEntry, undoShortcut, useCanvasCenter, type CanvasContextMenuState } from "./editor-canvas.js";
 import {
   IMAGE_MAX_REFERENCE_IMAGES,
+  type CanvasQuickAction,
   type AssetCanvasDocument,
   type AssetCanvasEditorLayout,
   type AssetCanvasNode,
@@ -119,7 +120,10 @@ import { CanvasTextarea, CanvasTextComposer } from "./canvas-text-composer.js";
 import { VideoReferencePrompt } from "./video-reference-prompt.js";
 import { resolveVideoMentions, sameVideoReference, videoReferenceAliases, videoReferenceAspectRatios, videoReferenceLimit, videoReferenceMode } from "../shared/video-references.js";
 import { CanvasNodeReferenceStrip, CanvasReferenceThumbnail, type CanvasNodeReferencesRuntime } from "./canvas-node-references.js";
-import { t, tNodes } from "./i18n.js";
+import { t, tNodes, language } from "./i18n.js";
+import { QUICK_ACTIONS, THREE_VIEWS, DESCRIPTION_INSTRUCTION, OBJECTS_INSTRUCTION, parseRecognizedObjects, quickImageSettings, viewPrompt, type CanvasQuickActionKind } from "../shared/canvas-quick-actions.js";
+import { CanvasBatchRunner } from "./canvas-batch-runner.js";
+import { CanvasQuickActionsPanel } from "./canvas-quick-actions-panel.js";
 
 const ASSET_EDGE_PREFIX = "asset:";
 const OUTPUT_HANDLE = "out";
@@ -224,7 +228,7 @@ type AssetCanvasFlowData = {
   animateRuntime?: Animate3DNodeRuntime;
   textRuntime?: TextNodeRuntime;
 };
-type AssetCanvasFlowNode = Node<AssetCanvasFlowData, AssetCanvasNodeType> & { title?: string; description?: string };
+type AssetCanvasFlowNode = Node<AssetCanvasFlowData, AssetCanvasNodeType> & { title?: string; description?: string; quickAction?: CanvasQuickAction };
 
 interface MediaNodeRuntime {
   generating: boolean;
@@ -354,6 +358,16 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   }, []);
   const [selectedAssetEdgeId, setSelectedAssetEdgeId] = useState<string>();
   const [canvasContextMenu, setCanvasContextMenu] = useState<CanvasContextMenuState>();
+  const [quickMenu, setQuickMenu] = useState<{ sourceId: string; screenPosition: { x: number; y: number }; flowPosition: { x: number; y: number } }>();
+  const batchRunner = useRef<CanvasBatchRunner | undefined>(undefined);
+  const [batchOwner, setBatchOwner] = useState<string>();
+  const [, setBatchRevision] = useState(0);
+  const [batchErrors, setBatchErrors] = useState<Record<string, string>>({});
+  const [batchCancelled, setBatchCancelled] = useState<ReadonlySet<string>>(() => new Set());
+  useEffect(() => {
+    setBatchOwner(undefined); setBatchErrors({}); setBatchCancelled(new Set()); setQuickMenu(undefined);
+    return () => { batchRunner.current?.stop(false); batchRunner.current = undefined; };
+  }, [storage.key]);
   const [expandedTextId, setExpandedTextId] = useState<string>();
   // A marquee arranges nodes; explicitly activating a node opens its panel.
   const [marqueeActive, setMarqueeActive] = useState(false);
@@ -400,6 +414,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   const startingCanvasNodesRef = useRef(new Set<string>());
   const hydratedJobRuns = useRef(new Set<string>());
   const [generatingTextNodeId, setGeneratingTextNodeId] = useState<string>();
+  const generatingTextNodeRef = useRef<string | undefined>(undefined);
   const [uploadingNodeId, setUploadingNodeId] = useState<string>();
   const [importingAssets, setImportingAssets] = useState(false);
   const [generationError, setGenerationError] = useState<{ nodeId: string; message: string }>();
@@ -951,6 +966,130 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   const canUndo = Boolean(historyPendingBase.current || editorUndoHistory.current.length);
   const canRedo = !historyPendingBase.current && editorRedoHistory.current.length > 0;
 
+  function isImageSource(node: AssetCanvasFlowNode | undefined): boolean {
+    return Boolean(node && (node.type === "image" || (node.type === "asset" && node.data.mediaType === "image")));
+  }
+
+  function quickSourceAvailable(sourceId: string): boolean {
+    const source = nodes.find((node) => node.id === sourceId);
+    return Boolean(isImageSource(source) && source?.data.assetId && !source.data.assetError);
+  }
+
+  function insertQuickNodes(created: AssetCanvasFlowNode[]): boolean {
+    if (nodesRef.current.length + created.length > MAX_ASSET_CANVAS_NODES) {
+      setNotice({ kind: "action", message: t("canvasQuick.nodeLimit") }); return false;
+    }
+    beginHistoryGesture();
+    flushSync(() => setNodes((current) => [...current.map((node) => ({ ...node, selected: false })), ...created]));
+    finishHistoryGesture();
+    return true;
+  }
+
+  function quickNode(type: "text" | "image" | "model-3d", at: { x: number; y: number }): AssetCanvasFlowNode {
+    const node = applyRememberedSettings(createFlowNode(type, snapCanvasPosition(at), imageModels, videoModels, defaultTextModel), rememberedSettings.current[type], { imageModels, defaultImageModel, videoModels, defaultVideoModel, model3DModels, defaultModel3D, textModels: textModelCatalog.models });
+    if (type === "image" && !defaultImageModel) { const { model: _model, ...data } = node.data; return { ...node, data }; }
+    return node;
+  }
+
+  function createQuickAction(kind: CanvasQuickActionKind, sourceId: string, at: { x: number; y: number }): void {
+    const source = nodes.find((node) => node.id === sourceId);
+    if (!isImageSource(source)) return;
+    const name = (source?.title || source?.data.name || t("assetCanvas.node.image")).slice(0, 140);
+    const action: CanvasQuickAction = { kind, sourceNodeId: sourceId };
+    if (kind === "objects" || kind === "views") {
+      const image = quickNode("image", at);
+      const controller = quickNode("text", at);
+      controller.title = `${name} · ${t(`canvasQuick.${kind}`)}`.slice(0, 200);
+      controller.selected = true;
+      controller.quickAction = { ...action, resolution: image.data.resolution, aspectRatio: image.data.aspectRatio, ...(kind === "objects" ? { objects: [], background: "plain" as const } : {}) };
+      controller.data.references = [{ type: "node", nodeId: sourceId }];
+      controller.data.instruction = kind === "objects" ? `${OBJECTS_INSTRUCTION}\nUse ${language === "zh-CN" ? "Chinese" : "English"} for names and descriptions.` : "";
+      controller.data.text = "";
+      const outputs = kind === "views" ? THREE_VIEWS.map((view, index) => {
+        const node = quickNode("image", { x: at.x + 480, y: at.y + index * 560 });
+        node.title = `${name} · ${t(`canvasQuick.${view}`)}`.slice(0, 200);
+        node.quickAction = { ...action, groupId: controller.id, itemId: view };
+        node.data = { ...node.data, images: [{ type: "node", nodeId: sourceId }], promptSource: { type: "node", nodeId: controller.id }, prompt: viewPrompt(view) };
+        return node;
+      }) : [];
+      insertQuickNodes([controller, ...outputs]);
+    } else {
+      const node = quickNode(kind === "describe" ? "text" : kind, at);
+      node.title = `${name} · ${t(`canvasQuick.${kind}`)}`.slice(0, 200);
+      node.quickAction = action; node.selected = true;
+      if (kind === "describe") node.data = { ...node.data, references: [{ type: "node", nodeId: sourceId }], instruction: `${DESCRIPTION_INSTRUCTION}\nRespond in ${language === "zh-CN" ? "Chinese" : "English"}.` };
+      else node.data = { ...node.data, images: [{ type: "node", nodeId: sourceId }] };
+      insertQuickNodes([node]);
+    }
+    setQuickMenu(undefined); setCanvasContextMenu(undefined);
+  }
+
+  function changeQuickAction(id: string, quickAction: CanvasQuickAction, text?: string, model?: AgentModelRef): void {
+    setNodes((current) => current.map((node) => node.id === id ? { ...node, quickAction, data: { ...node.data, ...(text !== undefined ? { text } : {}), ...(model ? { textModel: model } : {}) } } : node));
+  }
+
+  async function runQuickBatch(controller: AssetCanvasFlowNode, retryOnly = false, onlyId?: string): Promise<void> {
+    if (batchRunner.current || generatingTextNodeRef.current) return;
+    const storedAction = controller.quickAction;
+    if (!storedAction) return;
+    const settings = quickImageSettings(storedAction, imageModels, defaultImageModel);
+    const action = { ...storedAction, imageModel: settings.reference, resolution: settings.resolution ?? storedAction.resolution, aspectRatio: settings.aspectRatio ?? storedAction.aspectRatio };
+    const fail = (message: string) => setGenerationError({ nodeId: controller.id, message });
+    if (startingCanvasNodesRef.current.size || Object.values(canvasJobs).some((job) => job.status === "running")) { fail(t("canvasQuick.busy")); return; }
+    if (!quickSourceAvailable(action.sourceNodeId)) { fail(t("canvasQuick.missingSource")); return; }
+    const model = settings.model;
+    if (!action.imageModel) { fail(t("canvasQuick.missingImageModel")); return; }
+    if (!model?.supportsReferenceImage) { fail(t("canvasQuick.unsupportedImageModel")); return; }
+    let members = nodesRef.current.filter((node) => node.type === "image" && node.quickAction?.groupId === controller.id);
+    if (action.kind === "objects" && !retryOnly && !onlyId) {
+      const selected = (action.objects ?? []).filter((item) => item.selected && item.name.trim() && item.prompt.trim());
+      if (!selected.length) { fail(t("canvasQuick.noSelection")); return; }
+      const created = selected.filter((item) => !members.some((node) => node.quickAction?.itemId === item.id)).map((item, index) => {
+        const node = quickNode("image", { x: controller.position.x + 480 + (index % 3) * 480, y: controller.position.y + Math.floor(index / 3) * 560 });
+        node.title = item.name.slice(0, 200);
+        node.quickAction = { kind: "objects", sourceNodeId: action.sourceNodeId, groupId: controller.id, itemId: item.id };
+        node.data = { ...node.data, images: [{ type: "node", nodeId: action.sourceNodeId }], prompt: `${item.prompt}\n${action.background === "transparent" ? "Isolate on a transparent background with alpha, no shadow or backdrop." : "Isolate on a plain neutral background."}` };
+        return node;
+      });
+      if (created.length && !insertQuickNodes(created)) return;
+      members = [...members, ...created].filter((node) => selected.some((item) => item.id === node.quickAction?.itemId));
+      // Preserve the controller selection so the batch controls stay visible.
+      flushSync(() => setNodes((current) => current.map((node) => ({ ...node, selected: node.id === controller.id }))));
+    }
+    const targets = members.filter((node) => {
+      if (onlyId) return node.id === onlyId;
+      const status = canvasJobs[node.id]?.status;
+      if (retryOnly) return status === "failed" || status === "cancelled" || batchCancelled.has(node.id) || Boolean(batchErrors[node.id]);
+      return !node.data.assetId && status !== "succeeded" && status !== "running";
+    });
+    if (!targets.length) return;
+    const ids = new Set(targets.map((node) => node.id));
+    flushSync(() => setNodes((current) => current.map((node) => {
+      if (!ids.has(node.id)) return node;
+      const item = action.kind === "objects" && !onlyId ? action.objects?.find((item) => item.id === node.quickAction?.itemId) : undefined;
+      return { ...node, ...(item ? { title: item.name.slice(0, 200) } : {}), data: { ...node.data, ...(item ? { prompt: `${item.prompt}\n${action.background === "transparent" ? "Isolate on a transparent background with alpha, no shadow or backdrop." : "Isolate on a plain neutral background."}` } : {}), model: action.imageModel, resolution: action.resolution ?? node.data.resolution, aspectRatio: action.aspectRatio ?? node.data.aspectRatio } };
+    })));
+    setGenerationError(undefined);
+    setBatchErrors((current) => Object.fromEntries(Object.entries(current).filter(([id]) => !ids.has(id))));
+    setBatchCancelled((current) => new Set([...current].filter((id) => !ids.has(id))));
+    const boardStorage = storageRef.current;
+    const runner = new CanvasBatchRunner([...ids], async (id) => {
+      if (!nodesRef.current.some((node) => node.id === id)) throw new Error(t("assetCanvas.missingNode"));
+      startingCanvasNodesRef.current.add(id); setStartingCanvasNodes((current) => new Set(current).add(id));
+      try {
+        await flush();
+        const job = await boardStorage.generate(id);
+        setCanvasJobs((current) => ({ ...current, [id]: job })); return job;
+      } finally {
+        startingCanvasNodesRef.current.delete(id);
+        setStartingCanvasNodes((current) => { const next = new Set(current); next.delete(id); return next; });
+      }
+    }, () => boardStorage.jobs(), (id) => boardStorage.cancel(id), () => setBatchRevision((current) => current + 1), (id, error) => setBatchErrors((current) => ({ ...current, [id]: errorMessage(error) })));
+    batchRunner.current = runner; setBatchOwner(controller.id);
+    try { await runner.run(); }
+    finally { if (batchRunner.current === runner) { setBatchCancelled((current) => new Set([...current, ...runner.cancelled])); batchRunner.current = undefined; setBatchOwner(undefined); } }
+  }
+
   function addNode(type: Exclude<AssetCanvasNodeType, "asset">, position: { x: number; y: number }, existingResourceId?: string): void {
     if (type === "document" || type === "table") {
       void (existingResourceId ? Promise.resolve(existingResourceId) : type === "document" ? documents.add() : tables.add()).then((id) => {
@@ -1167,24 +1306,32 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   }
 
   async function generateTextNode(node: AssetCanvasFlowNode, model: AgentModelRef, reasoningLevel: AgentReasoningLevel): Promise<void> {
-    if (node.type !== "text" || generatingTextNodeId) return;
+    if (node.type !== "text" || generatingTextNodeRef.current || batchRunner.current) return;
     const instruction = node.data.instruction?.trim();
     if (!instruction) {
       setGenerationError({ nodeId: node.id, message: t("assetCanvas.instructionRequired") });
       return;
     }
+    generatingTextNodeRef.current = node.id;
     setGeneratingTextNodeId(node.id);
     setGenerationError(undefined);
     try {
       const referenceSource = { boardId: storage.boardId, nodeId: node.id };
       await documents.flush();
+      await flush();
       const result = await generateCanvasText(projectId, instruction, model, reasoningLevel, referenceSource);
+      let objects: CanvasQuickAction["objects"];
+      if (node.quickAction?.kind === "objects") {
+        try { objects = parseRecognizedObjects(result.text); }
+        catch { throw new Error(t("canvasQuick.invalidObjects")); }
+      }
       setNodes((current) => current.map((candidate) => candidate.id === node.id
-        ? { ...candidate, data: { ...candidate.data, text: result.text, textModel: result.model, reasoningLevel } }
+        ? { ...candidate, ...(objects && candidate.quickAction ? { quickAction: { ...candidate.quickAction, objects } } : {}), data: { ...candidate.data, text: result.text, textModel: result.model, reasoningLevel } }
         : candidate));
     } catch (error) {
       setGenerationError({ nodeId: node.id, message: errorMessage(error) });
     } finally {
+      generatingTextNodeRef.current = undefined;
       setGeneratingTextNodeId(undefined);
     }
   }
@@ -1259,7 +1406,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   }
 
   async function generateMedia(node: AssetCanvasFlowNode): Promise<void> {
-    if (canvasJobs[node.id]?.status === "running" || startingCanvasNodesRef.current.has(node.id)) return;
+    if (batchRunner.current || canvasJobs[node.id]?.status === "running" || startingCanvasNodesRef.current.has(node.id)) return;
     startingCanvasNodesRef.current.add(node.id);
     setStartingCanvasNodes((current) => new Set(current).add(node.id));
     setGenerationError(undefined);
@@ -1363,7 +1510,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
           ...(defaultTextModel ? { defaultModel: defaultTextModel } : {}),
           defaultReasoningLevel: textModelCatalog.defaultReasoningLevel,
           generating: generatingTextNodeId === node.id,
-          busy: Boolean(generatingTextNodeId),
+          busy: Boolean(generatingTextNodeId) || Boolean(batchOwner),
           ...(generationError?.nodeId === node.id ? { error: generationError.message } : {}),
           onChange: (data: AssetCanvasFlowData) => {
             rememberSettings(node, data);
@@ -1385,7 +1532,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
           ...node.data,
           model3DRuntime: {
             generating: nodeJob?.status === "running",
-            busy: nodeJob?.status === "running" || startingCanvasNodes.has(node.id) || Boolean(uploadingNodeId),
+            busy: nodeJob?.status === "running" || startingCanvasNodes.has(node.id) || Boolean(batchOwner) || Boolean(uploadingNodeId),
             ...(nodeJob?.status === "failed" || nodeJob?.status === "cancelled" ? { error: nodeJob.error } : generationError?.nodeId === node.id ? { error: generationError.message } : {}),
             onCancel: nodeJob?.status === "running" ? () => void cancelCanvasJob(node.id) : undefined,
             onChange: (data: AssetCanvasFlowData) => {
@@ -1455,7 +1602,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     const nodeJob = canvasJobs[node.id];
     const runtime: MediaNodeRuntime = {
       generating: nodeJob?.status === "running",
-      busy: nodeJob?.status === "running" || startingCanvasNodes.has(node.id) || Boolean(uploadingNodeId),
+      busy: nodeJob?.status === "running" || startingCanvasNodes.has(node.id) || Boolean(batchOwner) || Boolean(uploadingNodeId),
       ...(nodeJob?.status === "failed" || nodeJob?.status === "cancelled" ? { error: nodeJob.error } : generationError?.nodeId === node.id ? { error: generationError.message } : {}),
       onCancel: nodeJob?.status === "running" ? () => void cancelCanvasJob(node.id) : undefined,
       onChange: (data) => {
@@ -1557,7 +1704,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
                 onAddAsset={addAssetNode}
                 onUpload={(file, position) => void importAssetFile(file, position)}
               />}
-              onOpenMenu={setCanvasContextMenu}
+              onOpenMenu={(menu) => { setQuickMenu(undefined); setCanvasContextMenu(menu); }}
               addOnDoubleClick
               deleteKeyCode={["Backspace", "Delete"]}
               onNodesChange={onNodesChange}
@@ -1566,6 +1713,15 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
               onMoveStart={() => setCanvasContextMenu(undefined)}
               onEdgesChange={onEdgesChange}
               onConnect={onConnect}
+              onConnectEnd={(event, state) => {
+                if (state.toNode || state.fromHandle?.type !== "source" || !state.fromNode || !isImageSource(nodes.find((node) => node.id === state.fromNode!.id))) return;
+                if (!(event.target instanceof Element) || !event.target.closest(".react-flow__pane") || event.target.closest(".react-flow__node")) return;
+                const point = "changedTouches" in event ? event.changedTouches[0] : event;
+                if (!point || !flowInstance.current) return;
+                const screenPosition = { x: point.clientX, y: point.clientY };
+                setQuickMenu({ sourceId: state.fromNode.id, screenPosition, flowPosition: snapCanvasPosition(flowInstance.current.screenToFlowPosition(screenPosition)) });
+                setCanvasContextMenu(undefined);
+              }}
               onMoveEnd={(_event, viewport) => setEditorLayout((current) => ({ ...current, viewport }))}
               onEdgeClick={(_event, edge) => setSelectedAssetEdgeId(edge.id.startsWith(ASSET_EDGE_PREFIX) ? edge.id : undefined)}
               onSelectionStart={() => setMarqueeActive(true)}
@@ -1579,7 +1735,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
               }}
               // Only the preview opens the viewer; the prompt, chips, and video controls below keep their own double-click.
               onNodeDoubleClick={(event, node) => { if (eventWithin(event, ".story-media-stage")) openViewer(node); }}
-              onPaneClick={() => { setCanvasContextMenu(undefined); clearSelection(); }}
+              onPaneClick={() => { setQuickMenu(undefined); setCanvasContextMenu(undefined); clearSelection(); }}
               onNodeContextMenu={(_event, node) => {
                 activateNode(node.id);
                 setNodes((current) => current.map((candidate) => ({ ...candidate, selected: candidate.id === node.id })));
@@ -1597,8 +1753,28 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
               onInitialFit={finishInitialFit}
             />
           ) : null}
+          {quickMenu ? <CanvasContextMenu screenPosition={quickMenu.screenPosition} label={t("canvasQuick.title")} onClose={() => setQuickMenu(undefined)}>
+            {QUICK_ACTIONS.map((kind) => <button type="button" role="menuitem" key={kind} onClick={() => createQuickAction(kind, quickMenu.sourceId, quickMenu.flowPosition)}><WandSparkles size={15} /><span>{t(`canvasQuick.${kind}`)}</span></button>)}
+          </CanvasContextMenu> : null}
+          {(() => {
+            const selected = nodes.find((node) => node.selected && node.quickAction);
+            const controller = selected?.quickAction?.groupId ? nodes.find((node) => node.id === selected.quickAction!.groupId) : selected;
+            if (!controller?.quickAction || (controller.quickAction.kind !== "objects" && controller.quickAction.kind !== "views") || controller.quickAction.groupId) return null;
+            const quickJobs = { ...canvasJobs, ...Object.fromEntries([...batchCancelled].map((id): [string, ToolJob] => [id, { id: `queue-cancel:${id}`, toolId: "generate-image", title: "", createdAt: "", status: "cancelled" }])), ...Object.fromEntries(Object.entries(batchErrors).map(([id, error]): [string, ToolJob] => [id, { id: `start-error:${id}`, toolId: "generate-image", title: "", createdAt: "", status: "failed", error }])) };
+            return <CanvasQuickActionsPanel node={toAssetCanvasNode(controller, model3DModels) as AssetCanvasNode & { quickAction: CanvasQuickAction }}
+              members={nodes.filter((node) => node.type === "image" && node.quickAction?.groupId === controller.id)}
+              textModels={textModelCatalog.models} defaultTextModel={defaultTextModel} imageModels={imageModels} defaultImageModel={defaultImageModel}
+              jobs={quickJobs} pending={new Set([...(batchRunner.current?.pending ?? []), ...(batchRunner.current?.starting ?? [])])} busy={Boolean(batchOwner)} recognizing={Boolean(generatingTextNodeId)}
+              sourceAvailable={quickSourceAvailable(controller.quickAction.sourceNodeId)} error={generationError?.nodeId === controller.id ? generationError.message : undefined}
+              onChange={(action, text, model) => changeQuickAction(controller.id, action, text, model)}
+              onRecognize={(model) => void generateTextNode(controller, model, clampReasoningLevel(controller.data.reasoningLevel ?? textModelCatalog.defaultReasoningLevel ?? "off", textModelCatalog.models.find((candidate) => sameModel(candidate, model))?.reasoningLevels ?? ["off"]))}
+              onRun={(retry) => void runQuickBatch(controller, retry)} onRetry={(id) => void runQuickBatch(controller, false, id)}
+              onCancel={() => batchRunner.current?.stop(true)} onClose={clearSelection}
+              onPrompt={(id, prompt) => setNodes((current) => current.map((node) => node.id === id ? { ...node, data: { ...node.data, prompt } } : node))} />;
+          })()}
           {canvasContextMenu ? <AssetCanvasContextMenu
             documents={documents} tables={tables}
+            onQuickAction={isImageSource(contextMenuNode) ? (kind) => createQuickAction(kind, contextMenuNode!.id, { x: contextMenuNode!.position.x + 480, y: contextMenuNode!.position.y }) : undefined}
             onUseInDocument={contextMenuNode?.type === "text" && contextMenuNode.data.text ? () => documents.appendText(contextMenuNode.data.text!) : contextMenuNode?.data.assetId && (contextMenuNode.type === "image" || contextMenuNode.data.mediaType === "image") ? () => documents.appendImage(contextMenuNode.data.assetId!) : undefined}
             menu={canvasContextMenu}
             canUndo={canUndo}
@@ -2602,6 +2778,7 @@ function AssetCanvasContextMenu({
   documents,
   tables,
   onUseInDocument,
+  onQuickAction,
   menu,
   canUndo,
   canRedo,
@@ -2629,6 +2806,7 @@ function AssetCanvasContextMenu({
   documents: CanvasDocuments;
   tables: CanvasTables;
   onUseInDocument?: () => void;
+  onQuickAction?: (kind: CanvasQuickActionKind) => void;
   menu: CanvasContextMenuState;
   canUndo: boolean;
   canRedo: boolean;
@@ -2693,6 +2871,7 @@ function AssetCanvasContextMenu({
 
   return (
     <CanvasContextMenu screenPosition={menu.screenPosition} label={menu.kind === "pane" ? t("assetCanvas.canvasActions") : t("assetCanvas.nodeActions")} onClose={onClose}>
+      {onQuickAction ? <><span className="story-canvas-context-menu-label">{t("canvasQuick.title")}</span>{QUICK_ACTIONS.map((kind) => <button type="button" role="menuitem" key={kind} onClick={() => run(() => onQuickAction(kind))}><WandSparkles size={15} /><span>{t(`canvasQuick.${kind}`)}</span></button>)}<div className="playable-project-menu-separator" role="separator" /></> : null}
       {onDetails ? <button type="button" role="menuitem" onClick={() => run(onDetails)}><Pencil size={15} /><span>{t("assetCanvas.nodeDetails")}</span></button> : null}
       {onUseInDocument ? <button type="button" role="menuitem" onClick={() => run(onUseInDocument)}><FileText size={15} /><span>{t("assetCanvas.addToDocument")}</span></button> : null}
       {menu.kind === "pane" ? <>
@@ -2733,7 +2912,7 @@ function AssetCanvasContextMenu({
 }
 
 function toFlowNode(node: AssetCanvasNode, imageModels: ImageModel[], videoModels: VideoModel[]): AssetCanvasFlowNode {
-  return { ...flowNodeData(node, imageModels, videoModels), ...(node.width !== undefined ? { width: node.width } : {}), ...(node.height !== undefined ? { height: node.height } : {}), ...(node.title !== undefined ? { title: node.title } : {}), ...(node.description !== undefined ? { description: node.description } : {}) };
+  return { ...flowNodeData(node, imageModels, videoModels), ...(node.quickAction ? { quickAction: node.quickAction } : {}), ...(node.width !== undefined ? { width: node.width } : {}), ...(node.height !== undefined ? { height: node.height } : {}), ...(node.title !== undefined ? { title: node.title } : {}), ...(node.description !== undefined ? { description: node.description } : {}) };
 }
 function flowNodeData(node: AssetCanvasNode, imageModels: ImageModel[], videoModels: VideoModel[]): AssetCanvasFlowNode {
   if (node.type === "asset") return { ...node, deletable: true };
@@ -2807,7 +2986,7 @@ function flowNodeData(node: AssetCanvasNode, imageModels: ImageModel[], videoMod
       ...(node.data.assetId ? { assetId: node.data.assetId } : {}),
     },
   };
-  if (node.type !== "image" || node.data.model) return { ...node, deletable: true };
+  if (node.type !== "image" || node.data.model || node.quickAction) return { ...node, deletable: true };
   const model = imageModels[0];
   const option = preferredImageOption(model);
   return {
@@ -2927,7 +3106,7 @@ function assetCanvasDocument(
 }
 
 export function toAssetCanvasNode(node: AssetCanvasFlowNode, model3DModels?: readonly Model3DModel[]): AssetCanvasNode {
-  return { ...assetCanvasNodeData(node, model3DModels), ...(node.width !== undefined ? { width: node.width } : {}), ...(node.height !== undefined ? { height: node.height } : {}), ...(node.title !== undefined ? { title: node.title } : {}), ...(node.description !== undefined ? { description: node.description } : {}) };
+  return { ...assetCanvasNodeData(node, model3DModels), ...(node.quickAction ? { quickAction: node.quickAction } : {}), ...(node.width !== undefined ? { width: node.width } : {}), ...(node.height !== undefined ? { height: node.height } : {}), ...(node.title !== undefined ? { title: node.title } : {}), ...(node.description !== undefined ? { description: node.description } : {}) };
 }
 function assetCanvasNodeData(node: AssetCanvasFlowNode, model3DModels?: readonly Model3DModel[]): AssetCanvasNode {
   if (node.type === "animate-3d") {
