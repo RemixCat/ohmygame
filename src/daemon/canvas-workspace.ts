@@ -1,3 +1,6 @@
+import { captureWorkflow, instantiateWorkflow } from "../shared/studio-templates.js";
+import { PRODUCTION_SCHEMA, type WorkflowTemplate, type GenerationReceipt } from "../shared/studio.js";
+import type { StudioStore } from "./studio-store.js";
 import { CANVAS_TABLE_SCHEMA, createCanvasTable, isCanvasTable, canvasTablePath, type CanvasTable, type CanvasTableDetail } from "../shared/canvas-table.js";
 import { createHash, randomUUID } from "node:crypto";
 import { applyCanvasNodeLayout, canvasNodeContent, canvasNodeLayout, contentNodeSizeIssue, isResizableCanvasNodeType } from "../shared/canvas-node-layout.js";
@@ -36,6 +39,8 @@ Canvas files are the source of truth in both Design and Asset Canvas. Use normal
 - Read README.md and schemas/ before changing a contract. Run canvas_check after editing.
 - index.json lists boards, documents, optional tables, and the main document. Keep IDs stable; names and titles may change.
 - boards/<id>.json contains nodes and their content. Every node may have a title and a description of its purpose. Document bodies live in documents/<id>.md, referenced by documentId. Table data lives in tables/<id>.json, referenced by tableId; register tables in index.json. Keep row/column IDs stable and match cells to their column types.
+- Format 2 boards support groups with id/name/color, optional parentId and standardId. Nodes have one optional groupId and standardId; groups must be acyclic. Group positions/collapsed state live in editor/<id>.json groups. Preserve all group and template metadata when editing.
+- production.json contains project standard drafts, immutable activated revisions, reviews and project-selected asset versions. Read the active default; never rewrite historical revisions or infer runtime use from a canvas reference.
 - Give nodes meaningful titles. Descriptions explain their intended role; do not describe unseen image pixels as verified facts.
 - For game work, identify reference mockups and production assets in node titles/descriptions. Record production assets' intended gameplay use in the design document; reference mockups do not fulfill those requirements.
 - editor/<board-id>.json stores positions, zoom, and width/height for text, document, and table nodes only; media and generation nodes size to their content. fitView requests a one-time fit when a remixed board is first opened; the editor clears it after saving the new viewport. New nodes are placed automatically; layout edits are only needed when the user asks to arrange the canvas.
@@ -65,11 +70,15 @@ The canvas edits ordinary project files. Documents are Markdown and media files 
 Read AGENTS.md for editing conventions. Asset paths are relative to the project root; Markdown image links are relative to the document file. Node IDs need only be unique within their board; asset, document and table IDs are shared across the canvas workspace.
 `;
 export async function ensureCanvasContract(workspace: string, replaceReadme = false): Promise<void> {
-  for (const [name, value] of [["index", CANVAS_INDEX_SCHEMA], ["board", CANVAS_BOARD_SCHEMA], ["layout", CANVAS_LAYOUT_SCHEMA], ["assets", CANVAS_ASSETS_SCHEMA], ["table", CANVAS_TABLE_SCHEMA]] as const) {
+  for (const [name, value] of [["index", CANVAS_INDEX_SCHEMA], ["board", CANVAS_BOARD_SCHEMA], ["layout", CANVAS_LAYOUT_SCHEMA], ["assets", CANVAS_ASSETS_SCHEMA], ["table", CANVAS_TABLE_SCHEMA], ["production", PRODUCTION_SCHEMA]] as const) {
     const file = `schemas/${name}.schema.json`, text = `${JSON.stringify(value, null, 2)}\n`;
     if (await readCanvasFile(workspace, file) !== text) await writeAtomic(workspace, file, text);
   }
-  for (const [name, text] of [["AGENTS.md", CANVAS_INSTRUCTIONS], ["README.md", CANVAS_README]] as const) if ((replaceReadme && name === "README.md") || await readCanvasFile(workspace, name) === undefined) await writeAtomic(workspace, name, text);
+  for (const [name, text] of [["AGENTS.md", CANVAS_INSTRUCTIONS], ["README.md", CANVAS_README]] as const) {
+    const current = await readCanvasFile(workspace, name);
+    if ((replaceReadme && name === "README.md") || current === undefined) await writeAtomic(workspace, name, text);
+    else if (!current.includes("Production extensions (format 2)")) await writeAtomic(workspace, name, `${current}\n\n## Production extensions (format 2)\n\nGroups form an acyclic parent hierarchy. Nodes have optional groupId, standardId and template provenance; preserve these fields. Group coordinates and collapse state live in editor/<board-id>.json groups. production.json stores draft/activated standards, per-project asset review and selected versions; historical activated revisions are immutable. Run canvas_check after edits. Media generation applies the project -> ancestor groups -> node direction and records an immutable snapshot. Editing standards does not rewrite existing game code or regenerate assets.\n`);
+  }
 }
 export async function readCanvasIndex(workspace: string): Promise<CanvasWorkspaceIndex | undefined> {
   const text = await readCanvasFile(workspace, "index.json", 512_000);
@@ -181,6 +190,14 @@ export async function inspectCanvasBoard(workspace: string, id: string): Promise
 }
 async function writeCanvasBoard(workspace: string, board: CanvasBoard): Promise<CanvasBoardDetail> {
   if (!isCanvasBoard(board)) throw new CanvasError("Invalid canvas board");
+  if (board.version === 2) {
+    const previous = await readCanvasFile(workspace, `boards/${board.id}.json`);
+    if (previous && JSON.parse(previous).version === 1) {
+      await writeAtomic(workspace, `boards/${board.id}.v1-backup.json`, previous);
+      const layout = await readCanvasFile(workspace, `editor/${board.id}.json`);
+      if (layout) await writeAtomic(workspace, `editor/${board.id}.v1-backup.json`, layout);
+    }
+  }
   const { editorLayout, ...content } = board;
   const persisted = { ...content, nodes: board.nodes.map(canvasNodeContent) };
   const text = `${JSON.stringify(persisted, null, 2)}\n`;
@@ -290,7 +307,7 @@ export class CanvasStore {
   readonly #controllers = new Map<string, AbortController>();
   readonly #executions = new Set<Promise<void>>();
   #closed = false;
-  constructor(private readonly projects: ProjectManager, private readonly library: AssetLibrary, private readonly tools: ToolRunner) {}
+  constructor(private readonly projects: ProjectManager, private readonly library: AssetLibrary, private readonly tools: ToolRunner, private readonly studio?: StudioStore) {}
   #project(id: string) {
     const project = this.projects.get(id);
     if (!project) throw new CanvasError("Project not found", 404);
@@ -386,8 +403,67 @@ export class CanvasStore {
       return detail;
     });
   }
+  async captureTemplate(id: string, boardId: string, groupId: string, name: string): Promise<WorkflowTemplate> {
+    const { board } = await this.board(id, boardId);
+    const template = captureWorkflow(board, groupId, name);
+    for (const node of template.board!.nodes) {
+      if (node.type === "document" && !template.documents.some((d) => d.id === node.data.documentId)) {
+        const doc = await this.read(id, node.data.documentId); if (!doc) throw new CanvasError("Document dependency missing");
+        template.documents.push(doc.document);
+      }
+      if (node.type === "table" && !template.tables.some((t) => t.id === node.data.tableId)) template.tables.push((await this.table(id, node.data.tableId)).table);
+    }
+    // Convert workspace media into stable library references before sharing a template.
+    const media = new Map<string,string>();
+    for (const assetId of canvasNodeAssetIds(template.board!.nodes)) media.set(assetId, (await this.exportAsset(id, assetId)).assetId);
+    for (const node of template.board!.nodes) {
+      if (node.type === "asset") node.data.assetId = media.get(node.data.assetId) ?? node.data.assetId;
+      if (node.type === "image" || node.type === "model-3d") node.data.images = node.data.images.map((r) => r.type === "library" ? { ...r, assetId: media.get(r.assetId) ?? r.assetId } : r);
+      if (node.type === "video") node.data.references = node.data.references.map((r) => r.type === "library" ? { ...r, assetId: media.get(r.assetId) ?? r.assetId } : r);
+      if ((node.type === "model-3d" || node.type === "animate-3d") && node.data.source?.type === "library") node.data.source.assetId = media.get(node.data.source.assetId) ?? node.data.source.assetId;
+    }
+    const dependencies = new Set(media.values());
+    for (const document of template.documents) {
+      const links = [...document.markdown.matchAll(/!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)];
+      for (const match of links) {
+        const url = match[1]!; if (/^(https?:|data:|library:)/i.test(url)) continue;
+        const relative = path.posix.normalize(path.posix.join("canvas/documents", decodeURIComponent(url)));
+        const file = await getWorkspaceMedia(this.#project(id).workspacePath, relative);
+        const asset = await this.library.addFile(path.basename(relative), file.absolutePath, { origin: "workspace", sourceKey: `${this.#project(id).workspacePath}:${relative}`, purpose: "reference" });
+        dependencies.add(asset.id); document.markdown = document.markdown.replace(match[0], match[0].replace(url, `library:${asset.id}`));
+      }
+    }
+    template.mediaDependencies = [...dependencies];
+    return template;
+  }
+  async insertTemplate(id: string, boardId: string, template: WorkflowTemplate, values: Record<string,string>, bindings: Record<string,string>, expected: string): Promise<CanvasBoardDetail> {
+    const workspace = this.#project(id).workspacePath;
+    return withCanvasLock(workspace, async () => {
+      const current = await this.board(id, boardId);
+      if (current.revision !== expected) throw new CanvasError("Board changed before template insertion",409);
+      for (const input of template.inputs) if (input.mediaType !== "text") {
+        const asset = this.library.get(bindings[input.name]); if (!asset || asset.mediaType !== input.mediaType) throw new CanvasError(`Invalid input: ${input.name}`);
+      }
+      const fragment = instantiateWorkflow(template, values, bindings, { x: Math.max(0, ...current.board.nodes.map((n) => n.position.x + 560)), y: 96 });
+      const docs = new Map<string,string>(), tables = new Map<string,string>();
+      for (const doc of template.documents) docs.set(doc.id, randomUUID());
+      for (const table of template.tables) tables.set(table.id, randomUUID());
+      for (const node of fragment.nodes) {
+        if (node.type === "document") { const target = docs.get(node.data.documentId); if (!target) throw new CanvasError("Missing template document"); node.data.documentId = target; }
+        if (node.type === "table") { const target = tables.get(node.data.tableId); if (!target) throw new CanvasError("Missing template table"); node.data.tableId = target; }
+      }
+      const board = { ...current.board, version: 2 as const, nodes: [...current.board.nodes, ...fragment.nodes], edges: [...current.board.edges, ...fragment.edges], groups: [...current.board.groups ?? [], ...fragment.groups ?? []], editorLayout: { ...current.board.editorLayout, nodes: { ...current.board.editorLayout.nodes, ...fragment.editorLayout.nodes }, groups: { ...current.board.editorLayout.groups, ...fragment.editorLayout.groups } } };
+      if (!isCanvasBoard(board)) throw new CanvasError("Invalid instantiated board");
+      const manifest = await ensureCanvasAssets(this.#project(id), this.projects, this.library, [...canvasNodeAssetIds(fragment.nodes), ...template.mediaDependencies ?? []], []);
+      for (const doc of template.documents) {
+        const markdown = doc.markdown.replace(/library:([a-zA-Z0-9_-]+)/g, (_, assetId: string) => { const asset = manifest.assets[assetId]; if (!asset) throw new CanvasError("Missing document media dependency"); return `../../${asset.path.split("/").map(encodeURIComponent).join("/")}`; });
+        await writeCanvasDocument(workspace, { ...doc, markdown, id: docs.get(doc.id)! }, this.#project(id).type !== "asset-canvas");
+      }
+      for (const table of template.tables) await writeCanvasTable(workspace, { ...structuredClone(table), id: tables.get(table.id)! });
+      return writeCanvasBoard(workspace, board);
+    });
+  }
   async changeBoards(id: string, action: { type: "create"; name: string } | { type: "rename" | "delete" | "move"; boardId: string; name?: string; direction?: number }) {
-    if (this.#project(id).type === "asset-canvas") throw new CanvasError("Asset Canvas uses one default board", 409);
     const workspace = this.#project(id).workspacePath;
     return withCanvasLock(workspace, async () => {
       const index = await ensureCanvasIndex(workspace);
@@ -437,7 +513,7 @@ export class CanvasStore {
   }
   #saveJobs(id: string) { return writeJson(this.#project(id).workspacePath, "jobs.json", this.#jobs.get(id) ?? []); }
   async jobs(id: string): Promise<ToolJob[]> { return withCanvasLock(this.#project(id).workspacePath, async () => (await this.#loadJobs(id)).map(({ input: _input, recoveryId: _recoveryId, ...job }) => structuredClone(job))); }
-  async start(id: string, boardId: string, nodeId: string, toolId: ToolId, input: RunToolRequest, expectedRevision?: string, recoveryId?: string): Promise<ToolJob> {
+  async start(id: string, boardId: string, nodeId: string, toolId: ToolId, input: RunToolRequest, expectedRevision?: string, recoveryId?: string, retryReceipt?: GenerationReceipt, alreadyPrepared = false, preview = false): Promise<ToolJob> {
     const workspace = this.#project(id).workspacePath;
     const { job, prepared } = await withCanvasLock(workspace, async () => {
       if (this.#closed) throw new CanvasError("Generation is shutting down", 503);
@@ -447,22 +523,27 @@ export class CanvasStore {
       if (!node || ({ "generate-image": "image", "generate-video": "video", "image-to-3d": "model-3d", "animate-3d": "animate-3d" } as Record<string, string>)[toolId] !== node.type) throw new CanvasError("Generation node not found", 404);
       const jobs = await this.#loadJobs(id);
       if (jobs.some((job) => job.context?.boardId === boardId && job.context.nodeId === nodeId && job.status === "running")) throw new CanvasError("This node is already generating", 409);
-      const resolved = await this.tools.prepare(toolId, input, id);
+      const { images: _images, references: _refs, prompt: _prompt, ...parameters } = input as RunToolRequest & { images?: unknown; references?: unknown; prompt?: string };
+      const receipt = retryReceipt ?? await this.studio?.receipt(id, "prompt" in input ? input.prompt ?? "" : "", parameters, detail.board, node);
+      const resolved = await this.tools.prepare(toolId, input, id, receipt, alreadyPrepared);
       const prepared = structuredClone(resolved);
+      if (receipt && !alreadyPrepared) { const { images: _i, references: _r, prompt: _p, ...actual } = resolved as RunToolRequest & { images?: unknown; references?: unknown; prompt?: string }; receipt.parameters = structuredClone(actual); }
       const model = "imageModel" in resolved ? resolved.imageModel : "model" in resolved ? resolved.model : undefined;
       if (toolId === "generate-video" && "references" in prepared) for (const reference of prepared.references ?? []) reference.assetId = await canvasLibraryAsset(this.#project(id), this.library, reference.assetId);
       if (toolId === "animate-3d" && "assetId" in prepared) prepared.assetId = await canvasLibraryAsset(this.#project(id), this.library, prepared.assetId);
       if (toolId === "image-to-3d" && "sourceAssetId" in prepared && prepared.sourceAssetId) prepared.sourceAssetId = await canvasLibraryAsset(this.#project(id), this.library, prepared.sourceAssetId);
-      const job: StoredJob = { recoveryId: recoveryId ?? randomUUID(), id: randomUUID(), toolId, createdAt: new Date().toISOString(), status: "running", title: "prompt" in input ? (input.prompt ?? "Model 3D").slice(0, 200) : "Model 3D", context: { projectId: id, boardId, nodeId }, ...(model ? { model } : {}), input: structuredClone(resolved) };
+      const job: StoredJob = { recoveryId: recoveryId ?? randomUUID(), id: randomUUID(), toolId, createdAt: new Date().toISOString(), status: "running", title: "prompt" in input ? (input.prompt ?? "Model 3D").slice(0, 200) : "Model 3D", context: { projectId: id, boardId, nodeId }, ...(receipt ? { production: { ...receipt, referenceIds: [...new Set([...receipt.referenceIds, ...canvasNodeAssetIds([node]), ...("images" in node.data ? node.data.images : node.type === "video" ? node.data.references : []).flatMap((r) => { const assetId = resolveAssetCanvasAssetId(detail.board.nodes, r); return assetId ? [assetId] : []; })])] } } : {}), ...(model ? { model } : {}), input: structuredClone(resolved) };
+      if (preview) return { job, prepared };
       if (jobs.filter((job) => job.status === "running").length >= 20) throw new CanvasError("Too many active generation jobs", 409);
       this.#jobs.set(id, [job, ...jobs.filter((job) => job.status === "running"), ...jobs.filter((job) => job.status !== "running").slice(0, 80)]); await this.#saveJobs(id); return { job, prepared };
     });
+    if (preview) return { ...job, input: undefined } as ToolJob;
     const controller = new AbortController(); this.#controllers.set(job.id, controller);
     const execution = this.#execute(id, job, prepared, controller); this.#executions.add(execution);
     void execution.finally(() => this.#executions.delete(execution));
     const { input: _input, recoveryId: _recoveryId, ...publicJob } = job; return structuredClone(publicJob);
   }
-  async generateNode(id: string, boardId: string, nodeId: string): Promise<ToolJob> {
+  async generateNode(id: string, boardId: string, nodeId: string, preview = false): Promise<ToolJob> {
     const project = this.#project(id), { board, revision } = await this.board(id, boardId);
     const node = board.nodes.find((node) => node.id === nodeId);
     if (!node || !["image", "video", "model-3d", "animate-3d"].includes(node.type)) throw new CanvasError("Choose a media generation node");
@@ -479,7 +560,7 @@ export class CanvasStore {
     };
     if (node.type === "animate-3d") {
       if (!node.data.source || !node.data.actionIds.length) throw new CanvasError("Choose a source model and animation actions first");
-      return this.start(id, boardId, nodeId, "animate-3d", { model: node.data.model, options: node.data.options, assetId: assetId(node.data.source), actionIds: node.data.actionIds, heightMeters: node.data.heightMeters }, revision);
+      return this.start(id, boardId, nodeId, "animate-3d", { model: node.data.model, options: node.data.options, assetId: assetId(node.data.source), actionIds: node.data.actionIds, heightMeters: node.data.heightMeters }, revision, undefined, undefined, false, preview);
     }
     if (node.type === "model-3d") {
       const operation = node.data.operation ?? "image";
@@ -497,14 +578,14 @@ export class CanvasStore {
         if (source.mediaType !== "image/png" && source.mediaType !== "image/jpeg") throw new CanvasError("3D generation requires PNG, JPEG or WebP reference images");
         return source;
       }));
-      return this.start(id, boardId, nodeId, "image-to-3d", { ...buildModel3DToolRequest(node.data, images, operation), operation, ...(prompt ? { prompt } : {}), ...(node.data.source ? { sourceAssetId: assetId(node.data.source) } : {}), ...(node.data.options ? { options: node.data.options } : {}) }, revision);
+      return this.start(id, boardId, nodeId, "image-to-3d", { ...buildModel3DToolRequest(node.data, images, operation), operation, ...(prompt ? { prompt } : {}), ...(node.data.source ? { sourceAssetId: assetId(node.data.source) } : {}), ...(node.data.options ? { options: node.data.options } : {}) }, revision, undefined, undefined, false, preview);
     }
     if (node.type !== "image" && node.type !== "video") throw new CanvasError("Unsupported generation node");
     const linked = board.nodes.find((candidate) => candidate.id === node.data.promptSource?.nodeId);
     const text = linked?.type === "text" ? linked.data.text : linked?.type === "document" ? (await this.read(id, linked.data.documentId))?.document.markdown : undefined;
     const prompt = combineAssetCanvasPrompt(text, node.data.prompt);
     if (!prompt) throw new CanvasError("Add a prompt before generating");
-    if (node.type === "image") return this.start(id, boardId, nodeId, "generate-image", { prompt, resolution: node.data.resolution, aspectRatio: node.data.aspectRatio, ...(node.data.model ? { imageModel: node.data.model } : {}), images: await Promise.all(node.data.images.map(image)) }, revision);
+    if (node.type === "image") return this.start(id, boardId, nodeId, "generate-image", { prompt, resolution: node.data.resolution, aspectRatio: node.data.aspectRatio, ...(node.data.model ? { imageModel: node.data.model } : {}), images: await Promise.all(node.data.images.map(image)) }, revision, undefined, undefined, false, preview);
     const referenceIds = node.data.references.map(assetId);
     const catalog = await canvasAssetCatalog(project.workspacePath, manifest, referenceIds);
     const references = referenceIds.map((id) => {
@@ -515,11 +596,11 @@ export class CanvasStore {
     let resolvedPrompt: string;
     try { resolvedPrompt = resolveVideoMentions(prompt, node.data.references, node.data.referenceMentions); }
     catch (cause) { throw new CanvasError(cause instanceof Error ? cause.message : String(cause)); }
-    return this.start(id, boardId, nodeId, "generate-video", { prompt: resolvedPrompt, model: node.data.model, resolution: node.data.resolution, aspectRatio: node.data.aspectRatio, duration: node.data.duration, references, ...(node.data.referenceMode ? { referenceMode: node.data.referenceMode } : {}) }, revision);
+    return this.start(id, boardId, nodeId, "generate-video", { prompt: resolvedPrompt, model: node.data.model, resolution: node.data.resolution, aspectRatio: node.data.aspectRatio, duration: node.data.duration, references, ...(node.data.referenceMode ? { referenceMode: node.data.referenceMode } : {}) }, revision, undefined, undefined, false, preview);
   }
   async #execute(id: string, job: StoredJob, prepared: RunToolRequest, controller: AbortController) {
     try {
-      const run = await this.tools.runPrepared(job.toolId, prepared, controller.signal, job.recoveryId ?? job.id); controller.signal.throwIfAborted();
+      const run = await this.tools.runPrepared(job.toolId, prepared, controller.signal, job.recoveryId ?? job.id, job.production, `${id}:${job.context!.boardId}:${job.context!.nodeId}`); controller.signal.throwIfAborted();
       const output = run.files[0];
       if (!output?.assetId) throw new CanvasError("Generation returned no Library asset", 502);
       await withCanvasLock(this.#project(id).workspacePath, async () => {
@@ -556,7 +637,7 @@ export class CanvasStore {
   async retry(id: string, jobId: string): Promise<ToolJob> {
     const job = await withCanvasLock(this.#project(id).workspacePath, async () => (await this.#loadJobs(id)).find((job) => job.id === jobId));
     if (!job || !job.input || !["failed", "cancelled"].includes(job.status)) throw new CanvasError("This job cannot be retried", 409);
-    return this.start(id, job.context!.boardId!, job.context!.nodeId, job.toolId, job.input, undefined, job.recoveryId ?? job.id);
+    return this.start(id, job.context!.boardId!, job.context!.nodeId, job.toolId, job.input, undefined, job.recoveryId ?? job.id, job.production, true);
   }
   async cancelProject(id: string) { for (const job of this.#jobs.get(id) ?? []) if (job.status === "running") await this.cancel(id, job.id); this.#jobs.delete(id); }
   async close() { this.#closed = true; for (const controller of this.#controllers.values()) controller.abort(); await Promise.allSettled(this.#executions); }

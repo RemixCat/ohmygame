@@ -1,3 +1,4 @@
+import { CANVAS_GROUP_SCHEMA, GROUP_LAYOUT_SCHEMA, STANDARD_OVERRIDES_SCHEMA } from "./studio.js";
 import {
   AGENT_REASONING_LEVELS,
   IMAGE_ASPECT_RATIOS,
@@ -27,6 +28,7 @@ export const ASSET_CANVAS_EDITOR_LAYOUT_SCHEMA = {
         },
       },
     },
+    groups: GROUP_LAYOUT_SCHEMA,
     fitView: { type: "boolean" },
     view: { const: "canvas" },
   },
@@ -63,7 +65,8 @@ const node = (type: string, data: object) => ({
   type: "object",
   additionalProperties: false,
   required: ["id", "type", "data"],
-  properties: { id, type: { const: type }, title: { type: "string", maxLength: 200 }, description: { type: "string", maxLength: 2000 }, quickAction, data },
+  properties: { id, type: { const: type }, title: { type: "string", maxLength: 200 }, description: { type: "string", maxLength: 2000 }, quickAction, groupId: id, standardId: id,
+    standardOverrides: STANDARD_OVERRIDES_SCHEMA, template: { type: "object", additionalProperties: false, required: ["id", "revision"], properties: { id, revision: { type: "integer", minimum: 1 } } }, data },
 });
 const model3DOptions = { type: "object", additionalProperties: false, properties: {
   pose: { enum: ["a-pose", "t-pose"] }, textureModel: id, textureQuality: { enum: ["fast", "standard", "detailed", "extreme"] },
@@ -149,7 +152,8 @@ export const ASSET_CANVAS_SCHEMA = {
   additionalProperties: false,
   required: ["version", "viewport", "nodes", "edges"],
   properties: {
-    version: { const: 1 },
+    version: { enum: [1, 2] },
+    groups: { type: "array", maxItems: 500, items: CANVAS_GROUP_SCHEMA },
     viewport: {
       type: "object",
       additionalProperties: false,

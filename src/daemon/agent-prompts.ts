@@ -55,7 +55,7 @@ export function appendSystemPromptForProject(project: AgentPromptProject): strin
   ];
   if (project.type === "web-game") return [...COMMON_AGENT_INSTRUCTIONS, ...WEB_GAME_INSTRUCTIONS, webGameRunContract(project)];
   if (project.type === "interactive-story") return [...COMMON_AGENT_INSTRUCTIONS, ...INTERACTIVE_STORY_INSTRUCTIONS];
-  if (project.type === "asset-canvas") return [...COMMON_AGENT_INSTRUCTIONS, "This is an Asset Canvas production workspace with one default board. Documents describe creative briefs, prompts and asset requirements. Use canvas/index.json to locate the board and canvas/AGENTS.md for the file contract. There is no game runtime or main game design document. Do not create a game loop or game runtime unless the user requests it."];
+  if (project.type === "asset-canvas") return [...COMMON_AGENT_INSTRUCTIONS, "This is an Asset Canvas production workspace with multiple boards. Documents describe creative briefs, prompts and asset requirements. Use canvas/index.json to locate the board and canvas/AGENTS.md for the file contract. There is no game runtime or main game design document. Do not create a game loop or game runtime unless the user requests it."];
   return [...COMMON_AGENT_INSTRUCTIONS];
 }
 

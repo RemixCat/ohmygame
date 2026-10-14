@@ -1,3 +1,5 @@
+import type { StudioStore } from "./studio-store.js";
+import type { GenerationReceipt } from "../shared/studio.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -73,6 +75,7 @@ export class ToolRunner {
   readonly #jobs = new Map<string, ToolJobRecord>();
   #jobWrites = Promise.resolve();
   #closed = false;
+  private receipts = new WeakMap<object, GenerationReceipt>();
 
   constructor(
     dataDirectory: string,
@@ -81,6 +84,7 @@ export class ToolRunner {
     private readonly videoGenerator?: VideoGenerator,
     private readonly assetLibrary?: AssetLibrary,
     private readonly resolveInput?: (toolId: string, input: RunToolRequest, projectId?: string) => Promise<RunToolRequest>,
+    private readonly studio?: StudioStore,
   ) {
     this.#runsDirectory = path.join(dataDirectory, "tools", "runs");
   }
@@ -108,7 +112,7 @@ export class ToolRunner {
     await this.#saveJobs().catch((cause) => console.error("Could not save generation history", cause));
   }
 
-  start(toolId: string, input: RunToolRequest, metadata: ToolJobMetadata = {}, prepared = false, recoveryId: string = randomUUID()): ToolJob {
+  start(toolId: string, input: RunToolRequest, metadata: ToolJobMetadata = {}, prepared = false, recoveryId: string = randomUUID(), production = this.productionFor(input)): ToolJob {
     if (this.#closed) throw new ToolRunError("Generation is shutting down", 503);
     if (!isToolId(toolId)) throw new ToolRunError("Tool not found", 404);
     const id = randomUUID();
@@ -123,6 +127,7 @@ export class ToolRunner {
       ...(metadata.context ? { context: metadata.context } : {}),
       input: structuredClone(input),
       prepared,
+      ...(production ? { production } : {}),
       metadata,
       controller,
     };
@@ -155,7 +160,7 @@ export class ToolRunner {
     if (job.status !== "failed" && job.status !== "cancelled") throw new ToolRunError("Only failed or cancelled jobs can be retried", 409);
     if (!job.input) throw new ToolRunError("Generation job can no longer be retried", 409);
     this.#jobs.delete(jobId);
-    return this.start(job.toolId, job.input, job.metadata, job.prepared, job.recoveryId);
+    return this.start(job.toolId, job.input, job.metadata, job.prepared, job.recoveryId, job.production);
   }
 
   async close(): Promise<void> {
@@ -173,11 +178,12 @@ export class ToolRunner {
       await this.#saveJobs();
       if (!job.prepared) {
         job.input = await this.prepare(job.toolId, job.input!, job.context?.projectId);
+        job.production = this.productionFor(job.input);
         job.prepared = true;
       }
       await this.#saveJobs();
       job.model = selectedModel(job.toolId, job.input!);
-      job.run = await this.runPrepared(job.toolId, job.input!, job.controller.signal, job.recoveryId);
+      job.run = await this.runPrepared(job.toolId, job.input!, job.controller.signal, job.recoveryId, job.production);
       if (job.run.files.length && job.run.files.every((file) => file.assetId)) {
         await this.removeRun(job.run.id);
       }
@@ -212,16 +218,43 @@ export class ToolRunner {
   }
 
   async run(toolId: string, input: RunToolRequest, signal?: AbortSignal, projectId?: string): Promise<ToolRun> {
-    return this.runPrepared(toolId, await this.prepare(toolId, input, projectId), signal);
+    const prepared = await this.prepare(toolId, input, projectId);
+    return this.runPrepared(toolId, prepared, signal, randomUUID(), this.productionFor(prepared));
   }
 
-  async prepare(toolId: string, input: RunToolRequest, projectId?: string): Promise<RunToolRequest> {
+  async prepare(toolId: string, input: RunToolRequest, projectId?: string, receipt?: GenerationReceipt, alreadyProduction = false): Promise<RunToolRequest> {
     if (!isToolId(toolId)) throw new ToolRunError("Tool not found", 404);
-    return this.resolveInput ? this.resolveInput(toolId, input, projectId) : input;
+    const resolved = structuredClone(this.resolveInput ? await this.resolveInput(toolId, input, projectId) : input);
+    if (!this.studio || toolId === "animate-3d") return resolved;
+    const { images: _images, references: _refs, prompt: _prompt, ...parameters } = resolved as RunToolRequest & { images?: unknown; references?: unknown; prompt?: string };
+    const production = receipt ?? await this.studio.receipt(projectId, "prompt" in resolved ? resolved.prompt ?? "" : "", parameters);
+    if ("prompt" in resolved) resolved.prompt = production.effectivePrompt;
+    if (!alreadyProduction && production.referenceIds.length && this.assetLibrary) {
+      if (toolId === "generate-image" || (toolId === "image-to-3d" && (!("operation" in resolved) || !resolved.operation || resolved.operation === "image" || resolved.operation === "text"))) {
+        const images = "images" in resolved ? [...(resolved.images ?? [])] : [];
+        for (const id of production.referenceIds) {
+          const source = await this.assetLibrary.content(id);
+          if (!source.asset.contentType.startsWith("image/")) throw new ToolRunError("Standard references must be images", 400);
+          images.push({ mediaType: source.asset.contentType as PromptImage["mediaType"], data: (await readFile(source.absolutePath)).toString("base64") });
+        }
+        (resolved as RunToolRequest & { images: PromptImage[] }).images = images;
+      } else if (toolId === "generate-video") {
+        const video = resolved as RunVideoToolRequest;
+        video.references = [...(video.references ?? []), ...production.referenceIds.map((assetId) => ({ type: "image" as const, assetId }))];
+      }
+    }
+    if (!alreadyProduction) { const { images: _i, references: _r, prompt: _p, ...actual } = resolved as RunToolRequest & { images?: unknown; references?: unknown; prompt?: string }; production.parameters = structuredClone(actual); }
+    this.receipts.set(resolved, production); return resolved;
   }
 
+  productionFor(input: RunToolRequest): GenerationReceipt | undefined { return this.receipts.get(input); }
+  async runPrepared(toolId: string, input: RunToolRequest, signal?: AbortSignal, recoveryId: string = randomUUID(), production = this.productionFor(input), sourceKey?: string): Promise<ToolRun> {
+    const run = await this.executePrepared(toolId, input, signal, recoveryId);
+    if (production && this.studio) await this.studio.record(run.files.flatMap((f) => f.assetId ? [f.assetId] : []), production, sourceKey);
+    return run;
+  }
   /** Executes an input whose model and generation options have already been resolved. */
-  async runPrepared(toolId: string, input: RunToolRequest, signal?: AbortSignal, recoveryId: string = randomUUID()): Promise<ToolRun> {
+  private async executePrepared(toolId: string, input: RunToolRequest, signal?: AbortSignal, recoveryId: string = randomUUID()): Promise<ToolRun> {
     if (toolId === "image-to-3d") {
       assertOnlyKeys(input, ["images", "model", "targetPolycount", "texture", "pbr", "operation", "prompt", "sourceAssetId", "options"]);
       return this.#run3D(input as Run3DToolRequest, signal, await model3DJournal(path.join(this.#runsDirectory, "../model3d-tasks"), recoveryId)).catch(model3DToolError);

@@ -1,3 +1,5 @@
+import { validateProduction, inheritedStandardId } from "../shared/studio.js";
+import { readCanvasFile } from "./canvas-files.js";
 import { readCanvasTable } from "./canvas-workspace.js";
 import { canvasNodeAssetIds } from "../shared/canvas-assets.js";
 import { resolveAssetCanvasAssetId } from "../shared/asset-canvas.js";
@@ -29,12 +31,14 @@ export async function checkCanvasWorkspace(workspace: string): Promise<CanvasChe
   for (const table of index.tables ?? []) await inspect(`canvas/tables/${table.id}.json`, () => readCanvasTable(workspace, table.id));
   const tableIds = new Set((index.tables ?? []).map((table) => table.id));
   const documentIds = new Set(index.documents.map((document) => document.id));
+  const production = await inspect("canvas/production.json", async () => { const text = await readCanvasFile(workspace, "production.json"); if (!text) return; const value: unknown = JSON.parse(text); validateProduction(value); return value; });
   for (const entry of index.boards) {
     const file = `canvas/boards/${entry.id}.json`, inspected = await inspect(file, () => inspectCanvasBoard(workspace, entry.id)), detail = inspected?.detail;
     if (!detail) { if (!issues.some((issue) => issue.file === file)) issues.push({ file, message: "Board file is missing" }); continue; }
     for (const message of inspected.issues) issues.push({ file: `canvas/editor/${entry.id}.json`, message });
     for (const node of detail.board.nodes) if (node.type === "document" && !documentIds.has(node.data.documentId)) issues.push({ file, message: `Node ${node.id}: unknown document ${node.data.documentId}` });
     for (const node of detail.board.nodes) if (node.type === "table" && !tableIds.has(node.data.tableId)) issues.push({ file, message: `Node ${node.id}: unknown table ${node.data.tableId}` });
+    if (production) for (const node of detail.board.nodes) { const standardId = inheritedStandardId(production, detail.board, node); if (standardId && !production.standards.some((s) => s.id === standardId && s.activeRevision)) issues.push({ file, message: `Node ${node.id}: unknown or inactive standard ${standardId}` }); }
     if (manifest) for (const id of canvasNodeAssetIds(detail.board.nodes)) if (!manifest.assets[id]) issues.push({ file, message: `Asset ${id} is not registered in canvas/assets.json` });
     for (const node of detail.board.nodes) {
       const outputId = "assetId" in node.data ? node.data.assetId : undefined;

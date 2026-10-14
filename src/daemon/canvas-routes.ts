@@ -1,3 +1,4 @@
+import type { StudioStore } from "./studio-store.js";
 import { isCanvasTable, type CanvasTableDetail } from "../shared/canvas-table.js";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { CanvasMarkdownDocument } from "../shared/canvas-document.js";
@@ -9,9 +10,9 @@ import type { AssetLibrary } from "./asset-library.js";
 import { ToolRunError, type ToolRunner } from "./tools.js";
 
 export function registerCanvasRoutes(app: FastifyInstance, options: {
-  projects: ProjectManager; library: AssetLibrary; tools: ToolRunner;
+  projects: ProjectManager; library: AssetLibrary; tools: ToolRunner; studio?: StudioStore;
 }): CanvasStore {
-  const store = new CanvasStore(options.projects, options.library, options.tools);
+  const store = new CanvasStore(options.projects, options.library, options.tools, options.studio);
   const failure = (cause: unknown, reply: FastifyReply) => reply.code(cause instanceof CanvasError || cause instanceof ToolRunError ? cause.statusCode : 500).send({ error: cause instanceof Error ? cause.message : String(cause) });
   const base = "/projects/:projectId/canvas";
   const documentId = (query: unknown): string | undefined => {

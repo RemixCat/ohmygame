@@ -1,3 +1,4 @@
+import { validateCanvasGroups } from "./canvas-groups.js";
 import type {
   AssetCanvasDocument,
   AssetCanvasNode,
@@ -84,6 +85,7 @@ export function preferredImageOption(model?: ImageModel, preferredAspectRatio = 
 }
 
 export function validateAssetCanvasDocument(document: AssetCanvasDocument): void {
+  validateCanvasGroups(document);
   const nodeIds = new Set<string>();
   for (const node of document.nodes) {
     if (nodeIds.has(node.id)) throw new Error(`Duplicate Asset Canvas Node ID: ${node.id}`);

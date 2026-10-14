@@ -1,3 +1,4 @@
+import type { CanvasGroup } from "./studio.js";
 import type { CanvasTable } from "./canvas-table.js";
 import { Type } from "typebox";
 import { canvasNodeLayout } from "./canvas-node-layout.js";
@@ -72,10 +73,10 @@ export function mergeCanvasDocument(base: AssetCanvasDocument, local: AssetCanva
       if (!equal(before[key], ours[key]) && !equal(before[key], theirs[key]) && !equal(ours[key], theirs[key])) return undefined;
       dimensions[key] = merge(before[key], ours[key], theirs[key]);
     }
-    const metadata: { title?: string; description?: string } = {};
-    for (const key of ["title", "description"] as const) {
+    const metadata: Pick<AssetCanvasNode, "title" | "description" | "groupId" | "standardId" | "standardOverrides" | "template" | "quickAction"> = {};
+    for (const key of ["title", "description", "groupId", "standardId", "standardOverrides", "template", "quickAction"] as const) {
       if (!equal(before[key], ours[key]) && !equal(before[key], theirs[key]) && !equal(ours[key], theirs[key])) return undefined;
-      metadata[key] = merge(before[key], ours[key], theirs[key]);
+      Object.assign(metadata, { [key]: merge(before[key], ours[key], theirs[key]) });
     }
     const data: Record<string, unknown> = {};
     for (const key of new Set([...Object.keys(before.data), ...Object.keys(ours.data), ...Object.keys(theirs.data)])) {
@@ -95,6 +96,18 @@ export function mergeCanvasDocument(base: AssetCanvasDocument, local: AssetCanva
     if (!edge) return undefined;
     edges.push(edge);
   }
+  const mergeMap = <T>(a: Record<string, T>, b: Record<string, T>, c: Record<string, T>): Record<string, T> | undefined => {
+    const result: Record<string,T> = {};
+    for (const id of new Set([...Object.keys(a), ...Object.keys(b), ...Object.keys(c)])) {
+      if (!equal(a[id], b[id]) && !equal(a[id], c[id]) && !equal(b[id], c[id])) return;
+      const value = merge(a[id], b[id], c[id]); if (value !== undefined) result[id] = value;
+    }
+    return result;
+  };
+  const groupMap = (d: AssetCanvasDocument) => Object.fromEntries((d.groups ?? []).map((g) => [g.id,g]));
+  const groups = mergeMap<CanvasGroup>(groupMap(base), groupMap(local), groupMap(remote));
+  const groupLayout = mergeMap(base.editorLayout.groups ?? {}, local.editorLayout.groups ?? {}, remote.editorLayout.groups ?? {});
+  if (!groups || !groupLayout || nodes.some((n) => n.groupId && !groups[n.groupId])) return;
   const viewport = merge(base.viewport, local.viewport, remote.viewport);
   if (!viewport) return undefined;
   const ids = new Set(nodes.map((node) => node.id));
@@ -107,9 +120,10 @@ export function mergeCanvasDocument(base: AssetCanvasDocument, local: AssetCanva
     return { ...node, data } as AssetCanvasNode;
   });
   return {
-    ...local, nodes: cleaned, edges: edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target)), viewport,
+    ...local, version: local.version === 2 || remote.version === 2 ? 2 : 1, ...(Object.keys(groups).length || local.groups || remote.groups ? { groups: Object.values(groups) } : {}), nodes: cleaned, edges: edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target)), viewport,
     editorLayout: {
       ...local.editorLayout,
+      ...(Object.keys(groupLayout).length || local.editorLayout.groups || remote.editorLayout.groups ? { groups: groupLayout } : {}),
       fitView: merge(base.editorLayout.fitView, local.editorLayout.fitView, remote.editorLayout.fitView),
       viewport: merge(base.editorLayout.viewport, local.editorLayout.viewport, remote.editorLayout.viewport) ?? local.editorLayout.viewport,
       nodes: Object.fromEntries(nodes.map((node) => [node.id, canvasNodeLayout(node)])),

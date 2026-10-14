@@ -1,3 +1,5 @@
+import { StudioStore } from "./studio-store.js";
+import { registerStudioRoutes } from "./studio-routes.js";
 import { inspectPreviewConfiguration } from "./preview-configuration.js";
 import { validatePreviewSettings } from "../shared/preview-settings.js";
 import { previewPageUrl } from "../shared/preview-page.js";
@@ -626,6 +628,7 @@ export function createApp(options: AppOptions = {}) {
     nativeModels: (id) => providerModelSettings.models3D(id), isVisible: (model) => providerModelSettings.isVisible(model),
     isEnabled: providerEnabled, request: options.model3DFetch, defaultModel: () => providerModelSettings.defaultModel3D(), cloud: cloudModels,
   });
+  const studio = new StudioStore(dataDirectory, projects, library);
   const tools = new ToolRunner(
     dataDirectory,
     options.imageGenerator ?? providerImages,
@@ -663,6 +666,7 @@ export function createApp(options: AppOptions = {}) {
       }
       return { ...input, [key]: { ...selected } };
     },
+    studio,
   );
   const pluginSettings = new PluginSettingsStore(dataDirectory);
   const legacyMcp = new LegacyMcpConfiguration(piAgentDirectory);
@@ -764,7 +768,8 @@ export function createApp(options: AppOptions = {}) {
     logger: options.logger ?? false,
     ajv: { customOptions: { coerceTypes: false } },
   });
-  const canvasStore = registerCanvasRoutes(app, { projects, library, tools });
+  const canvasStore = registerCanvasRoutes(app, { projects, library, tools, studio });
+  registerStudioRoutes(app, studio, canvasStore);
   registerPluginCapabilityRoutes(app, { capabilities: pluginCapabilities, plugins, invalidate: invalidatePluginSessions });
   const pluginSetup = new PluginSetupManager(dataDirectory, piAgentDirectory, pluginCapabilities, plugins, localPlugins, invalidatePluginSessions, async ref => {
     const runtime = await getModelRuntime();

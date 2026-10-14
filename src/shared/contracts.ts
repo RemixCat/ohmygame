@@ -1,3 +1,4 @@
+import type { CanvasGroup, CanvasGroupLayout, GenerationReceipt } from "./studio.js";
 import type { ProjectPreviewSettings } from "./preview-settings.js";
 import type { PublishCommunityGame, PublishDeployment } from "./publish-v1.js";
 import type { WebSearchToolMetadata } from "./web-search.js";
@@ -419,6 +420,7 @@ export interface AssetCanvasNodeLayout extends AssetCanvasPosition {
 
 export interface AssetCanvasEditorLayout {
   version: 1;
+  groups?: Record<string, CanvasGroupLayout>;
   nodes: Record<string, AssetCanvasNodeLayout>;
   viewport: { x: number; y: number; zoom: number };
   /** Fit a remixed board once its nodes are measured, then save the new viewport. */
@@ -532,7 +534,7 @@ export type AssetCanvasNode = (
     actionIds: Model3DActionId[];
     assetId?: string;
   } }
-) & { title?: string; description?: string; width?: number; height?: number; quickAction?: CanvasQuickAction };
+) & { title?: string; description?: string; width?: number; height?: number; quickAction?: CanvasQuickAction; groupId?: string; standardId?: string; standardOverrides?: import("./studio.js").ProductionOverrides; template?: { id: string; revision: number } };
 
 export interface AssetCanvasEdge {
   id: string;
@@ -542,7 +544,8 @@ export interface AssetCanvasEdge {
 }
 
 export interface AssetCanvasDocument {
-  version: 1;
+  version: 1 | 2;
+  groups?: CanvasGroup[];
   /** Hydrated editor state, persisted separately in canvas/editor/<board-id>.json. */
   editorLayout: AssetCanvasEditorLayout;
   viewport: { width: number; height: number };
@@ -1091,6 +1094,7 @@ export interface ToolJobContext {
 }
 
 export interface ToolJob {
+  production?: GenerationReceipt;
   model?: ModelRef;
   id: string;
   toolId: ToolId;

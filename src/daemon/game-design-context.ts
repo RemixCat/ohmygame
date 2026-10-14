@@ -1,3 +1,5 @@
+import { activeStandard, validateProduction } from "../shared/studio.js";
+import { readCanvasFile } from "./canvas-files.js";
 import type { ProjectState, PromptContext } from "../shared/contracts.js";
 import { CANVAS_INDEX_FILE, canvasDocumentPath, type CanvasDocumentDetail } from "../shared/canvas-document.js";
 import { readCanvasDocuments, readCanvasIndex } from "./canvas-workspace.js";
@@ -19,11 +21,15 @@ export function gameDesignReference(detail: CanvasDocumentDetail): PromptContext
 
 export async function gameDesignMetadata(project: ProjectState, hadDesign = false): Promise<string | undefined> {
   try {
+    const source = await readCanvasFile(project.workspacePath, "production.json");
+    let productionContext = "";
+    if (source) { const production: unknown = JSON.parse(source); validateProduction(production); const standard = activeStandard(production); productionContext = standard ? `Current activated production standard (canvas/production.json): ${JSON.stringify(standard)}. Follow this direction while implementing. Use existing UI styles and shared components. Editing standards alone does not authorize rewriting game code. Specification checks and visual acceptance are separate; inspect actual gameplay screenshots for acceptance.` : "No project production standard is currently activated."; }
     const index = await readCanvasIndex(project.workspacePath);
-    if (!index) return hadDesign ? `This project currently has no saved main game design in ${CANVAS_INDEX_FILE}. Do not rely on an earlier document snapshot as the current design.` : undefined;
+    if (!index) return productionContext || (hadDesign ? `This project currently has no saved main game design in ${CANVAS_INDEX_FILE}. Do not rely on an earlier document snapshot as the current design.` : undefined);
     const documents = await readCanvasDocuments(project.workspacePath, index);
     const detail = project.type !== "asset-canvas" ? documents.find((document) => document.document.id === index.mainDocumentId) : undefined;
     return [
+      productionContext,
       detail ? `Game design: ${JSON.stringify(detail.document.title)}. Source: ${canvasDocumentPath(detail.document.id)}. Revision: ${detail.revision}.` : project.type === "asset-canvas" ? "Asset Canvas: documents are production references; this project has no game runtime or main game design document." : "No main design document is selected.",
       `Canvas workspace: canvas/AGENTS.md; index: ${CANVAS_INDEX_FILE}; assets: canvas/assets.json. Boards: ${JSON.stringify(index.boards.map((board) => ({ ...board, source: canvasBoardPath(board.id) })))}. Documents: ${JSON.stringify(documents.map((document) => ({ id: document.document.id, title: document.document.title, source: canvasDocumentPath(document.document.id), revision: document.revision })))}`,
       "Read relevant boards and Markdown documents for the requested work. A game's main design document guides implementation. Names, descriptions and prompts identify assets; read their local files to inspect actual visuals. Reread current files before editing. Casual conversation needs no canvas reads. An explicit document snapshot in this message is the referenced version.",

@@ -241,7 +241,7 @@ describe("Markdown design workspace", () => {
     expect(workspace.boards).toHaveLength(1);
     expect((await store.board(project.id, workspace.boards[0]!.id)).board.nodes).toEqual([]);
   });
-  it("shares documents and file edits with Asset Canvas while keeping a single board", async () => {
+  it("shares documents and file edits across multiple Asset Canvas boards", async () => {
     const { store, project, boardId, library } = await runtime(fakeGenerator, "asset-canvas");
     const doc = await store.createDocument(project.id, "Production reference");
     const updated = await store.save(project.id, { ...doc.document, markdown: "# Brief\n\n一只像素风格的角色。" }, doc.revision, doc.document.id);
@@ -258,7 +258,9 @@ describe("Markdown design workspace", () => {
     await writeFile(file, "# Updated production brief");
     expect((await store.read(project.id, doc.document.id))!.document.markdown).toBe("# Updated production brief");
     await expect(store.save(project.id, inserted.document, inserted.revision, doc.document.id)).rejects.toMatchObject({ statusCode: 409 });
-    await expect(store.changeBoards(project.id, { type: "create", name: "Second" })).rejects.toMatchObject({ statusCode: 409 });
+    const multiple = await store.changeBoards(project.id, { type: "create", name: "Second" });
+    expect(multiple.boards).toHaveLength(2);
+    await store.changeBoards(project.id, { type: "delete", boardId: multiple.boards[1]!.id });
     await expect(store.changeBoards(project.id, { type: "delete", boardId })).rejects.toMatchObject({ statusCode: 409 });
     await expect(store.setMainDocument(project.id, doc.document.id)).rejects.toMatchObject({ statusCode: 409 });
     expect((await checkCanvasWorkspace(project.workspacePath)).ok).toBe(true);
@@ -631,7 +633,7 @@ describe("Markdown design workspace", () => {
     const run = vi.spyOn(tools, "runPrepared").mockResolvedValue({ id: "animation-run", toolId: "animate-3d", createdAt: "now", files: [{ name: output.name, mediaType: "model/gltf-binary", assetId: output.id }] });
     await store.generateNode(project.id, boardId, animation.id);
     expect((await waitForJob(store, project.id)).status).toBe("succeeded");
-    expect(run).toHaveBeenCalledWith("animate-3d", expect.objectContaining({ assetId: source.id, actionIds: [0], heightMeters: 1.7 }), expect.any(AbortSignal), expect.any(String));
+    expect(run).toHaveBeenCalledWith("animate-3d", expect.objectContaining({ assetId: source.id, actionIds: [0], heightMeters: 1.7 }), expect.any(AbortSignal), expect.any(String), undefined, `${project.id}:${boardId}:${animation.id}`);
     const manifest = await readCanvasAssets(project.workspacePath);
     await writeFile(path.join(project.workspacePath, "assets/wrong.png"), "image");
     manifest.assets[source.id]!.path = "assets/wrong.png";
