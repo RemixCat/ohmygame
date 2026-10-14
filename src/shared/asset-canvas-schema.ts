@@ -46,11 +46,24 @@ const reference = {
   ],
 } as const;
 const nodeReferences = { type: "array", maxItems: MAX_TEXT_NODE_REFERENCES, uniqueItems: true, items: reference.oneOf[1] } as const;
+const quickAction = {
+  type: "object", additionalProperties: false, required: ["kind", "sourceNodeId"],
+  properties: {
+    kind: { enum: ["describe", "objects", "views", "image", "model-3d"] },
+    sourceNodeId: id, groupId: id, itemId: id, imageModel: model,
+    resolution: { enum: IMAGE_RESOLUTIONS }, aspectRatio: { enum: IMAGE_ASPECT_RATIOS },
+    background: { enum: ["plain", "transparent"] },
+    objects: { type: "array", maxItems: 16, items: {
+      type: "object", additionalProperties: false, required: ["id", "name", "description", "prompt", "selected"],
+      properties: { id, name: { type: "string", maxLength: 200 }, description: { type: "string", maxLength: 2000 }, prompt: { type: "string", maxLength: 4000 }, selected: { type: "boolean" } },
+    } },
+  },
+} as const;
 const node = (type: string, data: object) => ({
   type: "object",
   additionalProperties: false,
   required: ["id", "type", "data"],
-  properties: { id, type: { const: type }, title: { type: "string", maxLength: 200 }, description: { type: "string", maxLength: 2000 }, data },
+  properties: { id, type: { const: type }, title: { type: "string", maxLength: 200 }, description: { type: "string", maxLength: 2000 }, quickAction, data },
 });
 const model3DOptions = { type: "object", additionalProperties: false, properties: {
   pose: { enum: ["a-pose", "t-pose"] }, textureModel: id, textureQuality: { enum: ["fast", "standard", "detailed", "extreme"] },

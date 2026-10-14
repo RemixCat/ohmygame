@@ -67,6 +67,22 @@ describe("text generation", () => {
       expect.objectContaining({ maxTokens: 2_000, maxRetries: 0 }),
     );
   });
+  it.each(["error", "aborted"] as const)("preserves creative generation provider %s details", async (stopReason) => {
+    const { runtime } = fixture({ ...assistant("Partial"), stopReason, errorMessage: "API key was rejected" });
+    await expect(generateCreativeText(runtime, model, "Write")).rejects.toThrow("API key was rejected");
+  });
+  it("reports aborted and truncated creative results without returning incomplete JSON", async () => {
+    const aborted = fixture({ ...assistant(""), stopReason: "aborted" });
+    await expect(generateCreativeText(aborted.runtime, model, "Write")).rejects.toThrow("cancelled or timed out");
+    const truncated = fixture({ ...assistant("[]"), stopReason: "length" });
+    await expect(generateCreativeText(truncated.runtime, model, "Recognize")).rejects.toThrow("truncated");
+  });
+  it("allows enough output for image recognition lists", async () => {
+    const { runtime, completeSimple } = fixture(assistant("[]"));
+    await generateCreativeText(runtime, { ...model, input: ["text", "image"] }, "Recognize", undefined,
+      [{ type: "image", label: "Reference", image: { mediaType: "image/png", data: "aW1hZ2U=" } }]);
+    expect(completeSimple.mock.calls[0]?.[2]?.maxTokens).toBe(6_000);
+  });
   it("rewrites using the complete Markdown and preserves relative image context", async () => {
     const { runtime, streamSimple } = fixture(assistant("## Rules\n\nRevised\n\n![Hero](../../assets/hero.png)"));
     const document = { id: "rules", title: "Game rules", markdown: "## Rules\n\n" + "种植与探索。".repeat(3000) + "\n\n![Hero](../../assets/hero.png)" };

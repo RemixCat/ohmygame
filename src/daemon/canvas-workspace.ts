@@ -525,6 +525,12 @@ export class CanvasStore {
       await withCanvasLock(this.#project(id).workspacePath, async () => {
         if (controller.signal.aborted) return;
         const workspace = this.#project(id).workspacePath, boardId = job.context!.boardId!;
+        const currentBoard = await readCanvasBoard(workspace, boardId);
+        const outputNode = currentBoard?.board.nodes.find((node) => node.id === job.context!.nodeId);
+        if (outputNode?.quickAction && outputNode.title?.trim()) {
+          const name = outputNode.title.replace(/[\\/\x00-\x1f]/g, "-").trim().slice(0, 180);
+          if (name) output.name = (await this.library.rename(output.assetId!, name)).name;
+        }
         await ensureCanvasAssets(this.#project(id), this.projects, this.library, [output.assetId!]);
         if ((await readCanvasIndex(workspace))?.boards.some((board) => board.id === boardId)) {
           const detail = await readCanvasBoard(workspace, boardId), node = detail?.board.nodes.find((node) => node.id === job.context!.nodeId);

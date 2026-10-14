@@ -23,6 +23,12 @@ export const lastCanvasClipboard = () => copied;
 export function rememberCanvasClipboard(value: CanvasClipboard) { copied = structuredClone(value); }
 
 function remapReferences(node: AssetCanvasNode, ids: ReadonlyMap<string, string>) {
+  if (node.quickAction) {
+    const source = ids.get(node.quickAction.sourceNodeId);
+    const group = node.quickAction.groupId ? ids.get(node.quickAction.groupId) : undefined;
+    if (!source || (node.quickAction.groupId && !group)) delete node.quickAction;
+    else node.quickAction = { ...node.quickAction, sourceNodeId: source, ...(group ? { groupId: group } : {}) };
+  }
   const reference = (value: AssetCanvasReference): AssetCanvasReference[] => value.type === "library" ? [value] : ids.has(value.nodeId) ? [{ ...value, nodeId: ids.get(value.nodeId)! }] : [];
   if (node.type === "image" || node.type === "model-3d") node.data.images = node.data.images.flatMap(reference);
   if ((node.type === "text" || node.type === "document") && node.data.references) {
