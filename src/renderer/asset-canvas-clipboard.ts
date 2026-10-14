@@ -55,7 +55,7 @@ function remapReferences(node: AssetCanvasNode, ids: ReadonlyMap<string, string>
 export function createCanvasClipboard(projectId: string, nodes: AssetCanvasNode[], edges: AssetCanvasEdge[]): CanvasClipboard {
   const ids = new Map(nodes.map((node) => [node.id, node.id]));
   const selected = structuredClone(nodes);
-  selected.forEach((node) => remapReferences(node, ids));
+  selected.forEach((node) => { delete node.groupId; remapReferences(node, ids); });
   return { format: "ohmygame/canvas-nodes", version: 1, projectId, nodes: selected, edges: structuredClone(edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target))) };
 }
 
@@ -79,6 +79,7 @@ export function duplicateCanvasSelection(nodes: AssetCanvasNode[], edges: AssetC
   const left = Math.min(...nodes.map((node) => node.position.x)), top = Math.min(...nodes.map((node) => node.position.y));
   const duplicates = structuredClone(nodes).map((node) => {
     node.id = ids.get(node.id)!;
+    delete node.groupId;
     node.position = snapCanvasPosition({ x: position.x + node.position.x - left, y: position.y + node.position.y - top });
     remapReferences(node, ids);
     return node;

@@ -1,3 +1,4 @@
+import { StudioStandards } from "./studio-standards.js";
 import {
   Clapperboard,
   Code2,
@@ -137,6 +138,8 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
     viewport: DEFAULT_CANVAS_VIEWPORT,
     view: "canvas",
   });
+  const [standardsOpen, setStandardsOpen] = useState(false);
+  const [standardsVisited, setStandardsVisited] = useState(false);
   const [workspaceView, setWorkspaceView] = useState<"canvas" | "code">("canvas");
   const [codeRevision, setCodeRevision] = useState(0);
   const [fileRequest, setFileRequest] = useState(openFileRequest);
@@ -987,19 +990,23 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
   }, [nodes, edges, selectedEdgeId, issues, graphMeta, codebase, thumbnails, builtDefinition]);
   const canvasPlayer = useMemo(() => ({ projectId, onRenameNode: renameNode, onSelectEdge: selectEdge, onOpenNode: openNode }), [projectId]);
   const projectIssues = issues.filter((issue) => !issue.surfaceId && !nodeIdForIssuePath(issue.path, nodes));
-  const tabs: WorkspaceTabOption<"canvas" | "design" | "code">[] = [
+  const tabs: WorkspaceTabOption<"canvas" | "design" | "code" | "standards">[] = [
     { id: "canvas", label: t("storyEditor.tab.story"), icon: Clapperboard },
     ...(onDesignOpenChange ? [{ id: "design" as const, label: t("workspace.tab.design"), icon: FileText }] : []),
     { id: "code", label: t("workspace.tab.code"), icon: Code2 },
+    { id: "standards", label: t("productionStudio.title"), icon: FileText },
   ];
   const renderNavigation = () => <div className={`viewer-navigation${chatOnRight ? " is-chat-right" : ""}`}>
     {chatOnRight && onHome ? (
       <button className="icon-button pane-header-action workspace-home-button" type="button" onClick={onHome} title={t("sidebar.home")} aria-label={t("sidebar.home")}><House size={14} /></button>
     ) : null}
     <WorkspaceTabs
-      tabs={tabs} active={designOpen ? "design" : workspaceView}
+      tabs={tabs} active={standardsOpen ? "standards" : designOpen ? "design" : workspaceView}
       onChange={(tab) => {
         const navigate = () => {
+          setStandardsOpen(tab === "standards");
+          if (tab === "standards") setStandardsVisited(true);
+          if (tab === "standards") { onDesignOpenChange?.(false); return; }
           if (tab !== "design") {
             if (tab === "code") clearSelection();
             setWorkspaceView(tab);
@@ -1045,8 +1052,10 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
           </> : null}
         </div>
       </header>
+      {standardsVisited && <div className="studio-retained" hidden={!standardsOpen}><StudioStandards key={projectId} projectId={projectId} /></div>}
+      {!standardsOpen && <>
       {designOpen ? <Suspense fallback={<div className="design-loading"><LoaderCircle className="spin" size={18} /></div>}><CanvasWorkspace
-        project={project} onProjectUpdated={onProjectUpdated} headerActionsTarget={designHeaderActions} onLeaveReady={registerDesignLeave} onSaveReady={onDesignSaveReady} onContextChange={onDesignContextChange}
+        project={project} onEditStandards={() => { setStandardsOpen(true); onDesignOpenChange?.(false); }} onProjectUpdated={onProjectUpdated} headerActionsTarget={designHeaderActions} onLeaveReady={registerDesignLeave} onSaveReady={onDesignSaveReady} onContextChange={onDesignContextChange}
       /></Suspense> : workspaceView !== "code" ? <div className="interactive-story-body">
         <div className="interactive-story-canvas">
           {phase === "loading" ? <div className="story-canvas-state">{t("storyEditor.loadingScenes")}</div> : null}
@@ -1123,6 +1132,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
       </div> : <main className="story-code-view" aria-label={t("storyEditor.code")}>
         <WorkspaceCodeView projectId={projectId} revision={workspaceRevision + codeRevision} openFileRequest={fileRequest} />
       </main>}
+      </>}
       {openedNode && codebase ? <PlayableNodeWorkbench
         projectId={projectId}
         node={openedNode}

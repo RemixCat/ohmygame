@@ -1,3 +1,4 @@
+import type { StudioEnvelope, StudioLibrary, ProjectProduction } from "../shared/studio.js";
 import { runtimeConnection, subscribeRuntimeConnection } from "./runtime-connection.js";
 import type { DesktopRuntimeService } from "../shared/desktop-runtime.js";
 import {
@@ -1215,3 +1216,11 @@ export async function releasePreview(projectId: string, leaseId: string): Promis
 export async function inspectProjectPreview(projectId: string, settings: ProjectRunSettings): Promise<{ mode?: string; manager?: string; source?: string; error?: string }> {
   return request(`/projects/${projectId}/preview/inspect`, { method: "POST", body: JSON.stringify(settings) });
 }
+
+export const getStudioLibrary = (): Promise<StudioEnvelope<StudioLibrary>> => request("/library/organization");
+export const saveStudioLibrary = (data: StudioEnvelope<StudioLibrary>): Promise<StudioEnvelope<StudioLibrary>> => request("/library/organization", { method: "PUT", body: JSON.stringify(data) });
+export const getProjectProduction = (id: string): Promise<StudioEnvelope<ProjectProduction>> => request(`/projects/${encodeURIComponent(id)}/production`);
+export const saveProjectProduction = (id: string, data: StudioEnvelope<ProjectProduction>): Promise<StudioEnvelope<ProjectProduction>> => request(`/projects/${encodeURIComponent(id)}/production`, { method: "PUT", body: JSON.stringify(data) });
+export const captureStudioTemplate = (id: string, boardId: string, groupId: string, name: string): Promise<import("../shared/studio.js").WorkflowTemplate> => request(`/projects/${encodeURIComponent(id)}/studio/capture`, { method: "POST", body: JSON.stringify({ boardId, groupId, name }) });
+export const insertStudioTemplate = (id: string, boardId: string, templateId: string, values: Record<string,string>, bindings: Record<string,string>, revision: string): Promise<import("../shared/canvas-workspace.js").CanvasBoardDetail> => request(`/projects/${encodeURIComponent(id)}/studio/insert`, { method: "POST", body: JSON.stringify({ boardId, templateId, values, bindings, revision }) });
+export const previewStudioGeneration = (id: string, boardId: string, nodeId: string): Promise<ToolJob> => request(`/projects/${encodeURIComponent(id)}/canvas/boards/${encodeURIComponent(boardId)}/nodes/${encodeURIComponent(nodeId)}/production-preview`, { method: "POST" });

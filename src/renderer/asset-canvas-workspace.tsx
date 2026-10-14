@@ -1,3 +1,6 @@
+import { StudioGroupsPanel, StudioGroupFrame, groupCanvasNodes, groupCanvasEdges, GROUP_PREFIX } from "./studio-groups.js";
+import { collapsedAncestor, moveGroup } from "../shared/canvas-groups.js";
+import type { CanvasGroup } from "../shared/studio.js";
 import { CanvasTableNode, type CanvasTables, type TableNodeRuntime } from "./canvas-table-node.js";
 import {
   ArrowUp,
@@ -228,7 +231,7 @@ type AssetCanvasFlowData = {
   animateRuntime?: Animate3DNodeRuntime;
   textRuntime?: TextNodeRuntime;
 };
-type AssetCanvasFlowNode = Node<AssetCanvasFlowData, AssetCanvasNodeType> & { title?: string; description?: string; quickAction?: CanvasQuickAction };
+type AssetCanvasFlowNode = Node<AssetCanvasFlowData, AssetCanvasNodeType> & { title?: string; description?: string; quickAction?: CanvasQuickAction; groupId?: string; standardId?: string; standardOverrides?: import("../shared/studio.js").ProductionOverrides; template?: { id: string; revision: number } };
 
 interface MediaNodeRuntime {
   generating: boolean;
@@ -302,6 +305,7 @@ interface MediaReferenceView {
 }
 
 const STORY_NODE_TYPES: NodeTypes = {
+  "studio-group": StudioGroupFrame,
   table: CanvasTableNode,
   document: CanvasDocumentNode,
   text: TextNode,
@@ -312,7 +316,8 @@ const STORY_NODE_TYPES: NodeTypes = {
   asset: AssetNode,
 };
 
-export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled, hidden = false, storage, documents, tables, assets: localAssets, conflicted = false, overlay, onSaveReady, onSyncReady, onResolveReady, onStatusChange, onSelectionChange, expandedDocument }: {
+export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled, hidden = false, storage, documents, tables, assets: localAssets, conflicted = false, overlay, onSaveReady, onSyncReady, onResolveReady, onStatusChange, onSelectionChange, expandedDocument, onEditStandards }: {
+  onEditStandards?: () => void;
   project: ProjectState;
   initialNodeId?: string;
   onInitialNodeHandled?: () => void;
@@ -345,6 +350,8 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   const [transferError, setTransferError] = useState<string>();
   // The canvas file format still requires a viewport; nothing in Asset Canvas uses it, so it is only carried through saves.
   const [viewport, setViewport] = useState({ width: 1280, height: 720 });
+  const [groups, setGroups] = useState<CanvasGroup[]>([]);
+  const [boardVersion, setBoardVersion] = useState<1 | 2>(1);
   const [nodes, setNodes] = useState<AssetCanvasFlowNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [editorLayout, setEditorLayout] = useState<AssetCanvasEditorLayout>({
@@ -452,6 +459,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
       const models = imageCatalog.models;
       const loadedVideoModels = videoCatalog.models;
       if (disposed) return;
+      setGroups(story.groups ?? []); setBoardVersion(story.version);
       setViewport(story.viewport);
       const loadedNodes = story.nodes.map((node) => toFlowNode(node, models, loadedVideoModels));
       const request = initialNodeRequest.current;
@@ -570,14 +578,14 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   }, [phase, projectId, project.type, closing]);
 
   const document = useMemo(
-    () => assetCanvasDocument(viewport, nodes, edges, {
+    () => ({ ...assetCanvasDocument(viewport, nodes, edges, {
       ...editorLayout,
       nodes: {
         ...Object.fromEntries(nodes.map((node) => [node.id, canvasNodeLayout(node)])),
       },
       view: "canvas",
-    }, model3DModels),
-    [edges, editorLayout, nodes, viewport, model3DModels],
+    }, model3DModels), version: boardVersion, ...(groups.length || boardVersion === 2 ? { groups } : {}) }),
+    [edges, editorLayout, nodes, viewport, model3DModels, groups, boardVersion],
   );
   latestCanvas.current = document;
 
@@ -798,6 +806,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     latestCanvas.current = merged;
     observeHistoryDocument(merged);
     setNodes(merged.nodes.map((node) => ({ ...toFlowNode(node, imageModelsRef.current, videoModelsRef.current), selected: selected.has(node.id) })));
+    setGroups(merged.groups ?? []); setBoardVersion(merged.version);
     setEdges(merged.edges); setViewport(merged.viewport); setEditorLayout(merged.editorLayout);
     updateHistoryControls();
   }
@@ -890,9 +899,19 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     if (story && phase === "ready") void save(story).catch(() => {});
   }, [save, phase]);
 
-  const onNodesChange = useCallback((changes: NodeChange<AssetCanvasFlowNode>[]) => {
-    setNodes((current) => applyNodeChanges(changes, current));
-  }, []);
+  function onNodesChange(changes: NodeChange<AssetCanvasFlowNode>[]) {
+    const groupChanges = changes.filter((c) => "id" in c && c.id.startsWith(GROUP_PREFIX));
+    if (groupChanges.some((c) => c.type === "position" && c.position) && latestCanvas.current) {
+      const next = structuredClone(latestCanvas.current);
+      const frames = groupCanvasNodes(next, () => {});
+      for (const c of groupChanges) if (c.type === "position" && c.position) {
+        const frame = frames.find((f) => f.id === c.id); if (frame) moveGroup(next, c.id.slice(GROUP_PREFIX.length), c.position.x - frame.position.x, c.position.y - frame.position.y);
+      }
+      latestCanvas.current = next; applyEditorCanvas(next);
+    }
+    const real = changes.filter((c) => !("id" in c) || !c.id.startsWith(GROUP_PREFIX));
+    if (real.length) setNodes((current) => applyNodeChanges(real, current));
+  }
   function onEdgesChange(changes: EdgeChange[]): void {
     const assetEdgeIds = new Set(assetEdges.map((edge) => edge.id));
     for (const change of changes) {
@@ -1650,12 +1669,20 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     next = { ...next, editorLayout: { ...next.editorLayout, viewport: latestCanvas.current?.editorLayout.viewport ?? next.editorLayout.viewport } };
     validateAssetCanvasDocument(next);
     observeHistoryDocument(next);
+    setGroups(next.groups ?? []); setBoardVersion(next.version);
     setViewport(next.viewport);
     setNodes(next.nodes.map((node) => toFlowNode(node, imageModels, videoModels)));
     setEdges(next.edges);
     setEditorLayout(next.editorLayout);
   }
 
+  function changeGroups(next: AssetCanvasDocument) {
+    commitPendingHistory(); pushUndoSnapshot(document); editorRedoHistory.current = [];
+    latestCanvas.current = next; applyEditorCanvas(next); updateHistoryControls();
+  }
+  const toggleGroup = (id: string) => { const next = structuredClone(document); const p = (next.editorLayout.groups ??= {})[id] ??= { x: 32, y: 32 }; p.collapsed = !p.collapsed; changeGroups(next); };
+  const groupNodes = groupCanvasNodes(document, toggleGroup) as unknown as AssetCanvasFlowNode[];
+  const visibleNodes = renderedNodes.map((n) => ({ ...n, hidden: !!collapsedAncestor(document, n as unknown as AssetCanvasNode) }));
   return (
     <section className="viewer-pane interactive-story-workspace" hidden={hidden} aria-label={t("canvas.assetCanvasWorkspace")}>
       {expandedTextId && nodes.find((node) => node.id === expandedTextId)?.type === "text" ? <div className="design-expanded-document" role="dialog" aria-modal="true" aria-label={t("assetCanvas.expandedText")}>
@@ -1687,13 +1714,14 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
             void importCanvasFiles(transferredFiles(event.dataTransfer), at);
           }}>
           {overlay}
+          {phase === "ready" && <StudioGroupsPanel projectId={projectId} boardId={storage.boardId} board={document} selected={nodes.filter((n) => n.selected).map((n) => n.id)} onChange={changeGroups} flush={flush} onEditStandards={onEditStandards} />}
           {fileDropActive ? <div className="canvas-file-drop-overlay"><Upload size={18} /><span>{t("assetCanvas.dropFiles")}</span></div> : importingAssets ? <div className="canvas-file-import-status" role="status"><LoaderCircle size={13} className="spin" /><span>{t("assetCanvas.importing")}</span></div> : null}
           {phase === "loading" ? <div className="story-canvas-state">{t("assetCanvas.loading")}</div> : null}
           {phase === "error" ? <div className="story-canvas-state story-canvas-state-error" role="alert"><span>{t("assetCanvas.loadFailed", { error: loadError })}</span><button type="button" onClick={() => setLoadAttempt((value) => value + 1)}>{t("assetCanvas.reload")}</button></div> : null}
           {phase === "ready" ? (
             <EditorCanvas<AssetCanvasFlowNode>
-              nodes={renderedNodes}
-              edges={[...edges, ...assetEdges]}
+              nodes={[...groupNodes, ...visibleNodes]}
+              edges={groupCanvasEdges(document, [...edges, ...assetEdges])}
               nodeTypes={STORY_NODE_TYPES}
               onInit={(instance) => { flowInstance.current = instance; }}
               addControl={<AssetCanvasAddControl
@@ -1832,7 +1860,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
 }
 
 export function canvasHistoryKey(canvas: AssetCanvasDocument): string {
-  return JSON.stringify({ viewport: canvas.viewport, nodes: canvas.nodes, edges: canvas.edges }, (_key, value) =>
+  return JSON.stringify({ version: canvas.version, viewport: canvas.viewport, nodes: canvas.nodes, edges: canvas.edges, groups: canvas.groups, groupLayout: canvas.editorLayout.groups }, (_key, value) =>
     value && typeof value === "object" && !Array.isArray(value) ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right))) : value);
 }
 
@@ -2912,7 +2940,7 @@ function AssetCanvasContextMenu({
 }
 
 function toFlowNode(node: AssetCanvasNode, imageModels: ImageModel[], videoModels: VideoModel[]): AssetCanvasFlowNode {
-  return { ...flowNodeData(node, imageModels, videoModels), ...(node.quickAction ? { quickAction: node.quickAction } : {}), ...(node.width !== undefined ? { width: node.width } : {}), ...(node.height !== undefined ? { height: node.height } : {}), ...(node.title !== undefined ? { title: node.title } : {}), ...(node.description !== undefined ? { description: node.description } : {}) };
+  return { ...flowNodeData(node, imageModels, videoModels), ...(node.groupId ? { groupId: node.groupId } : {}), ...(node.standardId ? { standardId: node.standardId } : {}), ...(node.standardOverrides ? { standardOverrides: node.standardOverrides } : {}), ...(node.template ? { template: node.template } : {}), ...(node.quickAction ? { quickAction: node.quickAction } : {}), ...(node.width !== undefined ? { width: node.width } : {}), ...(node.height !== undefined ? { height: node.height } : {}), ...(node.title !== undefined ? { title: node.title } : {}), ...(node.description !== undefined ? { description: node.description } : {}) };
 }
 function flowNodeData(node: AssetCanvasNode, imageModels: ImageModel[], videoModels: VideoModel[]): AssetCanvasFlowNode {
   if (node.type === "asset") return { ...node, deletable: true };
@@ -3106,7 +3134,7 @@ function assetCanvasDocument(
 }
 
 export function toAssetCanvasNode(node: AssetCanvasFlowNode, model3DModels?: readonly Model3DModel[]): AssetCanvasNode {
-  return { ...assetCanvasNodeData(node, model3DModels), ...(node.quickAction ? { quickAction: node.quickAction } : {}), ...(node.width !== undefined ? { width: node.width } : {}), ...(node.height !== undefined ? { height: node.height } : {}), ...(node.title !== undefined ? { title: node.title } : {}), ...(node.description !== undefined ? { description: node.description } : {}) };
+  return { ...assetCanvasNodeData(node, model3DModels), ...(node.groupId ? { groupId: node.groupId } : {}), ...(node.standardId ? { standardId: node.standardId } : {}), ...(node.standardOverrides ? { standardOverrides: node.standardOverrides } : {}), ...(node.template ? { template: node.template } : {}), ...(node.quickAction ? { quickAction: node.quickAction } : {}), ...(node.width !== undefined ? { width: node.width } : {}), ...(node.height !== undefined ? { height: node.height } : {}), ...(node.title !== undefined ? { title: node.title } : {}), ...(node.description !== undefined ? { description: node.description } : {}) };
 }
 function assetCanvasNodeData(node: AssetCanvasFlowNode, model3DModels?: readonly Model3DModel[]): AssetCanvasNode {
   if (node.type === "animate-3d") {

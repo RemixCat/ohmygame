@@ -1,3 +1,5 @@
+import { StudioStandards } from "./studio-standards.js";
+import { StudioLibraryView } from "./studio-library.js";
 import { previewPageUrl as isolatedPreviewUrl } from "../shared/preview-page.js";
 import {
   Check,
@@ -56,7 +58,7 @@ import { useRuntimeConnection } from "./runtime-connection.js";
 import { DesktopGamePreview } from "./desktop-game-preview.js";
 import { t } from "./i18n.js";
 
-type WorkspaceTab = "preview" | "code" | "assets";
+type WorkspaceTab = "preview" | "code" | "assets" | "standards";
 const CanvasWorkspace = lazy(() => import("./canvas-workspace.js").then((module) => ({ default: module.CanvasWorkspace })));
 type WorkspaceContextMenu = { path: string; directory: boolean; x: number; y: number };
 type WorkspaceFileChange = { from?: string; to?: string };
@@ -124,6 +126,7 @@ export function CodingWorkspace({
     ? t("workspace.godotPublishing")
     : publishing ? t("workspace.publishing") : t("workspace.publish");
   const [selectedTab, setSelectedTab] = useState<WorkspaceTab>(supportsPreview ? "preview" : "code");
+  const [standardsVisited, setStandardsVisited] = useState(false);
   const activeTab = selectedTab === "preview" && !supportsPreview ? "code" : selectedTab;
   const shownTab = designOpen ? "design" : activeTab;
   const [designHeaderActions, setDesignHeaderActions] = useState<HTMLDivElement | null>(null);
@@ -297,6 +300,7 @@ export function CodingWorkspace({
     ...(onDesignOpenChange ? [{ id: "design" as const, label: t("workspace.tab.design"), icon: FileText }] : []),
     { id: "code", label: t("workspace.tab.code"), icon: Code2 },
     { id: "assets", label: t("workspace.tab.assets"), icon: Layers3 },
+    { id: "standards", label: t("productionStudio.title"), icon: FileText },
   ];
   const renderNavigation = () => <div className={`viewer-navigation${chatOnRight ? " is-chat-right" : ""}`}>
     {chatOnRight && onHome ? (
@@ -305,6 +309,7 @@ export function CodingWorkspace({
       </button>
     ) : null}
     <WorkspaceTabs tabs={tabs} active={shownTab} onChange={(tab) => {
+      if (tab === "standards") setStandardsVisited(true);
       const navigate = () => {
         if (tab !== "design") setSelectedTab(tab);
         onDesignOpenChange?.(tab === "design");
@@ -391,8 +396,9 @@ export function CodingWorkspace({
         </div>
       </header>
 
+      {project && (standardsVisited || shownTab === "standards") ? <div className="studio-retained" hidden={shownTab !== "standards"}><StudioStandards key={project.id} projectId={project.id} /></div> : null}
       {designOpen && project ? <Suspense fallback={<div className="design-loading"><LoaderCircle className="spin" size={18} /></div>}><CanvasWorkspace
-        project={project} onProjectUpdated={onProjectUpdated} headerActionsTarget={designHeaderActions} onLeaveReady={registerDesignLeave} onSaveReady={onDesignSaveReady} onContextChange={onDesignContextChange}
+        project={project} onEditStandards={() => { setSelectedTab("standards"); onDesignOpenChange?.(false); }} onProjectUpdated={onProjectUpdated} headerActionsTarget={designHeaderActions} onLeaveReady={registerDesignLeave} onSaveReady={onDesignSaveReady} onContextChange={onDesignContextChange}
       /></Suspense> : null}
 
       {supportsPreview ? (
@@ -432,19 +438,8 @@ export function CodingWorkspace({
             ? (path, mode) => window.ohMyGameDesktop!.openProjectFile(project.id, path, mode)
             : undefined}
         />
-      ) : shownTab === "assets" ? (
-        <AssetsView
-          key={project?.id}
-          projectId={project?.id}
-          files={files.filter((file) => file.mediaType && !file.directory)}
-          loading={filesLoading}
-          error={filesError}
-          revision={workspaceRevision + filesRevision}
-          onShowInCode={(path) => {
-            setSelectedCodePath(path);
-            setSelectedTab("code");
-          }}
-        />
+      ) : shownTab === "assets" && project ? (
+        <StudioLibraryView key={project.id} initialProjectId={project.id} />
       ) : null}
       {supportsPreview && logsOpen ? <PreviewLogs project={project} onClose={() => setLogsOpen(false)} /> : null}
       {project && publishDialog ? <PublishDialog project={project} publishing={publishing} justPublished={publishDialog === "success"} onClose={onClosePublish} onPublish={onPublish} /> : null}
