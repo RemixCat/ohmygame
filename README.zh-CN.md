@@ -2,7 +2,7 @@
 > **社区 Studio 增强版：**这里是 [RemixCat/ohmygame](https://github.com/RemixCat/ohmygame)，
 > 基于 [WhiteTowerAI/ohmygame](https://github.com/WhiteTowerAI/ohmygame) 开发。
 > 请使用 **`studio` 分支**获取本 Fork 的扩展，详见
-> [功能状态、源码运行与贡献指南](docs/fork-maintenance.zh-CN.md)。
+> [English guide](docs/fork-maintenance.md)（[功能状态、源码运行与贡献指南](docs/fork-maintenance.zh-CN.md)）。
 > SpriteCook 接入目前**处于计划阶段，尚不可用**。下面的下载按钮安装的是官方版本，
 > **不包含本 Fork 新增功能**。
 
