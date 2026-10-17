@@ -9,6 +9,7 @@ import { StudioStore } from "../src/daemon/studio-store.js";
 import { CanvasStore } from "../src/daemon/canvas-workspace.js";
 import { ToolRunner } from "../src/daemon/tools.js";
 import { createApp } from "../src/daemon/app.js";
+import { ProjectWrites } from "../src/daemon/project-writes.js";
 import {
   createAssetCanvasDocument,
   createAssetGenerationNode,
@@ -66,6 +67,7 @@ async function fixture() {
     { generate: generate3D },
     undefined,
     library,
+    undefined,
     undefined,
     studio,
   );
@@ -711,6 +713,81 @@ describe("production generation and workflow templates", () => {
     expect((await f.studio.read()).value.smart[0]?.reviewProjectId).toBe(
       f.project.id,
     );
+  });
+  it("protects production saves and bulk reviews across workspace restore boundaries", async () => {
+    const f = await fixture();
+    const asset = await f.library.add("fox.png", Buffer.from("png"));
+    let writes: ProjectWrites | undefined;
+    const initialize = ProjectWrites.prototype.initialize;
+    const spy = vi
+      .spyOn(ProjectWrites.prototype, "initialize")
+      .mockImplementation(function (this: ProjectWrites, id, version) {
+        writes = this;
+        initialize.call(this, id, version);
+      });
+    const app = createApp({ dataDirectory: f.directory });
+    cleanups.push(() => app.close());
+    let production: { value: ProjectProduction; revision: string };
+    try {
+      production = (
+        await app.inject({
+          method: "GET",
+          url: `/projects/${f.project.id}/production`,
+        })
+      ).json();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(writes).toBeDefined();
+    const version = writes!.changed(f.project.id);
+    const payload = {
+      assetIds: [asset.id],
+      revision: production!.revision,
+      projectId: f.project.id,
+      status: "approved",
+    };
+    const staleSave = await app.inject({
+      method: "PUT",
+      url: `/projects/${f.project.id}/production`,
+      headers: { "x-workspace-version": "0" },
+      payload: production!,
+    });
+    expect(staleSave.statusCode).toBe(409);
+    expect(staleSave.json().code).toBe("workspace_stale");
+    const staleBatch = await app.inject({
+      method: "POST",
+      url: "/library/studio/batch",
+      headers: { "x-workspace-version": "0" },
+      payload,
+    });
+    expect(staleBatch.statusCode).toBe(409);
+    expect(staleBatch.json().code).toBe("workspace_stale");
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const lock = writes!.exclusive(f.project.id, () => gate);
+    try {
+      const busy = await app.inject({
+        method: "POST",
+        url: "/library/studio/batch",
+        headers: { "x-workspace-version": version },
+        payload,
+      });
+      expect(busy.statusCode).toBe(409);
+      expect(busy.json().code).toBe("workspace_busy");
+    } finally {
+      release();
+      await lock;
+    }
+    const saved = await app.inject({
+      method: "POST",
+      url: "/library/studio/batch",
+      headers: { "x-workspace-version": version },
+      payload,
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().value.reviews[asset.id].status).toBe("approved");
   });
   it("keeps outside image inputs in their original slots when instantiating templates", () => {
     const { b, n, child } = grouped();

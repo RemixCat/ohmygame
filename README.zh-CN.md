@@ -156,6 +156,9 @@ OhMyGame 不会把你绑定在某一个模型上，也不按次收费。
 
 ### 下载
 
+每个版本的变化可查看[更新日志](CHANGELOG.md)，或在应用内打开
+**设置 → 关于 → 更新日志**。
+
 点击页面顶部的按钮，或者前往 [Releases](https://github.com/WhiteTowerAI/ohmygame/releases)
 下载安装包。目前提供 macOS（Apple 芯片）和 Windows（x64）版本。Windows 版暂时还没有代码签名，
 安装时 Windows 可能会弹出 SmartScreen 警告。
@@ -234,6 +237,16 @@ bun run dev:desktop    # Electron 桌面应用
 环境搭建、检查和评审流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，
 中文简介见[中文快速指引](docs/contributing.zh-CN.md)，各模块的说明见[文档索引](docs/README.md)。
 安全问题请按照 [SECURITY.md](SECURITY.md) 报告。
+
+## Star 历史
+
+<a href="https://www.star-history.com/?repos=whitetowerai%2Fohmygame&type=date&legend=top-left">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=whitetowerai/ohmygame&type=date&theme=dark&legend=top-left" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=whitetowerai/ohmygame&type=date&legend=top-left" />
+    <img alt="Star 历史曲线" src="https://api.star-history.com/svg?repos=whitetowerai/ohmygame&type=date&legend=top-left" />
+  </picture>
+</a>
 
 ## 许可证
 

@@ -83,6 +83,10 @@ describe("text generation", () => {
       [{ type: "image", label: "Reference", image: { mediaType: "image/png", data: "aW1hZ2U=" } }]);
     expect(completeSimple.mock.calls[0]?.[2]?.maxTokens).toBe(6_000);
   });
+  it("removes leaked thinking from generated canvas text", async () => {
+    const { runtime } = fixture(assistant("<thinking>private</thinking>A polished image prompt."));
+    await expect(generateCreativeText(runtime, model, "Write a prompt")).resolves.toBe("A polished image prompt.");
+  });
   it("rewrites using the complete Markdown and preserves relative image context", async () => {
     const { runtime, streamSimple } = fixture(assistant("## Rules\n\nRevised\n\n![Hero](../../assets/hero.png)"));
     const document = { id: "rules", title: "Game rules", markdown: "## Rules\n\n" + "种植与探索。".repeat(3000) + "\n\n![Hero](../../assets/hero.png)" };

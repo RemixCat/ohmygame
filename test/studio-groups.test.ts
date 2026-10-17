@@ -51,3 +51,77 @@ it("serializes group, standard and template provenance on the editor node", () =
     template: { id: "template", revision: 3 },
   });
 });
+
+it("remaps audio prompt links when duplicating a group or instantiating its workflow", async () => {
+  const { captureWorkflow, duplicateBoardFragment, instantiateWorkflow } =
+    await import("../src/shared/studio-templates.js");
+  const board = createAssetCanvasDocument();
+  board.nodes = [
+    {
+      id: "script",
+      type: "text",
+      position: { x: 0, y: 0 },
+      data: { text: "Hello", instruction: "" },
+    },
+    {
+      id: "voice",
+      type: "speech",
+      position: { x: 500, y: 0 },
+      data: {
+        text: "{{character}}",
+        promptSource: { type: "node", nodeId: "script" },
+        assetId: "old-audio",
+      },
+    },
+    {
+      id: "music",
+      type: "music",
+      position: { x: 500, y: 500 },
+      data: {
+        prompt: "Theme for {{character}}",
+        instrumental: true,
+        promptSource: { type: "node", nodeId: "script" },
+      },
+    },
+  ];
+  board.editorLayout.nodes = Object.fromEntries(
+    board.nodes.map((node) => [node.id, node.position]),
+  );
+  const group = createGroup(board, ["voice", "music"], "Audio");
+  const copy = duplicateBoardFragment(board);
+  const script = copy.nodes.find((node) => node.type === "text")!;
+  for (const node of copy.nodes.filter(
+    (node) => node.type === "speech" || node.type === "music",
+  ))
+    expect(node.data.promptSource?.nodeId).toBe(script.id);
+  const template = captureWorkflow(board, group, "Audio workflow");
+  expect(template.inputs).toHaveLength(2);
+  expect(
+    template.board!.nodes.find((node) => node.type === "speech")!.data,
+  ).not.toHaveProperty("assetId");
+  template.variables = [
+    {
+      name: "character",
+      description: "Character",
+      defaultValue: "",
+      required: true,
+    },
+  ];
+  const instantiated = instantiateWorkflow(
+    template,
+    { character: "Captain" },
+    Object.fromEntries(
+      template.inputs.map((input) => [input.name, "Welcome aboard"]),
+    ),
+  );
+  const ids = new Set(instantiated.nodes.map((node) => node.id));
+  for (const node of instantiated.nodes.filter(
+    (node) => node.type === "speech" || node.type === "music",
+  )) {
+    expect(node.data.promptSource).toBeDefined();
+    expect(ids.has(node.data.promptSource!.nodeId)).toBe(true);
+    expect(
+      node.type === "speech" ? node.data.text : node.data.prompt,
+    ).toContain("Captain");
+  }
+});

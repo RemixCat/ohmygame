@@ -1,9 +1,11 @@
 import { StudioStandards } from "./studio-standards.js";
+
+import { workspaceVersion } from "./workspace-version.js";
 import {
+  ArrowLeft,
   Clapperboard,
   Code2,
   FileText,
-  House,
   LoaderCircle,
   PanelToggle,
   Share2,
@@ -54,6 +56,7 @@ import {
   addPlayableNode,
   ApiError,
   buildInteractiveStory,
+  exportInteractiveStoryProject,
   getNodeCodebase,
   getPlayableValidation,
   getWorkspaceFile,
@@ -70,10 +73,11 @@ import { PlaytestControls, requestPlaytest, type PlaytestRequest } from "./playa
 import type { PlayableChatState } from "./playable-chat.js";
 import { buildCodebase, createFlowNode, nodeIdForIssuePath, nodeSourcePaths, toFlowEdge, toFlowNode, uniqueNodeId, type GraphMeta, type PlayableFlowData, type PlayableFlowNode } from "./playable-flow.js";
 import { PLAYABLE_NODE_TYPES, PlayableCanvasContext } from "./playable-node-card.js";
-import { PlayableAddControl, PlayableCanvasContextMenu, PlayableEmptyCanvas } from "./playable-canvas-menus.js";
+import { PlayableAddControl, PlayableCanvasContextMenu } from "./playable-canvas-menus.js";
 import { WorkspaceTabs, type WorkspaceTabOption } from "./workspace-tabs.js";
 import { useDesktopSave } from "./desktop-close-guard.js";
 import { t } from "./i18n.js";
+import { WorkspaceBackButton } from "./workspace-shell.js";
 
 const DEFAULT_CANVAS_VIEWPORT = { x: 64, y: 32, zoom: 1 };
 const CanvasWorkspace = lazy(() => import("./canvas-workspace.js").then((module) => ({ default: module.CanvasWorkspace })));
@@ -100,7 +104,7 @@ interface CopiedPlayableNode {
  * It speaks the editor's words (Scene, Exit, Variables); code and
  * graph.json keep the engine's (Node, Signal, State).
  */
-export function PlayableEditorWorkspace({ project, agentBusy, publishing, workspaceRevision = 0, openFileRequest, onPublish, publishDialog, onOpenPublish, onClosePublish, chatOnRight = false, chatCollapsed = false, onHome, onToggleChat, onChatContextChange, onAskAgent, onSendToAgent, designOpen = false, onDesignOpenChange, onDesignSaveReady, onDesignContextChange, onProjectUpdated }: {
+export function PlayableEditorWorkspace({ project, agentBusy, publishing, workspaceRevision = 0, openFileRequest, onPublish, publishDialog, onOpenPublish, onClosePublish, chatOnRight = false, chatCollapsed = false, onHome, homeLabel = t("navigation.backTo", { page: t("sidebar.projects") }), onToggleChat, onChatContextChange, onAskAgent, onSendToAgent, designOpen = false, onDesignOpenChange, onDesignSaveReady, onDesignContextChange, onProjectUpdated }: {
   project: ProjectState;
   onProjectUpdated?: (project: ProjectState) => void;
   agentBusy: boolean;
@@ -114,6 +118,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
   chatOnRight?: boolean;
   chatCollapsed?: boolean;
   onHome?: () => void;
+  homeLabel?: string;
   onToggleChat?: () => void;
   designOpen?: boolean;
   onDesignOpenChange?: (open: boolean) => void;
@@ -127,6 +132,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
   onSendToAgent?: (text: string, contexts: PromptContext[]) => Promise<boolean>;
 }) {
   const projectId = project.id;
+  const [writeVersion] = useState(() => workspaceVersion(projectId));
   const [phase, setPhase] = useState<"loading" | "ready" | "error">("loading");
   const [notice, setNotice] = useState<string>();
   const [graphMeta, setGraphMeta] = useState<GraphMeta>();
@@ -377,7 +383,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
           throw new Error(PROJECT_CHANGED);
         }
         try {
-          const saved = await updateNodeCodebase(projectId, { ...outgoing, revision: disk.revision });
+          const saved = await updateNodeCodebase(projectId, { ...outgoing, revision: disk.revision }, writeVersion);
           if (generation === diskGeneration.current) {
             diskCodebase.current = { codebase: { graph: outgoing.graph, editorLayout: outgoing.editorLayout }, revision: saved.revision };
           }
@@ -812,7 +818,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
         preset: presetId,
         id: uniqueNodeId(presetId, new Set(nodes.map((node) => node.id))),
         position: snapCanvasPosition(position),
-      });
+      }, writeVersion);
       const loaded = await getNodeCodebase(projectId);
       applyCodebase(loaded, { diskRevision: loaded.revision });
       setCodeRevision((revision) => revision + 1);
@@ -919,16 +925,18 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
     }
   }
 
-  async function exportGame(): Promise<void> {
+  async function exportGame(kind: "game" | "project"): Promise<void> {
     if (!codebase || building) return;
     setBuilding(true);
     try {
       await save(codebase);
-      const artifact = await buildInteractiveStory(projectId);
+      const artifact = kind === "game"
+        ? await buildInteractiveStory(projectId, writeVersion)
+        : await exportInteractiveStoryProject(projectId, writeVersion);
       const url = URL.createObjectURL(artifact);
       const link = window.document.createElement("a");
       link.href = url;
-      link.download = `${project.name}.zip`;
+      link.download = kind === "game" ? `${project.name}.zip` : `${project.name} (${t("storySettings.projectFileSuffix")}).zip`;
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
     } finally {
@@ -998,7 +1006,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
   ];
   const renderNavigation = () => <div className={`viewer-navigation${chatOnRight ? " is-chat-right" : ""}`}>
     {chatOnRight && onHome ? (
-      <button className="icon-button pane-header-action workspace-home-button" type="button" onClick={onHome} title={t("sidebar.home")} aria-label={t("sidebar.home")}><House size={14} /></button>
+      <WorkspaceBackButton onClick={onHome} label={homeLabel} icon={ArrowLeft} />
     ) : null}
     <WorkspaceTabs
       tabs={tabs} active={standardsOpen ? "standards" : designOpen ? "design" : workspaceView}
@@ -1092,13 +1100,7 @@ export function PlayableEditorWorkspace({ project, agentBusy, publishing, worksp
                 onNodesDelete={(deleted) => removeNodes(new Set(deleted.map((node) => node.id)))}
                 isValidConnection={(connection) => Boolean(connection.source && connection.target && connection.sourceHandle)}
                 defaultViewport={editorLayout.viewport}
-              >
-                {nodes.length ? null : <PlayableEmptyCanvas
-                  presets={presets}
-                  busy={writing}
-                  onAdd={(presetId, position) => void addNodeFromPreset(presetId, position)}
-                />}
-              </EditorCanvas>
+              />
             </PlayableCanvasContext.Provider>
           ) : null}
           {canvasContextMenu ? <PlayableCanvasContextMenu

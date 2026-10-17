@@ -74,7 +74,10 @@ export function remapNode(
   if (
     (node.type === "image" ||
       node.type === "video" ||
-      node.type === "model-3d") &&
+      node.type === "model-3d" ||
+      node.type === "speech" ||
+      node.type === "sound-effect" ||
+      node.type === "music") &&
     node.data.promptSource
   ) {
     const v = ref(node.data.promptSource, "promptSource");
@@ -258,7 +261,15 @@ export function instantiateWorkflow(
       };
       board.nodes.push(source);
       board.editorLayout.nodes[source.id] = source.position;
-      if (input.field === "promptSource" && "prompt" in node.data)
+      if (
+        input.field === "promptSource" &&
+        (node.type === "image" ||
+          node.type === "video" ||
+          node.type === "model-3d" ||
+          node.type === "speech" ||
+          node.type === "sound-effect" ||
+          node.type === "music")
+      )
         node.data.promptSource = { type: "node", nodeId: source.id };
       else if (
         (node.type === "text" || node.type === "document") &&
@@ -311,6 +322,11 @@ export function instantiateWorkflow(
     if ("prompt" in node.data)
       node.data.prompt = renderPrompt(
         { ...template, prompt: node.data.prompt ?? "" },
+        values,
+      );
+    if (node.type === "speech")
+      node.data.text = renderPrompt(
+        { ...template, prompt: node.data.text },
         values,
       );
     if (node.type === "text")
