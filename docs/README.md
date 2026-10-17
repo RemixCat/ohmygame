@@ -42,6 +42,10 @@ Projects URL preserves its type filter, search (`q`), and name sorting
 documents this fork's available extensions, source installation, branch policy,
 and migration when upstream adds equivalent features.
 
+[SpriteCook integration plan](spritecook.md) ([中文](spritecook.zh-CN.md))
+records the proposed fixed provider, 2D canvas operations, public API boundaries,
+and acceptance checks. It is a proposal, not an available integration.
+
 [Git changes in Code](workspace-git.md) covers the read-only project changes
 view, its comparison baseline and refresh behavior.
 
