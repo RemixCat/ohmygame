@@ -121,8 +121,10 @@ automatic job that overwrites this fork's code or user projects.
 ## Releases and verification
 
 Code and documentation can be used from `studio` without a packaged release.
-CI runs for PRs and pushes to `studio`, `dev` and `main` using the existing public
-check sequence in [CONTRIBUTING.md](../CONTRIBUTING.md#make-and-check-your-change).
+CI is configured for PRs and pushes to `studio`, `dev` and `main` using the existing
+public check sequence in [CONTRIBUTING.md](../CONTRIBUTING.md#make-and-check-your-change).
+GitHub may require enabling workflows in the fork's Actions tab first. An absent
+check result does not mean remote CI passed; local results must be identified as local.
 Some hosted publishing tests require private cloud access and can be skipped by
 the public suite; passed tests do not establish live provider quality.
 
