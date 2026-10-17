@@ -1,3 +1,6 @@
+import { TripoControls } from "./tripo-controls.js";
+import { Provider3DBalance } from "./provider-3d-balance.js";
+import { isTripoCreditError, tripoPolycount } from "../shared/tripo-options.js";
 import { StudioGroupsPanel, StudioGroupFrame, groupCanvasNodes, groupCanvasEdges, GROUP_PREFIX } from "./studio-groups.js";
 import { collapsedAncestor, moveGroup } from "../shared/canvas-groups.js";
 import type { CanvasGroup } from "../shared/studio.js";
@@ -1561,9 +1564,9 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
             },
             onGenerate: () => void generateMedia(node),
             references: imageReferenceViews(node, nodes, libraryAssets, model3DModels),
-            maxReferences: operation === "text" || operation === "remesh" ? 0 : operation === "retexture" ? 1 : model?.maxReferenceImages ?? MODEL_3D_MAX_REFERENCE_IMAGES,
-            slotLabels: operation === "image" ? model3DViewLabels(model) : undefined,
-            showEmptySlots: operation === "image" && Boolean(model?.referenceImageLabels),
+            maxReferences: operation === "text" || operation === "remesh" ? 0 : operation === "retexture" ? model?.protocol === "tripo" ? 4 : 1 : model?.maxReferenceImages ?? MODEL_3D_MAX_REFERENCE_IMAGES,
+            slotLabels: operation === "image" || operation === "retexture" && model?.protocol === "tripo" ? model3DViewLabels(model) : undefined,
+            showEmptySlots: (operation === "image" || operation === "retexture") && Boolean(model?.referenceImageLabels),
             uploading: uploadingNodeId === node.id,
             accept: "image/png,image/jpeg,image/webp",
             addLabel: t("assetCanvas.addReferences"),
@@ -1740,6 +1743,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
               onNodeDragStop={finishHistoryGesture}
               onMoveStart={() => setCanvasContextMenu(undefined)}
               onEdgesChange={onEdgesChange}
+              easyConnect
               onConnect={onConnect}
               onConnectEnd={(event, state) => {
                 if (state.toNode || state.fromHandle?.type !== "source" || !state.fromNode || !isImageSource(nodes.find((node) => node.id === state.fromNode!.id))) return;
@@ -2067,6 +2071,12 @@ function videoAspectRatios(model: VideoModel | undefined, referenceCount: number
   return videoReferenceAspectRatios(model, referenceCount, mode);
 }
 
+function Model3DError({ message, model }: { message: string; model?: Model3DModel }) {
+  const [showBalance, setShowBalance] = useState(false);
+  const credits = model?.protocol === "tripo" && isTripoCreditError(message);
+  return <div className="model3d-error"><p role="alert">{credits ? t("assetCanvas.tripo.insufficientCredits") : message}</p>{credits && model ? <details className="nodrag nowheel" onToggle={(event) => setShowBalance(event.currentTarget.open)}><summary>{t("assetCanvas.tripo.checkBalance")}</summary>{showBalance ? <Provider3DBalance model={model} /> : null}<a href="https://platform.tripo3d.ai" target="_blank" rel="noreferrer">{t("assetCanvas.tripo.openConsole")}</a></details> : null}</div>;
+}
+
 function Model3DNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, "data" | "selected">) {
   const auth = useAuth();
   const runtime = data.model3DRuntime;
@@ -2076,16 +2086,21 @@ function Model3DNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, "d
     ?? (!selectedModel && !config.model ? runtime?.providers?.find((provider) => provider.cloud) : undefined);
   const cloud = accountCloudState(provider?.cloud, auth.state.status === "signed-in" ? auth.state.user.id : undefined);
   const operation = data.model3DOperation ?? "image";
-  const polycount = operation === "remesh" ? remeshPolycount(selectedModel?.protocol) : selectedModel?.polycount;
+  const basePolycount = operation === "remesh" ? remeshPolycount(selectedModel?.protocol) : selectedModel?.polycount;
+  const polycount = selectedModel?.protocol === "tripo" && basePolycount ? tripoPolycount(basePolycount, selectedModel.id, operation, data.model3DOptions) : basePolycount;
   const processing = operation === "retexture" || operation === "remesh";
-  const hasInput = operation === "image" ? Boolean(data.images?.length) : operation === "text" ? Boolean(data.prompt?.trim() || runtime?.linkedPrompt?.trim())
-    : Boolean(data.model3DSource) && (operation === "remesh" || (selectedModel?.protocol === "hyper3d" ? Boolean(data.images?.length) : Boolean(data.images?.length || data.prompt?.trim() || runtime?.linkedPrompt?.trim())));
+  const validTextureViews = selectedModel?.protocol !== "tripo" || operation !== "retexture" || [0, 1, 4].includes(data.images?.length ?? 0);
+  const hasInput = validTextureViews && (operation === "image" ? Boolean(data.images?.length) : operation === "text" ? Boolean(data.prompt?.trim() || runtime?.linkedPrompt?.trim())
+    : Boolean(data.model3DSource) && (operation === "remesh" || (selectedModel?.protocol === "hyper3d" ? Boolean(data.images?.length) : Boolean(data.images?.length || data.prompt?.trim() || runtime?.linkedPrompt?.trim()))));
+  useEffect(() => {
+    if (selectedModel?.protocol === "tripo" && (data.images?.length ?? 0) > 1 && data.model3DOptions?.imageAutofix !== undefined) runtime?.onChange({ ...data, model3DOptions: { ...data.model3DOptions, imageAutofix: undefined } });
+  }, [data, runtime, selectedModel]);
   const changeOperation = (operation: Exclude<Model3DOperation, "animate">) => runtime?.onChange({ ...data, model3DOperation: operation, images: [], prompt: "", promptSource: undefined, model3DSource: undefined, model3DOptions: undefined });
   const updateConfig = (next: Partial<Model3DGenerationConfig>) => runtime?.onChange({
     ...data,
     model3DRuntime: undefined,
     model3DConfig: normalizeModel3DConfig({ ...config, ...next }, processing
-      ? resolveModel3DConnection(next.model ?? config.model, runtime.models) : resolveModel3D(next.model ?? config.model, runtime.models), operation),
+      ? resolveModel3DConnection(next.model ?? config.model, runtime.models) : resolveModel3D(next.model ?? config.model, runtime.models), operation, data.model3DOptions),
   });
   return (
     <MediaNodeShell
@@ -2100,7 +2115,7 @@ function Model3DNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, "d
       {processing ? <MediaReferenceStrip runtime={runtime?.sourceRuntime} large /> : null}
       {operation !== "remesh" ? <MediaReferenceStrip runtime={runtime} large /> : null}
       {operation === "text" || operation === "retexture" ? <MediaPrompt kind="model" value={data.prompt ?? ""} runtime={runtime} onChange={(prompt) => runtime?.onChange({ ...data, prompt })} /> : null}
-      {runtime?.error ? <p role="alert">{runtime.error}</p> : null}
+      {runtime?.error ? <Model3DError message={runtime.error} model={selectedModel} /> : null}
       <div className="story-media-controls is-3d">
         <CanvasChipSelect label={t("assetCanvas.operation")} value={operation} options={[
           { value: "image", label: t("assetCanvas.op.image") }, { value: "text", label: t("assetCanvas.op.text") }, { value: "retexture", label: t("assetCanvas.op.retexture") }, { value: "remesh", label: t("assetCanvas.op.remesh") },
@@ -2124,16 +2139,18 @@ function Model3DNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, "d
           label={t("assetCanvas.polycount")}
           value={String(config.targetPolycount)}
           options={polycountOptions(polycount?.presets ?? [], config.targetPolycount)}
-          disabled={runtime?.busy || !selectedModel}
+          disabled={runtime?.busy || !selectedModel || data.model3DOptions?.adaptivePolycount}
           onChange={(value) => updateConfig({ targetPolycount: Number(value) })}
         /> : null}
         {operation === "image" || operation === "text" ? <CanvasChipToggle label={t("assetCanvas.texture")} pressed={config.texture} disabled={runtime?.busy || !selectedModel || selectedModel.supportsTexture === false} onChange={(texture) => updateConfig({ texture, ...(!texture ? { pbr: false } : {}) })} /> : null}
         {operation !== "remesh" ? <CanvasChipToggle label="PBR" pressed={config.pbr} disabled={runtime?.busy || !selectedModel || !config.texture || selectedModel.supportsPbr === false} onChange={(pbr) => updateConfig({ pbr })} /> : null}
         {(operation === "image" || operation === "text") && (selectedModel?.protocol === "meshy" || selectedModel?.protocol === "hyper3d") ? <CanvasChipSelect label={t("assetCanvas.pose")} value={data.model3DOptions?.pose ?? "default"} options={[{ value: "default", label: t("assetCanvas.defaultPose") }, { value: "t-pose", label: selectedModel.protocol === "hyper3d" ? t("assetCanvas.atPose") : t("assetCanvas.tPose") }, ...(selectedModel.protocol === "meshy" ? [{ value: "a-pose", label: t("assetCanvas.aPose") }] : [])]} onChange={(pose) => runtime?.onChange({ ...data, model3DOptions: { ...data.model3DOptions, pose: pose === "default" ? undefined : pose as Model3DOptions["pose"] } })} disabled={runtime?.busy} /> : null}
-        {operation === "retexture" && selectedModel?.protocol !== "hyper3d" ? <CanvasChipSelect label={t("assetCanvas.textureVersion")} value={data.model3DOptions?.textureModel ?? (selectedModel?.protocol === "tripo" ? "v3.5-20260815" : "latest")} options={(selectedModel?.protocol === "tripo" ? ["v3.5-20260815", "v3.0-20250812", "v2.5-20250123"] : ["latest", "meshy-7", "meshy-6", "meshy-6-lite"]).map((version) => ({ value: version, label: version }))} disabled={runtime?.busy} onChange={(textureModel) => runtime?.onChange({ ...data, model3DOptions: { ...data.model3DOptions, textureModel } })} /> : null}
-        {operation === "retexture" && selectedModel?.protocol === "tripo" ? <CanvasChipSelect label={t("assetCanvas.textureQuality")} value={data.model3DOptions?.textureQuality ?? "standard"} options={(["fast", "standard", "detailed", "extreme"] as const).map((value) => ({ value, label: t(`assetCanvas.textureQualities.${value}`) }))} disabled={runtime?.busy} onChange={(textureQuality) => runtime?.onChange({ ...data, model3DOptions: { ...data.model3DOptions, textureQuality: textureQuality as Model3DOptions["textureQuality"] } })} /> : null}
+        {operation === "retexture" && selectedModel?.protocol === "meshy" ? <CanvasChipSelect label={t("assetCanvas.textureVersion")} value={data.model3DOptions?.textureModel ?? "latest"} options={["latest", "meshy-7", "meshy-6", "meshy-6-lite"].map((version) => ({ value: version, label: version }))} disabled={runtime?.busy} onChange={(textureModel) => runtime?.onChange({ ...data, model3DOptions: { ...data.model3DOptions, textureModel } })} /> : null}
+
         <GenerateMediaButton kind="model" assetId={data.assetId} runtime={runtime} disabled={!hasInput || !selectedModel || Boolean(cloud && !canAffordCloudModel(cloud, selectedModel?.estimatedCredits))} />
       </div>
+      {selectedModel?.protocol === "tripo" ? <TripoControls model={selectedModel} operation={operation} options={data.model3DOptions} config={config} imageCount={data.images?.length ?? 0} disabled={runtime?.busy} onPolycount={(targetPolycount) => updateConfig({ targetPolycount })} onChange={(model3DOptions) => runtime?.onChange({ ...data, model3DOptions, model3DConfig: normalizeModel3DConfig(config, selectedModel, operation, model3DOptions) })} /> : null}
+      {selectedModel?.protocol === "tripo" && operation === "retexture" ? <small>{t("assetCanvas.tripo.textureViews")}</small> : null}
       {selectedModel?.protocol === "hyper3d" && operation === "retexture" ? <small>{t("assetCanvas.hyper3dRetexture")}</small> : null}
       {cloud ? <CloudQuotaStatus cloud={cloud} estimatedCredits={selectedModel?.estimatedCredits} onSignIn={auth.openSignIn} /> : operation === "image" && selectedModel?.estimatedCredits !== undefined ? <div className="canvas-model-generation-label">{t("assetCanvas.apiKeyCredits", { credits: selectedModel.estimatedCredits })}</div> : null}
     </MediaNodeShell>
@@ -2175,7 +2192,7 @@ function Animate3DNode({ data, selected }: Pick<NodeProps<AssetCanvasFlowNode>, 
   return (
     <MediaNodeShell kind="animation" selected={selected} panelOpen={data.panelOpen} assetId={data.assetId} runtime={runtime} details={data.nodeDetails} emptyHint={t("assetCanvas.hint.animate")}>
       <MediaReferenceStrip runtime={runtime} large />
-      {runtime?.error ? <p role="alert">{runtime.error}</p> : null}
+      {runtime?.error ? <Model3DError message={runtime.error} model={selectedModel} /> : null}
       <div className="story-media-controls is-3d">
         <CanvasChipSelect label={t("assetCanvas.animationProvider")} value={selectedModel ? modelRefKey(selectedModel) : undefined} placeholder={t("assetCanvas.selectAnimationProvider")} options={(runtime?.models ?? []).map((model) => ({ value: modelRefKey(model), label: model.name, group: model.id === MODEL3D_CONNECTION_ID ? undefined : model.providerName }))} disabled={runtime?.busy} action={MANAGE_PROVIDERS} onChange={(value) => {
           const model = runtime?.models.find((model) => modelRefKey(model) === value);
@@ -3009,7 +3026,7 @@ function flowNodeData(node: AssetCanvasNode, imageModels: ImageModel[], videoMod
         targetPolycount: node.data.targetPolycount,
         texture: node.data.texture,
         pbr: node.data.pbr,
-      }, undefined, node.data.operation),
+      }, undefined, node.data.operation, node.data.options),
       images: node.data.images.slice(0, MODEL_3D_MAX_REFERENCE_IMAGES),
       ...(node.data.assetId ? { assetId: node.data.assetId } : {}),
     },
@@ -3346,7 +3363,7 @@ function nodeModel3D(node: Pick<AssetCanvasFlowNode, "type" | "data">, models: r
 function nodeModel3DConfig(node: Pick<AssetCanvasFlowNode, "type" | "data">, models?: readonly Model3DModel[]): Model3DGenerationConfig {
   if (node.type !== "model-3d") return DEFAULT_MODEL_3D_CONFIG;
   const config = node.data.model3DConfig;
-  return normalizeModel3DConfig(config, nodeModel3D(node, models), node.data.model3DOperation);
+  return normalizeModel3DConfig(config, nodeModel3D(node, models), node.data.model3DOperation, node.data.model3DOptions);
 }
 
 type ConnectionRelation = "image-reference" | "video-reference" | "model-reference" | "prompt" | "text-reference";
@@ -3376,7 +3393,7 @@ export function connectionRelation(
   }
   if (isSupportedImageReferenceSource(source, libraryAssets) && target.type === "model-3d") {
     if (target.data.model3DOperation === "text" || target.data.model3DOperation === "remesh") return undefined;
-    if (target.data.model3DOperation === "retexture" && (target.data.images?.length ?? 0) >= 1) return undefined;
+    if (target.data.model3DOperation === "retexture" && (target.data.images?.length ?? 0) >= (nodeModel3D(target, model3DModels)?.protocol === "tripo" ? 4 : 1)) return undefined;
     return (target.data.images?.length ?? 0) < (nodeModel3D(target, model3DModels)?.maxReferenceImages ?? MODEL_3D_MAX_REFERENCE_IMAGES) &&
       !(target.data.images ?? []).some((image) => image.type === "node" && image.nodeId === source.id)
       ? "image-reference"

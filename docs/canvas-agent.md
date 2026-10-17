@@ -34,6 +34,14 @@ nodes' saved text, Markdown and actual image output from the workspace. Image
 references require a language model that accepts images. A node cannot reference
 itself or, for Document nodes, another node pointing to the same document.
 
+When drawing a reference wire, drag from the output handle and release anywhere on
+an eligible destination card, or within 28 screen pixels of its bounds. Compatible
+cards highlight during the drag. Handle snapping uses a larger radius, and handles
+have larger invisible hit areas. Self-connections, duplicate references, reference
+limits and media compatibility still use the same validation. Releasing an image
+wire on distant empty canvas keeps the quick-action menu behavior. Playable graphs
+retain their explicit ports because those ports carry distinct meanings.
+
 Positions, zoom and the width/height of text, document and table nodes live in
 `editor/`. Media and generation nodes size to their content: the editor ignores
 a width/height on them and canvas_check reports it. New nodes get positions

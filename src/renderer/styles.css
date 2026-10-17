@@ -15348,3 +15348,28 @@ button {
 .provider-catalog-info summary { cursor: pointer; color: var(--text-faint); }
 .provider-catalog-info p { margin: 8px 0; }
 .provider-catalog-info a { display: inline-flex; align-items: center; gap: 4px; color: var(--text-secondary); }
+
+.tripo-options {
+  width: 100%;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+.tripo-options summary, .model3d-error summary { cursor: pointer; color: var(--text-secondary); padding: 6px 0; }
+.tripo-options fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+.tripo-options section { margin: 10px 0 14px; }
+.tripo-options h4 { margin: 0 0 9px; color: var(--text-secondary); font-size: 12px; }
+.tripo-option-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.tripo-option-toggle { display: flex; align-items: center; gap: 5px; cursor: pointer; color: var(--text-secondary); }
+.tripo-option-toggle input { accent-color: var(--theme-accent); }
+.tripo-option-field { display: flex; flex-direction: column; gap: 5px; color: var(--text-secondary); max-width: 100%; }
+.tripo-option-field input, .tripo-option-field textarea { border: 1px solid var(--border); border-radius: 7px; background: var(--story-editor-surface); color: var(--text); font: inherit; padding: 7px 9px; min-width: 0; }
+.tripo-option-field input { width: 140px; }
+.tripo-option-field textarea { width: 100%; box-sizing: border-box; resize: vertical; }
+.tripo-options p { color: var(--text-faint); margin: 8px 0 0; font-size: 11px; }
+.tripo-options fieldset:disabled { opacity: 0.6; }
+.model3d-error > p { color: var(--danger, #e5484d); }
+.model3d-error { font-size: 12px; }
+.model3d-error a { color: var(--theme-accent); }
+.story-canvas .react-flow__node.is-connection-target { outline: 2px solid var(--theme-accent); outline-offset: 5px; border-radius: 16px; }
+.story-node .react-flow__handle::after { content: ""; position: absolute; inset: -10px; border-radius: 50%; }

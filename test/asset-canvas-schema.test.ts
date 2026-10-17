@@ -49,3 +49,11 @@ describe("Asset Canvas schema diagnostics", () => {
     },
   );
 });
+
+it("validates saved advanced controls and rejects malformed seeds and toggles", () => {
+  const data = { model: { provider: "tripo", id: "v3.1-20260211" }, targetPolycount: 1_800_000, texture: true, pbr: true, images: [], options: { geometryQuality: "detailed", modelSeed: 0, textureSeed: 2147483647, exportUv: false, imageAutofix: true, textureQuality: "fast", textureModel: "v3.5-20260815", delight: false } };
+  expect(Check(ASSET_CANVAS_SCHEMA, canvas({ id: "model", type: "model-3d", data }))).toBe(true);
+  for (const options of [{ modelSeed: -1 }, { textureSeed: 1.5 }, { imageAutofix: "true" }, { negativePrompt: "x".repeat(256) }]) {
+    expect(Check(ASSET_CANVAS_SCHEMA, canvas({ id: "model", type: "model-3d", data: { ...data, options } }))).toBe(false);
+  }
+});

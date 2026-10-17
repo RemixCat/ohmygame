@@ -1,4 +1,5 @@
-import { type Model3DGenerationConfig, type Model3DModel, type Model3DModelRef, type Model3DOperation, type PromptImage, type Run3DToolRequest } from "./contracts.js";
+import { tripoPolycount } from "./tripo-options.js";
+import { type Model3DGenerationConfig, type Model3DModel, type Model3DModelRef, type Model3DOperation, type Model3DOptions, type PromptImage, type Run3DToolRequest } from "./contracts.js";
 import { MODEL3D_CONNECTION_ID, remeshPolycount } from "./model3d-operations.js";
 import { BUILTIN_CLOUD_CATALOG, cloudModelId } from "./cloud-models.js";
 import { model3DModel } from "./custom-models.js";
@@ -15,7 +16,7 @@ export const MODEL_3D_MODELS: readonly Model3DModel[] = [
 
 export const DEFAULT_MODEL_3D = MODEL_3D_MODELS.find((model) => model.provider === "meshy")!;
 export const MODEL_3D_MAX_REFERENCE_IMAGES = Math.max(...MODEL_3D_MODELS.map((model) => model.maxReferenceImages));
-export const MODEL_3D_MAX_POLYCOUNT = Math.max(...MODEL_3D_MODELS.map((model) => model.polycount.max));
+export const MODEL_3D_MAX_POLYCOUNT = Math.max(2_000_000, ...MODEL_3D_MODELS.map((model) => model.polycount.max));
 
 /** The known 3D model a request or node names, or the default when it names none. Unknown models return undefined. */
 export function resolveModel3D(model: unknown, models: readonly Model3DModel[] = MODEL_3D_MODELS): Model3DModel | undefined {
@@ -50,12 +51,13 @@ export const DEFAULT_MODEL_3D_CONFIG: Model3DGenerationConfig = {
   pbr: false,
 };
 
-export function normalizeModel3DConfig(value: Partial<Model3DGenerationConfig> | undefined, model?: Model3DModel, operation: Model3DOperation = "image"): Model3DGenerationConfig {
+export function normalizeModel3DConfig(value: Partial<Model3DGenerationConfig> | undefined, model?: Model3DModel, operation: Model3DOperation = "image", options?: Model3DOptions): Model3DGenerationConfig {
   const texture = model?.supportsTexture === false ? false : value?.texture ?? model?.defaults?.texture ?? DEFAULT_MODEL_3D_CONFIG.texture;
   const selected = model ?? resolveModel3D(value?.model);
   const protocol = selected?.protocol ?? (value?.model?.id === MODEL3D_CONNECTION_ID && isNative3DProvider(value.model.provider) ? value.model.provider : undefined);
-  const polycount = operation === "remesh" ? remeshPolycount(protocol) : selected?.polycount ?? (value?.model
+  const basePolycount = operation === "remesh" ? remeshPolycount(protocol) : selected?.polycount ?? (value?.model
     ? { min: 100, max: MODEL_3D_MAX_POLYCOUNT, default: DEFAULT_MODEL_3D.polycount.default } : DEFAULT_MODEL_3D.polycount);
+  const polycount = protocol === "tripo" ? tripoPolycount({ presets: [], ...basePolycount }, selected?.id ?? value?.model?.id ?? "", operation, options) : basePolycount;
   const targetPolycount = value?.targetPolycount;
   return {
     ...(value?.model ? { model: value.model } : {}),
@@ -65,8 +67,8 @@ export function normalizeModel3DConfig(value: Partial<Model3DGenerationConfig> |
   };
 }
 
-export function buildModel3DToolRequest(configValue: Partial<Model3DGenerationConfig>, images: PromptImage[], operation: Model3DOperation = "image"): Run3DToolRequest {
-  const config = normalizeModel3DConfig(configValue, undefined, operation);
+export function buildModel3DToolRequest(configValue: Partial<Model3DGenerationConfig>, images: PromptImage[], operation: Model3DOperation = "image", options?: Model3DOptions): Run3DToolRequest {
+  const config = normalizeModel3DConfig(configValue, undefined, operation, options);
   return {
     images,
     ...(config.model ? { model: config.model } : {}),

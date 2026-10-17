@@ -115,6 +115,23 @@ export interface Model3DOptions {
   rigModel?: "v1.0-20240301" | "v2.5-20260210";
   rigType?: "biped" | "quadruped" | "hexapod" | "octopod" | "serpentine" | "aquatic";
   animateInPlace?: boolean;
+  adaptivePolycount?: boolean;
+  geometryQuality?: "standard" | "detailed";
+  modelSeed?: number;
+  imageSeed?: number;
+  textureSeed?: number;
+  negativePrompt?: string;
+  imageAutofix?: boolean;
+  textureAlignment?: "original_image" | "geometry";
+  orientation?: "default" | "align_image";
+  autoSize?: boolean;
+  exportUv?: boolean;
+  delight?: boolean;
+  smartLowPoly?: boolean;
+  quad?: boolean;
+  bake?: boolean;
+  remeshModel?: "v1.0" | "v2.0" | "v3.0";
+  smartUv?: boolean;
 }
 export interface Model3DMetadata {
   triangles: number;

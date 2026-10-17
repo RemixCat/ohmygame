@@ -69,6 +69,12 @@ const node = (type: string, data: object) => ({
     standardOverrides: STANDARD_OVERRIDES_SCHEMA, template: { type: "object", additionalProperties: false, required: ["id", "revision"], properties: { id, revision: { type: "integer", minimum: 1 } } }, data },
 });
 const model3DOptions = { type: "object", additionalProperties: false, properties: {
+  adaptivePolycount: { type: "boolean" }, geometryQuality: { enum: ["standard", "detailed"] },
+  modelSeed: { type: "integer", minimum: 0, maximum: 2147483647 }, imageSeed: { type: "integer", minimum: 0, maximum: 2147483647 }, textureSeed: { type: "integer", minimum: 0, maximum: 2147483647 },
+  negativePrompt: { type: "string", maxLength: 255 }, imageAutofix: { type: "boolean" },
+  textureAlignment: { enum: ["original_image", "geometry"] }, orientation: { enum: ["default", "align_image"] },
+  autoSize: { type: "boolean" }, exportUv: { type: "boolean" }, delight: { type: "boolean" }, smartLowPoly: { type: "boolean" }, quad: { type: "boolean" },
+  bake: { type: "boolean" }, remeshModel: { enum: ["v1.0", "v2.0", "v3.0"] }, smartUv: { type: "boolean" },
   pose: { enum: ["a-pose", "t-pose"] }, textureModel: id, textureQuality: { enum: ["fast", "standard", "detailed", "extreme"] },
   rigModel: { enum: ["v1.0-20240301", "v2.5-20260210"] }, rigType: { enum: ["biped", "quadruped", "hexapod", "octopod", "serpentine", "aquatic"] }, animateInPlace: { type: "boolean" },
 } } as const;

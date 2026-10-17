@@ -220,3 +220,51 @@ describe("Tripo connection and custom models", () => {
     expect(() => normalizeModelUsages({ "3d": { ...config, modelType: "smart-topology" } })).toThrow("Smart topology is only supported by Meshy");
   });
 });
+
+describe("Tripo advanced controls", () => {
+  it("sends geometry, image correction, texture version and seeds without changing defaults", async () => {
+    const request = service();
+    await new TripoProvider(() => "key", request, 0).generate({ model: { provider: "tripo", id: "v3.1-20260211" }, images: [image], targetPolycount: 1_800_000, texture: true, pbr: true,
+      options: { geometryQuality: "detailed", modelSeed: 0, textureSeed: 123, textureModel: "v3.5-20260815", textureQuality: "fast", delight: false, imageAutofix: true, autoSize: true, exportUv: false, textureAlignment: "geometry", orientation: "align_image" } });
+    const body = JSON.parse(String(request.mock.calls.find(([url]) => String(url).includes("/generation/"))![1]?.body));
+    expect(body).toMatchObject({ face_limit: 1_800_000, geometry_quality: "detailed", model_seed: 0, texture_seed: 123, texture_version: "v3.5-20260815", texture_quality: "fast", delight: false, enable_image_autofix: true, auto_size: true, export_uv: false, texture_alignment: "geometry", orientation: "align_image" });
+  });
+  it("omits the face limit for adaptive topology and sends text-specific controls", async () => {
+    const request = service();
+    await new TripoProvider(() => "key", request, 0).generate({ model, operation: "text", prompt: "A tower", images: [], options: { adaptivePolycount: true, negativePrompt: "broken mesh", imageSeed: 7 } });
+    const body = JSON.parse(String(request.mock.calls[0]![1]?.body));
+    expect(body).not.toHaveProperty("face_limit"); expect(body).toMatchObject({ negative_prompt: "broken mesh", image_seed: 7 });
+  });
+  it.each([
+    { id: "P1-20260311", options: { quad: true }, message: "requires Tripo P2" },
+    { id: "P2-20260801", options: { quad: true }, faces: 30_000, message: "48 and 25000" },
+    { id: "v3.1-20260211", options: { smartLowPoly: true }, faces: 30_000, message: "500 and 20000" },
+    { id: "v3.1-20260211", options: { textureQuality: "fast" }, message: "Fast textures require" },
+    { id: "v2.5-20250123", options: { geometryQuality: "detailed" }, message: "require Tripo V3.0" },
+  ] as const)("rejects incompatible controls before upload: $id $message", async ({ id, options, message, ...rest }) => {
+    const request = service();
+    await expect(new TripoProvider(() => "key", request, 0).generate({ model: { provider: "tripo", id }, images: [image], options, targetPolycount: "faces" in rest ? rest.faces : undefined })).rejects.toThrow(message);
+    expect(request).not.toHaveBeenCalled();
+  });
+  it("supports four-view retexture and independent texture controls", async () => {
+    const request = service();
+    await new TripoProvider(() => "key", request, 0).generate({ model, operation: "retexture", source: TEST_GLB, images: Array(4).fill(image), options: { textureSeed: 0, textureAlignment: "geometry", delight: false, bake: false } });
+    const body = JSON.parse(String(request.mock.calls.find(([url]) => String(url).endsWith("/models/texture"))![1]?.body));
+    expect(body).toMatchObject({ texture_prompt: { images: ["file_2", "file_3", "file_4", "file_5"] }, texture_seed: 0, texture_alignment: "geometry", delight: false, bake: false });
+  });
+  it("uses documented remesh algorithm limits, UV support and basic-decimation fields", async () => {
+    const request = service(), provider = new TripoProvider(() => "key", request, 0);
+    await provider.generate({ model, operation: "remesh", source: TEST_GLB, images: [], options: { adaptivePolycount: true, smartUv: true, quad: true, bake: false } });
+    let body = JSON.parse(String(request.mock.calls.find(([url]) => String(url).endsWith("/mesh/decimate"))![1]?.body));
+    expect(body).toMatchObject({ model: "v3.0", smart_uv: true, quad: true, bake: false }); expect(body).not.toHaveProperty("face_limit");
+    request.mockClear();
+    await provider.generate({ model, operation: "remesh", source: TEST_GLB, images: [], targetPolycount: 500_000, options: { remeshModel: "v1.0" } });
+    body = JSON.parse(String(request.mock.calls.find(([url]) => String(url).endsWith("/mesh/decimate"))![1]?.body));
+    expect(body).toMatchObject({ model: "v1.0", face_limit: 500_000 }); expect(body).not.toHaveProperty("bake");
+  });
+  it("classifies the reported insufficient-credit message as a payment error without retries", async () => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ code: 2010, message: "You don't have enough credit to create this task" }));
+    await expect(new TripoProvider(() => "key", request, 0).generate({ model, images: [image] })).rejects.toMatchObject({ statusCode: 402, message: expect.stringContaining("Tripo developer console") });
+    expect(request).toHaveBeenCalledOnce();
+  });
+});

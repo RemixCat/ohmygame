@@ -92,18 +92,19 @@ describe("3D processing node serialization", () => {
       model3DConfig: { model: { provider, id: MODEL3D_CONNECTION_ID }, targetPolycount: 500_000, texture: true, pbr: false },
     } });
     if (node.type !== "model-3d") throw new Error("Expected model node");
-    expect(node.data.targetPolycount).toBe(provider === "meshy" ? 30_000 : 500_000);
+    expect(node.data.targetPolycount).toBe(provider === "meshy" ? 30_000 : 4_000);
     expect(buildModel3DToolRequest(node.data, [], node.data.operation).targetPolycount).toBe(node.data.targetPolycount);
   });
-  it("keeps remesh face counts above the geometry model's generation limit in saved requests", () => {
+  it("keeps basic decimation face counts above the geometry generation limit in saved requests", () => {
     const node = toAssetCanvasNode({ id: "remesh", type: "model-3d", position: { x: 0, y: 0 }, data: {
       model3DOperation: "remesh", model3DSource: { type: "library", assetId: "source" }, images: [],
+      model3DOptions: { remeshModel: "v1.0" },
       model3DConfig: { model: { provider: "tripo", id: "P1-20260311" }, targetPolycount: 300_000, texture: true, pbr: false },
     } });
     if (node.type !== "model-3d") throw new Error("Expected model node");
     const saved = JSON.parse(JSON.stringify(node.data));
     expect(saved.targetPolycount).toBe(300_000);
-    expect(buildModel3DToolRequest(saved, [], saved.operation).targetPolycount).toBe(300_000);
+    expect(buildModel3DToolRequest(saved, [], saved.operation, saved.options).targetPolycount).toBe(300_000);
   });
   it("keeps source, prompt links and operation versions in history and clipboard", async () => {
     const { createCanvasClipboard, duplicateCanvasSelection, parseCanvasClipboard } = await import("../src/renderer/asset-canvas-clipboard.js");
@@ -137,4 +138,13 @@ describe("3D processing node serialization", () => {
     const result = removeNodesAndReferences([{ id: "texture", type: "model-3d", position: { x: 0, y: 0 }, data: { model3DSource: { type: "node", nodeId: "source" }, model3DOperation: "retexture" } }], new Set(["source"]));
     expect(result[0]!.data.model3DSource).toBeUndefined();
   });
+});
+
+it("preserves advanced Tripo controls and Ultra faces on a board round trip", () => {
+  const options = { geometryQuality: "detailed" as const, modelSeed: 0, textureSeed: 77, textureModel: "v3.5-20260815", textureQuality: "fast" as const, exportUv: false };
+  const source = { id: "ultra", type: "model-3d" as const, position: { x: 20, y: 40 }, data: {
+    model3DConfig: { model: { provider: "tripo", id: "v3.1-20260211" }, targetPolycount: 1_800_000, texture: true, pbr: false }, model3DOptions: options, images: [],
+  } };
+  const saved = toAssetCanvasNode(source);
+  expect(saved.data).toMatchObject({ targetPolycount: 1_800_000, options });
 });

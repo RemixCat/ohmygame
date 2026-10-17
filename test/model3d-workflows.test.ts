@@ -131,13 +131,13 @@ describe("3D operation contracts", () => {
   it("uses remesh operation versions and triangle GLB output constraints", async () => {
     const meshy = meshyService(), tripo = tripoService();
     await new MeshyProvider(() => "key", meshy, 0).generate({ model: meshyModel, operation: "remesh", source: TEST_GLB, images: [], targetPolycount: 1000 });
-    await new TripoProvider(() => "key", tripo, 0).generate({ model: tripoModel, operation: "remesh", source: TEST_GLB, images: [], targetPolycount: 300_000 });
+    await new TripoProvider(() => "key", tripo, 0).generate({ model: tripoModel, operation: "remesh", source: TEST_GLB, images: [], targetPolycount: 10_000 });
     expect(JSON.parse(String(posts(meshy)[0]![1]!.body))).toMatchObject({ topology: "triangle", target_formats: ["glb"] });
-    expect(JSON.parse(String(posts(tripo).at(-1)![1]!.body))).toMatchObject({ model: "v3.0", face_limit: 300_000, quad: false, bake: true });
+    expect(JSON.parse(String(posts(tripo).at(-1)![1]!.body))).toMatchObject({ model: "v3.0", face_limit: 10_000, quad: false, bake: true });
     await new MeshyProvider(() => "key", meshy, 0).generate({ model: meshyModel, operation: "remesh", source: TEST_GLB, images: [] });
     await new TripoProvider(() => "key", tripo, 0).generate({ model: tripoModel, operation: "remesh", source: TEST_GLB, images: [] });
     expect(JSON.parse(String(posts(meshy).at(-1)![1]!.body))).toMatchObject({ target_polycount: 30_000 });
-    expect(JSON.parse(String(posts(tripo).at(-1)![1]!.body))).toMatchObject({ face_limit: 30_000 });
+    expect(JSON.parse(String(posts(tripo).at(-1)![1]!.body))).toMatchObject({ face_limit: 4_000 });
   });
   it("queries the three own-key balances", async () => {
     expect(await new MeshyProvider(() => "key", meshyService(), 0).accountBalance()).toEqual({ balance: 123 });

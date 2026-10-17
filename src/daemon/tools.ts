@@ -1,3 +1,4 @@
+import { TRIPO_GENERATION_OPTIONS, TRIPO_TEXTURE_OPTIONS, TRIPO_REMESH_OPTIONS, tripoPolycount } from "../shared/tripo-options.js";
 import type { StudioStore } from "./studio-store.js";
 import type { GenerationReceipt } from "../shared/studio.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -362,13 +363,14 @@ export class ToolRunner {
     const model = generator?.resolveOperationModel ? await generator.resolveOperationModel(input.model, operation)
       : generator?.resolveModel ? await generator.resolveModel(input.model) : resolveModel3D(input.model);
     if (!model) throw new ToolRunError("The selected model does not support this 3D operation", 400);
-    if (!Array.isArray(images) || images.some((image) => !isPromptImage(image)) || images.length > (operation === "retexture" ? 1 : model.maxReferenceImages)) throw new ToolRunError("Invalid 3D reference images", 400);
+    if (!Array.isArray(images) || images.some((image) => !isPromptImage(image)) || images.length > (operation === "retexture" ? model.protocol === "tripo" ? 4 : 1 : model.maxReferenceImages)) throw new ToolRunError("Invalid 3D reference images", 400);
     if (operation === "image" && input.prompt?.trim()) throw new ToolRunError("Use text generation for a prompt", 400);
     if (operation === "image" && !images.length) throw new ToolRunError("Provide at least one reference image", 400);
     if (operation === "text" && (!input.prompt?.trim() || images.length)) throw new ToolRunError("Text-to-3D needs a prompt without images", 400);
     if (operation === "retexture" && !input.prompt?.trim() && !images.length) throw new ToolRunError("Add a texture prompt or reference image", 400);
     if (operation === "remesh" && (images.length || input.prompt?.trim())) throw new ToolRunError("Remesh takes a model and face count only", 400);
-    const range = operation === "remesh" ? remeshPolycount(model.protocol) : model.polycount;
+    const baseRange = operation === "remesh" ? remeshPolycount(model.protocol) : model.polycount;
+    const range = model.protocol === "tripo" ? tripoPolycount(baseRange, model.id, operation, input.options) : baseRange;
     if (operation !== "retexture" && input.targetPolycount !== undefined && (!Number.isInteger(input.targetPolycount) || input.targetPolycount < range.min || input.targetPolycount > range.max)) throw new ToolRunError(`3D poly count must be between ${range.min} and ${range.max}`, 400);
     if (input.texture !== undefined && typeof input.texture !== "boolean" || input.pbr !== undefined && typeof input.pbr !== "boolean") throw new ToolRunError("Texture and PBR must be booleans", 400);
     if (!generator) throw new ToolRunError("3D generation is not configured", 503);
@@ -685,7 +687,19 @@ function selectedModel(toolId: string, input: RunToolRequest): ModelRef | undefi
 
 function validate3DOptions(options: Run3DToolRequest["options"]): void {
   if (options === undefined) return;
-  if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["pose", "textureModel", "textureQuality", "rigModel", "rigType", "animateInPlace"].includes(key))) throw new ToolRunError("Invalid 3D options", 400);
+  if (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["pose", "textureModel", "textureQuality", "rigModel", "rigType", "animateInPlace", ...TRIPO_GENERATION_OPTIONS, ...TRIPO_TEXTURE_OPTIONS, ...TRIPO_REMESH_OPTIONS].includes(key))) throw new ToolRunError("Invalid 3D options", 400);
+  for (const key of ["modelSeed", "imageSeed", "textureSeed"] as const) {
+    const value = options[key];
+    if (value !== undefined && (!Number.isInteger(value) || value < 0 || value > 2147483647)) throw new ToolRunError("Seeds must be integers between 0 and 2147483647", 400);
+  }
+  for (const key of ["adaptivePolycount", "imageAutofix", "autoSize", "exportUv", "delight", "smartLowPoly", "quad", "bake", "smartUv"] as const) {
+    if (options[key] !== undefined && typeof options[key] !== "boolean") throw new ToolRunError("Invalid 3D toggle", 400);
+  }
+  if (options.negativePrompt !== undefined && (typeof options.negativePrompt !== "string" || options.negativePrompt.length > 255)
+    || options.geometryQuality !== undefined && !["standard", "detailed"].includes(options.geometryQuality)
+    || options.textureAlignment !== undefined && !["original_image", "geometry"].includes(options.textureAlignment)
+    || options.orientation !== undefined && !["default", "align_image"].includes(options.orientation)
+    || options.remeshModel !== undefined && !["v1.0", "v2.0", "v3.0"].includes(options.remeshModel)) throw new ToolRunError("Unsupported Tripo option", 400);
   if (options.pose !== undefined && !["a-pose", "t-pose"].includes(options.pose)
     || options.textureQuality !== undefined && !["fast", "standard", "detailed", "extreme"].includes(options.textureQuality)
     || options.rigModel !== undefined && !["v1.0-20240301", "v2.5-20260210"].includes(options.rigModel)
@@ -696,7 +710,9 @@ function validate3DOptions(options: Run3DToolRequest["options"]): void {
 
 function validateOperationOptions(options: Run3DToolRequest["options"], operation: string, protocol?: string): void {
   const allowed = operation === "animate" && protocol === "tripo" ? ["rigModel", "rigType", "animateInPlace"]
-    : operation === "retexture" && protocol === "tripo" ? ["textureModel", "textureQuality"]
+    : operation === "retexture" && protocol === "tripo" ? TRIPO_TEXTURE_OPTIONS
+    : operation === "remesh" && protocol === "tripo" ? TRIPO_REMESH_OPTIONS
+    : (operation === "image" || operation === "text") && protocol === "tripo" ? TRIPO_GENERATION_OPTIONS
     : operation === "retexture" && protocol === "meshy" ? ["textureModel"]
     : (operation === "image" || operation === "text") && (protocol === "meshy" || protocol === "hyper3d") ? ["pose"] : [];
   if (options && Object.entries(options).some(([key, value]) => value !== undefined && !allowed.includes(key))) throw new ToolRunError("These options are not supported by the selected 3D operation", 400);

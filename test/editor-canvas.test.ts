@@ -25,3 +25,13 @@ describe("undoShortcut", () => {
     expect(undoShortcut(key("c", { metaKey: true }))).toBeUndefined();
   });
 });
+
+it("chooses the nearest card in screen pixels and leaves empty canvas alone", async () => {
+  const { nearestConnectionTarget } = await import("../src/renderer/editor-canvas.js");
+  const a = { id: "a", bounds: { left: 100, top: 100, right: 300, bottom: 300 } };
+  const b = { id: "b", bounds: { left: 350, top: 100, right: 500, bottom: 300 } };
+  expect(nearestConnectionTarget({ x: 150, y: 150 }, [a, b])).toBe(a);
+  expect(nearestConnectionTarget({ x: 320, y: 150 }, [a, b])).toBe(a);
+  expect(nearestConnectionTarget({ x: 335, y: 150 }, [a, b])).toBe(b);
+  expect(nearestConnectionTarget({ x: 50, y: 150 }, [a, b])).toBeUndefined();
+});

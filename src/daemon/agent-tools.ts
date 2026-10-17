@@ -233,7 +233,14 @@ export function createAgentTools(
       sourcePath: Type.Optional(Type.String({ description: "Source GLB path for retexture/remesh" })),
       targetPolycount: Type.Optional(Type.Integer({ minimum: 48, maximum: 2000000 })),
       texture: Type.Optional(Type.Boolean()), pbr: Type.Optional(Type.Boolean()),
-      options: Type.Optional(Type.Object({ pose: Type.Optional(Type.Union([Type.Literal("a-pose"), Type.Literal("t-pose")])), textureModel: Type.Optional(Type.String()), textureQuality: Type.Optional(Type.Union([Type.Literal("fast"), Type.Literal("standard"), Type.Literal("detailed"), Type.Literal("extreme")])) })),
+      options: Type.Optional(Type.Object({
+        adaptivePolycount: Type.Optional(Type.Boolean()), geometryQuality: Type.Optional(Type.Union([Type.Literal("standard"), Type.Literal("detailed")])),
+        modelSeed: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647 })), imageSeed: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647 })), textureSeed: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647 })),
+        negativePrompt: Type.Optional(Type.String({ maxLength: 255 })), imageAutofix: Type.Optional(Type.Boolean()),
+        textureAlignment: Type.Optional(Type.Union([Type.Literal("original_image"), Type.Literal("geometry")])), orientation: Type.Optional(Type.Union([Type.Literal("default"), Type.Literal("align_image")])),
+        autoSize: Type.Optional(Type.Boolean()), exportUv: Type.Optional(Type.Boolean()), delight: Type.Optional(Type.Boolean()), smartLowPoly: Type.Optional(Type.Boolean()), quad: Type.Optional(Type.Boolean()),
+        bake: Type.Optional(Type.Boolean()), smartUv: Type.Optional(Type.Boolean()), remeshModel: Type.Optional(Type.Union([Type.Literal("v1.0"), Type.Literal("v2.0"), Type.Literal("v3.0")])),
+        pose: Type.Optional(Type.Union([Type.Literal("a-pose"), Type.Literal("t-pose")])), textureModel: Type.Optional(Type.String()), textureQuality: Type.Optional(Type.Union([Type.Literal("fast"), Type.Literal("standard"), Type.Literal("detailed"), Type.Literal("extreme")])) })),
       model: Type.Optional(mediaModelParameter()),
     }),
     execute: async (_toolCallId, input, signal) => {

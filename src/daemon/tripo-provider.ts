@@ -3,6 +3,7 @@ import type { CustomModel3DSettings, Model3DBalance, Model3DOptions } from "../s
 import { model3DPreset } from "../shared/model3d-presets.js";
 import { remeshPolycount, tripoActions } from "../shared/model3d-operations.js";
 import { MAX_ANIMATION_ACTIONS } from "../shared/generation-config.js";
+import { isTripoCreditError, tripoOptionError, tripoPolycount } from "../shared/tripo-options.js";
 import type { ImageSource } from "./image-adapters.js";
 import { Model3DGenerationError, readModel3DResult, type Generated3DModel, type Model3DGenerationInput, type Model3DAnimationInput, type Model3DExecution, type Model3DGenerator } from "./model3d.js";
 
@@ -18,10 +19,13 @@ export class TripoProvider implements Model3DGenerator {
     const model = settings ?? this.connection?.settings ?? model3DPreset(input.model.provider, input.model.id)?.settings;
     if (!model || model.protocol !== "tripo") throw new Model3DGenerationError("The selected Tripo model is unavailable", 400);
     const operation = input.operation ?? "image";
-    if (input.options?.textureQuality === "fast" && input.options?.textureModel && input.options.textureModel !== "v3.5-20260815") throw new Model3DGenerationError("Fast textures require Tripo v3.5", 400);
+    const options = input.options ?? {};
+    const optionError = tripoOptionError(input.model.id, operation, options, input.images.length);
+    if (optionError) throw new Model3DGenerationError(optionError, 400);
+    if (operation === "retexture" && (![0, 1, 4].includes(input.images.length) || input.images.length && input.prompt?.trim())) throw new Model3DGenerationError("Choose one texture image, all four views, or a prompt", 400);
     if (operation === "image" && (!input.images.length || input.images.length > model.maxReferenceImages)) throw new Model3DGenerationError(`Provide 1 to ${model.maxReferenceImages} reference images`, 400);
     if (operation === "text" && (input.images.length || !input.prompt?.trim() || input.prompt.length > 1024)) throw new Model3DGenerationError("Tripo text generation needs a prompt up to 1024 characters", 400);
-    const polycount = operation === "remesh" ? remeshPolycount("tripo") : model.polycount;
+    const polycount = tripoPolycount(operation === "remesh" ? remeshPolycount("tripo") : model.polycount, input.model.id, operation, options);
     const faces = input.targetPolycount ?? polycount.default;
     if (operation !== "retexture" && (!Number.isInteger(faces) || faces < polycount.min || faces > polycount.max)) throw new Model3DGenerationError(`Tripo face count must be between ${polycount.min} and ${polycount.max}`, 400);
     const texture = input.texture ?? model.defaults?.texture ?? model.supportsTexture;
@@ -33,22 +37,28 @@ export class TripoProvider implements Model3DGenerator {
         if (!input.source?.length) throw new Model3DGenerationError("Choose a source GLB", 400);
         const source = await this.upload(input.source, "model/gltf-binary", "model.glb", key, requestSignal, input.execution, "source-upload");
         if (operation === "remesh") {
-          endpoint = "mesh/decimate"; body = { input: source, model: "v3.0", face_limit: faces, quad: false, bake: true };
+          endpoint = "mesh/decimate"; body = { input: source, model: options.remeshModel ?? "v3.0", ...(!options.adaptivePolycount ? { face_limit: faces } : {}), quad: options.quad ?? false,
+            ...(options.remeshModel !== "v1.0" ? { bake: options.bake ?? true } : {}), ...(options.smartUv !== undefined ? { smart_uv: options.smartUv } : {}) };
         } else {
-          if (input.images.length > 1 || input.images.length && input.prompt?.trim()) throw new Model3DGenerationError("Choose one texture image or a prompt", 400);
           const version = input.options?.textureModel ?? "v3.5-20260815";
           if (!["v3.5-20260815", "v3.0-20250812", "v2.5-20250123"].includes(version)) throw new Model3DGenerationError("Unsupported Tripo texture version", 400);
-          const image = input.images[0];
-          const token = image ? await this.imageUpload(image, key, requestSignal, input.execution, "texture-upload") : undefined;
+          const tokens: string[] = [];
+          for (const [index, image] of input.images.entries()) tokens.push(await this.imageUpload(image, key, requestSignal, input.execution, index === 0 ? "texture-upload" : `texture-upload-${index}`));
           endpoint = "models/texture"; body = { input: source, model: version, pbr: input.pbr ?? false,
-            texture_prompt: token ? { image: token } : { text: input.prompt }, texture_quality: input.options?.textureQuality ?? "standard" };
+            texture_prompt: tokens.length > 1 ? { images: tokens } : tokens.length ? { image: tokens[0] } : { text: input.prompt }, texture_quality: input.options?.textureQuality ?? "standard" };
+          for (const [key, value] of Object.entries({ texture_seed: options.textureSeed, texture_alignment: options.textureAlignment, delight: options.delight, bake: options.bake })) if (value !== undefined) body[key] = value;
         }
       } else {
         const tokens: string[] = [];
         for (const [index, image] of input.images.entries()) tokens.push(await this.imageUpload(image, key, requestSignal, input.execution, `image-upload-${index}`));
         endpoint = `generation/${operation === "text" ? "text-to-model" : tokens.length === 1 ? "image-to-model" : "multiview-to-model"}`;
-        body = { model: input.model.id, face_limit: faces, texture, pbr,
+        body = { model: input.model.id, ...(!options.adaptivePolycount ? { face_limit: faces } : {}), texture, pbr,
           ...(operation === "text" ? { prompt: input.prompt } : tokens.length === 1 ? { input: tokens[0] } : { inputs: tokens.map((token, index) => ({ [VIEW_NAMES[index]!]: token })) }) };
+        const extra = { model_seed: options.modelSeed, image_seed: options.imageSeed, negative_prompt: options.negativePrompt,
+          geometry_quality: options.geometryQuality, smart_low_poly: options.smartLowPoly, quad: options.quad,
+          auto_size: options.autoSize, export_uv: options.exportUv, enable_image_autofix: options.imageAutofix,
+          ...(texture ? { texture_version: options.textureModel, texture_quality: options.textureQuality, texture_seed: options.textureSeed, texture_alignment: options.textureAlignment, orientation: options.orientation, delight: options.delight } : {}) };
+        for (const [key, value] of Object.entries(extra)) if (value !== undefined) body[key] = value;
       }
       const { taskId, task } = await this.task(endpoint, body, key, requestSignal, input.execution, "generate");
       return { bytes: await this.download(task, requestSignal), mediaType: "model/gltf-binary", requestId: taskId,
@@ -149,6 +159,7 @@ export class TripoProvider implements Model3DGenerator {
     const message = typeof body.message === "string" ? body.message : "Invalid API response";
     if (response.status === 401 || body.code === 1000 || body.code === 1001) throw new Model3DGenerationError("Tripo API key was rejected", 503);
     if (response.status === 429 || body.code === 2000) throw new Model3DGenerationError("Tripo is temporarily rate limited", 429);
+    if (isTripoCreditError(message)) throw new Model3DGenerationError("Tripo: Insufficient credits. Check the API account balance and add credits in the Tripo developer console before retrying.", 402);
     throw new Model3DGenerationError(`Tripo: ${message}`, response.status >= 500 || response.ok ? 502 : 400);
   }
 }

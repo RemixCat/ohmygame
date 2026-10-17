@@ -12,6 +12,7 @@ import {
   useStore,
   useViewport,
   type Edge,
+  type Connection,
   type Node,
   type ReactFlowInstance,
   type ReactFlowProps,
@@ -61,6 +62,8 @@ type EditorCanvasProps<N extends Node> = Omit<ReactFlowProps<N, Edge>, "onPaneCo
   addOnDoubleClick?: boolean;
   fitViewOnLoad?: boolean;
   onInitialFit?: (viewport: { x: number; y: number; zoom: number }) => void;
+  /** Accept a source wire anywhere on a compatible node, or within 28 screen pixels. */
+  easyConnect?: boolean;
 };
 
 /**
@@ -80,12 +83,56 @@ export function EditorCanvas<N extends Node>({
   onNodeContextMenu,
   fitViewOnLoad = false,
   onInitialFit,
+  easyConnect = false,
   children,
   ...props
 }: EditorCanvasProps<N>) {
   const [mode, setMode] = useState<InteractionMode>("pointer");
   const [guides, setGuides] = useState<CanvasAlignmentGuides>();
   const instance = useRef<ReactFlowInstance<N, Edge>>(null);
+  const root = useRef<HTMLDivElement>(null);
+  const connecting = useRef<{ nodeId: string; handleId: string | null } | undefined>(undefined);
+  const highlighted = useRef<HTMLElement | undefined>(undefined);
+  const latest = useRef(props);
+  latest.current = props;
+
+  function clearConnectionTarget(): void {
+    highlighted.current?.classList.remove("is-connection-target");
+    highlighted.current = undefined;
+  }
+
+  function connectionAt(point: CanvasPosition): { connection: Connection; element: HTMLElement } | undefined {
+    const from = connecting.current;
+    if (!from || !root.current) return;
+    const candidates = [...root.current.querySelectorAll<HTMLElement>(".react-flow__node[data-id]")].flatMap((element) => {
+      if (element.dataset.id === from.nodeId || !element.getClientRects().length) return [];
+      const handle = element.querySelector<HTMLElement>(".react-flow__handle.target");
+      if (!handle) return [];
+      const connection: Connection = { source: from.nodeId, sourceHandle: from.handleId, target: element.dataset.id!, targetHandle: handle.dataset.handleid ?? null };
+      if (latest.current.isValidConnection && !latest.current.isValidConnection(connection)) return [];
+      return [{ connection, element, bounds: element.getBoundingClientRect() }];
+    });
+    return nearestConnectionTarget(point, candidates);
+  }
+
+  const connectionAtRef = useRef(connectionAt);
+  connectionAtRef.current = connectionAt;
+  useEffect(() => {
+    if (!easyConnect) return;
+    const move = (event: MouseEvent | TouchEvent) => {
+      const point = "touches" in event ? event.touches[0] : event;
+      const target = point ? connectionAtRef.current({ x: point.clientX, y: point.clientY }) : undefined;
+      if (highlighted.current === target?.element) return;
+      clearConnectionTarget();
+      highlighted.current = target?.element;
+      highlighted.current?.classList.add("is-connection-target");
+    };
+    const cancel = (event: KeyboardEvent) => { if (event.key === "Escape") { connecting.current = undefined; clearConnectionTarget(); } };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("touchmove", move, { passive: true });
+    document.addEventListener("keydown", cancel);
+    return () => { document.removeEventListener("mousemove", move); document.removeEventListener("touchmove", move); document.removeEventListener("keydown", cancel); connecting.current = undefined; clearConnectionTarget(); };
+  }, [easyConnect]);
 
   function openMenu(event: { preventDefault: () => void; clientX: number; clientY: number }, kind: CanvasContextMenuState["kind"], nodeId?: string): void {
     event.preventDefault();
@@ -101,6 +148,7 @@ export function EditorCanvas<N extends Node>({
 
   return (
     <ReactFlow<N, Edge>
+      ref={root}
       className={`story-canvas story-canvas-${mode}`}
       nodes={nodes}
       edges={edges?.map((edge) => edge.selected ? { ...edge, ...SELECTED_EDGE_OPTIONS } : edge)}
@@ -120,6 +168,19 @@ export function EditorCanvas<N extends Node>({
       zoomOnDoubleClick={false}
       proOptions={{ hideAttribution: true }}
       {...props}
+      connectionRadius={easyConnect ? 36 : props.connectionRadius}
+      onConnectStart={(event, params) => {
+        if (easyConnect && params.handleType === "source" && params.nodeId) connecting.current = { nodeId: params.nodeId, handleId: params.handleId };
+        props.onConnectStart?.(event, params);
+      }}
+      onConnectEnd={(event, state) => {
+        const point = "changedTouches" in event ? event.changedTouches[0] : event;
+        const target = easyConnect && !state.isValid && point && event.type !== "touchcancel" ? connectionAt({ x: point.clientX, y: point.clientY }) : undefined;
+        connecting.current = undefined;
+        clearConnectionTarget();
+        if (target) { props.onConnect?.(target.connection); return; }
+        props.onConnectEnd?.(event, state);
+      }}
       onInit={(value) => { instance.current = value; onInit?.(value); }}
       onNodeDragStart={(event, node, dragged) => { setGuides(undefined); onNodeDragStart?.(event, node, dragged); }}
       onNodeDrag={(_event, node) => {
@@ -150,6 +211,17 @@ export function EditorCanvas<N extends Node>({
       {children}
     </ReactFlow>
   );
+}
+
+/** Screen-space tolerance stays usable at every zoom; choose the nearest compatible card. */
+export function nearestConnectionTarget<T extends { bounds: { left: number; right: number; top: number; bottom: number } }>(point: CanvasPosition, candidates: T[], radius = 28): T | undefined {
+  let best: T | undefined, distance = radius;
+  for (const candidate of candidates) {
+    const { left, right, top, bottom } = candidate.bounds;
+    const next = Math.hypot(Math.max(left - point.x, 0, point.x - right), Math.max(top - point.y, 0, point.y - bottom));
+    if (next <= distance) { best = candidate; distance = next; }
+  }
+  return best;
 }
 
 /** Wait for actual node sizes and a visible canvas before consuming a remix's fit request. */

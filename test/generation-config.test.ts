@@ -61,3 +61,12 @@ describe("shared generation config", () => {
     expect(buildModel3DToolRequest({ model }, [image])).toEqual({ images: [image], model, ...DEFAULT_MODEL_3D_CONFIG });
   });
 });
+
+it("retains Ultra face counts across serialized board loading and request creation", () => {
+  const config = { model: { provider: "tripo", id: "v3.1-20260211" }, targetPolycount: 1_800_000, texture: true, pbr: false };
+  const options = { geometryQuality: "detailed" as const, modelSeed: 0 };
+  const normalized = normalizeModel3DConfig(JSON.parse(JSON.stringify(config)), undefined, "image", options);
+  expect(normalized.targetPolycount).toBe(1_800_000);
+  expect(buildModel3DToolRequest(normalized, [], "image", options).targetPolycount).toBe(1_800_000);
+  expect(normalizeModel3DConfig(config, undefined, "image", { smartLowPoly: true }).targetPolycount).toBe(4_000);
+});

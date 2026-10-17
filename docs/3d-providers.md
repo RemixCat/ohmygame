@@ -1,6 +1,6 @@
 # 3D provider workflows
 
-Reviewed against public API documentation on 2026-10-11. These capabilities describe
+Reviewed against public API documentation on 2026-10-16. These capabilities describe
 own-key connections. Free cloud currently exposes image-to-3D only, according to
 its server catalog; signing in does not enable additional upstream operations.
 
@@ -8,8 +8,8 @@ its server catalog; signing in does not enable additional upstream operations.
 | --- | --- | --- | --- |
 | Image / multiview generation | Yes | Yes | Yes, unordered references |
 | Text generation | Preview geometry, then optional refine | Text-to-model | Rodin with prompt and no images |
-| Retexture an external GLB | Text **or** one style image | Text **or** one image | One model **and** one image; optional prompt |
-| Remesh / reduce faces | Triangle remesh | v3.0 decimate, triangle mesh, texture baking | No documented equivalent |
+| Retexture an external GLB | Text **or** one style image | Text **or** one image / four ordered views | One model **and** one image; optional prompt |
+| Remesh / reduce faces | Triangle remesh | v1 / v2 / v3 algorithms, triangle / quad topology, texture baking and v3 UV unwrap | No documented equivalent |
 | Rig and preset animations | Textured humanoid, facing +Z, ≤300k triangles | Rig-check, rig, then retarget | No documented full rig/animation API |
 | Action library | Live numeric IDs and previews | Bundled identifiers scoped to rig version/type | — |
 | Own-key balance | Balance | Available and frozen credits | Remaining credits |
@@ -28,7 +28,7 @@ preset library; v2.5 provides biped and supported creature preset subsets. Avian
 rigging has no documented retarget preset in the current catalog and is not exposed.
 
 Generation model IDs identify geometry versions. Texture and rig selectors identify
-their own operation versions: Tripo texture defaults to `v3.5-20260815`, rig to
+their own operation versions: Tripo retexture defaults to `v3.5-20260815` (generation uses the geometry version's documented texture default), rig to
 `v1.0-20240301`, and decimation to `v3.0`; Meshy retexture defaults to `latest`.
 Tripo's Fast texture quality requires texture v3.5. Generation pose controls map to
 Meshy `pose_mode` or Rodin `TAPose`. Other unsupported option combinations fail
@@ -45,7 +45,7 @@ are hidden. Each native provider appears once in these selectors, using the stab
 Generation selectors keep their geometry versions. Moves load when the picker opens.
 Meshy's supplied previews appear as cards; providers without preview URLs, including
 Tripo's documented presets, use a searchable name list with ordered selection.
-Own-key balances live in provider settings, using one balance per compatible
+Own-key balances live in provider settings and can be opened on demand from a Tripo insufficient-credit error, using one balance per compatible
 protocol/base URL for custom connections. Hyper3D's free daily quota and per-generation
 cost remain in the canvas because they affect the selected model's availability.
 A custom 3D model stays generation-only until **Compatible 3D operations**
@@ -54,6 +54,35 @@ URL override, auth mode and runtime headers. A custom Meshy URL ending in `/v1`
 uses the documented sibling `/v2` for text tasks; a relay with a different layout
 must route `text-to-3d` at its configured base. Capability opt-in does not establish
 that a relay actually implements an endpoint.
+
+## Tripo advanced controls
+
+Open **More Tripo settings** on a Model 3D node. Fields vary by operation and model;
+they persist in the board's `options` and are available through the agent tool too.
+
+- Geometry: adaptive or custom face count, geometry seed, H-series V3/V3.1 Standard
+  or Ultra geometry and smart low-poly mode, and P2 quad topology. H-series quad
+  generation is excluded because that endpoint forces FBX output.
+- Materials: independent texture version, Fast / Standard / Detailed / Extreme
+  quality, texture seed, reference-color or geometry alignment, and v3.5 lighting
+  removal. Fast requires v3.5. Higher texture quality and some topology modes
+  consume additional API credits; the interface does not invent fixed estimates.
+- Input/output: single-image autofix, image alignment, real-world scaling in meters,
+  UV unwrap, plus text-only negative prompts and an image seed.
+- Retexture: a text prompt, one image, or exactly four ordered front/left/back/right
+  images, with quality, alignment, texture seed, lighting removal and baking controls.
+- Retopology: v3.0 (with optional Smart UV), v2.0 smart retopology, or v1.0 basic
+  decimation, adaptive faces where supported, quad topology and texture baking.
+
+V3/V3.1 Ultra supports up to 2M faces. Smart low-poly uses 500–20k faces. P2 quad
+uses 48–25k. Retopology v2/v3 uses 500–20k triangles or 500–10k quads; basic v1
+allows up to 2M triangles or 150k quads and requires a face count without baking.
+The canvas, board request builder and provider validate the same limits before
+submission. GLB stores triangle primitives even when quad topology guides generation.
+
+An insufficient-credit API response is reported as HTTP 402 and a localized canvas
+message with an on-demand balance view and a developer-console link. Retrying it
+does not replenish credits; check the API account balance before generating again.
 
 ## Recovering paid tasks
 
@@ -109,7 +138,7 @@ than silently passing geometry checks.
 | Provider | Further documented APIs / options |
 | --- | --- |
 | Meshy | Text to Motion; standalone rig/export; format conversion; resize; UV unwrap; task management and usage history; additional generation controls including geometry/texture resolution, seeds, texture guidance, automatic size and thumbnails |
-| Tripo | Image generation and multiview-image/edit APIs; import/convert; Smart UV and preview; segmentation/completion; standalone rig/export; task listing/cancellation and usage history; seeds, geometry quality, automatic size, low-poly/parts generation and compression; large-file presigned uploads |
+| Tripo | Image generation and multiview-image/edit APIs; import/convert; Smart UV and preview; segmentation/completion; standalone rig/export; task listing/cancellation and usage history; parts generation and compression; large-file presigned uploads |
 | Hyper3D | Bang and Rodin Agentic beta; usage history; texture resolution/mode, seed, lighting removal, reference strength/detail controls; bounding-box/size and further tier-specific controls |
 
 Retexture and preset rig/animation are the common workflows covered here. Standalone
