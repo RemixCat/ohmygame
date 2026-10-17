@@ -375,6 +375,8 @@ const en = {
     noAudioModels: "No audio models are available.",
     loadingModels: "Loading models",
     audioDescription: "Doubao speech synthesis for generating character voices",
+    sunoDescription: "Generate instrumental music or songs through your MuMu connection",
+    sunoHint: "Uses zhongzhuan.mumuverse.space. Enter your MuMu API key; the address and Suno protocol are already configured. Saving does not verify model access. Generated tracks are saved to the Library; duration is chosen automatically.",
     defaultVoiceId: "Default voice",
     voiceSelectCustom: "Custom Speaker ID...",
     voiceIdInputLabel: "Speaker ID",

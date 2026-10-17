@@ -382,6 +382,14 @@ export async function getVolcengineTtsSettings(): Promise<{ configured: boolean;
   return request("/settings/models/providers/volcengine-tts");
 }
 
+export async function updateSunoApiKey(apiKey: string): Promise<{ configured: boolean }> {
+  const result = await request<{ configured: boolean }>("/settings/models/providers/suno-mumu", {
+    method: "PUT", body: JSON.stringify({ apiKey }),
+  });
+  notifyAgentModelsChanged();
+  return result;
+}
+
 export async function updateVolcengineTtsApiKey(apiKey: string): Promise<{ configured: boolean; defaultVoiceId?: string }> {
   const result = await request<{ configured: boolean; defaultVoiceId?: string }>("/settings/models/providers/volcengine-tts", {
     method: "PUT",

@@ -19,7 +19,7 @@ The stable tool boundary is:
 | ----------------------- | -------------- | ------------------------------------------ |
 | `generate-speech`       | `speech`       | Volcengine Doubao Speech synthesis 2.0     |
 | `generate-sound-effect` | `sound-effect` | Contract ready; needs a compatible adapter |
-| `generate-music`        | `music`        | Contract ready; needs a compatible adapter |
+| `generate-music`        | `music`        | Suno through the standalone MuMu connection |
 
 Unsupported operations fail before an incompatible provider is called. Adding ElevenLabs, MiniMax, Suno, Gemini, Fish Audio, or SiliconFlow should normally require a new adapter and settings integration, not changes to jobs or Library storage.
 
@@ -61,6 +61,60 @@ Example job body:
 ```
 
 The model can be omitted to use the first configured compatible model, or supplied explicitly as `{ "provider": "volcengine-tts", "id": "seed-tts-2.0" }`.
+
+## Standalone Suno / MuMu connection
+
+Configure **Settings → Providers & Models → Suno · MuMu** with a MuMu API key.
+The address `https://zhongzhuan.mumuverse.space` and New API Suno protocol are
+preconfigured, following the Doubao key-only connection pattern. This is a
+third-party connection, independent of Suno's official platform and of the
+generic custom-provider configuration. Saving stores the key locally with
+mode `0600`; read endpoints return only `configured`. Saving does not verify
+the account's model/group permissions or credit balance.
+
+The music node becomes available after connection. It supports the documented
+V3/V3.5/V4/V4.5/V5 presets, instrumental music, prompted songs, and exact lyrics.
+For exact lyrics, the node's music description supplies the style (`tags`) and
+the lyrics field supplies `prompt`; without lyrics the description supplies
+`gpt_description_prompt`. The adapter submits `/suno/submit/music`, polls
+`/suno/fetch/{task_id}` until the task succeeds, then downloads complete MP3s.
+It does not download streaming previews. Every returned variation is stored
+as a separate Library asset and tool artifact; the canvas node uses the first.
+
+Duration is automatic. Fixed duration, looping, reference audio, conversion,
+continuation and stems are not advertised by this adapter. Cancelling stops
+local polling/download; it cannot cancel or refund a task already submitted
+to MuMu. Requests time out after 15 minutes. Submission is never automatically
+retried: after a timeout or lost response, inspect the MuMu task history before
+creating another paid task. Keys are sent only to the configured MuMu origin,
+never to the audio CDN.
+
+The settings endpoints are `GET`, `PUT { "apiKey": "..." }` and `DELETE`
+`/settings/models/providers/suno-mumu`. Existing provider enable controls and
+`POST /tools/generate-music/jobs` remain the common API.
+
+Implementation is isolated in `src/shared/suno.ts`, `src/daemon/suno-provider.ts`
+and `src/daemon/suno-settings.ts`, with small registration and settings-view
+hooks. The generic custom-provider schema is unchanged. To retire it after an
+upstream replacement, disconnect it first, then revert the dedicated Suno
+commit (or remove those modules and their registration hooks). Existing MP3
+Library assets remain usable independently of this adapter; existing music
+nodes can choose a replacement model.
+
+Protocol references: [MuMu models/task format](https://4u264cfiu1.apifox.cn/doc-9454819),
+[generation parameters](https://4u264cfiu1.apifox.cn/doc-9454820),
+[New API Suno response structure](https://doc.newapi.pro/en/api/suno-music/).
+
+Validated on 2026-10-17: plugin preparation, changelog check, typecheck,
+renderer/sandbox builds and Node 26.8.1 startup/MCP/shutdown passed. The full
+suite passed 2886 tests across 275 files, with 23 tests and one file skipped.
+The isolated browser fixture verified key-only save, model listing, instrumental
+and lyric controls, automatic duration, generated-node playback controls, both
+tracks in the Library, disabling and the deletion confirmation. The fixture
+returned local one-second MP3s and made no paid provider requests. Automated
+checks also verify key deletion, secret redaction, no automatic resubmission,
+timeout/cancellation and cleanup after a later variant fails to save. Real MuMu
+credentials, model permissions, credit and generation quality remain unverified.
 
 ## Adding another provider
 

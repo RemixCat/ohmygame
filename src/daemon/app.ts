@@ -86,6 +86,9 @@ import { ProviderVideos } from "./provider-videos.js";
 import { AudioGenerationError, ProviderAudio, type AudioGenerator } from "./audio-generation.js";
 import { VolcengineTtsProvider } from "./volcengine-tts-provider.js";
 import { VolcengineTtsSettingsStore } from "./volcengine-tts-settings.js";
+import { SunoProvider } from "./suno-provider.js";
+import { SunoSettingsStore } from "./suno-settings.js";
+import { SUNO_PROVIDER_ID, SUNO_PROVIDER_NAME } from "../shared/suno.js";
 import { AUDIO_OUTPUT_FORMATS, AUDIO_SAMPLE_RATES, AUDIO_VOICE_ID_MAX_LENGTH, AUDIO_VOICE_ID_PATTERN, DOUBAO_SPEECH_PROVIDER_NAME, availableAudioOperations, type AudioOperation } from "../shared/audio.js";
 import { isSeedanceProviderId, SEEDANCE_PROVIDER_IDS, SEEDANCE_PROVIDERS } from "./seedance-models.js";
 import { SeedanceSettingsStore } from "./seedance-settings.js";
@@ -588,6 +591,7 @@ export function createApp(options: AppOptions = {}) {
   const seedanceSettings = new SeedanceSettingsStore(dataDirectory);
   const minimaxSettings = new MinimaxSettingsStore(dataDirectory);
   const volcengineTtsSettings = new VolcengineTtsSettingsStore(dataDirectory);
+  const sunoSettings = new SunoSettingsStore(dataDirectory);
   const providerModelSettings = new ProviderModelSettingsStore(dataDirectory, piAgentDirectory);
   const webSearch = new WebSearchService(webSearchSettings, options.webSearchFetch);
   const openAIEndpoint = new ModelEndpointSettingsStore(
@@ -680,7 +684,8 @@ export function createApp(options: AppOptions = {}) {
     () => providerEnabled("volcengine-tts"),
     () => volcengineTtsSettings.defaultVoiceId(),
   );
-  const providerAudio = new ProviderAudio([volcengineTtsProvider]);
+  const sunoProvider = new SunoProvider(() => sunoSettings.key(), options.audioFetch, () => providerEnabled(SUNO_PROVIDER_ID));
+  const providerAudio = new ProviderAudio([volcengineTtsProvider, sunoProvider]);
   const tools = new ToolRunner(
     dataDirectory,
     options.imageGenerator ?? providerImages,
@@ -882,7 +887,7 @@ export function createApp(options: AppOptions = {}) {
     await onboarding.load().catch((err) => app.log.warn({ err }, "Could not load onboarding state"));
     await Promise.all([library.load(), projects.load((projectDirectory, cause) => {
       app.log.warn({ err: cause, projectDirectory }, "Could not load project; skipped during startup");
-    }), tools.load(), pluginSettings.load(), pluginCapabilities.configuration.load(), bundledPlugins.load(), preinstalledPlugins.load(), webSearchSettings.load(), openAIEndpoint.load(), loadOpenAIImages(), meshySettings.load(), tripoSettings.load(), hyper3dSettings.load(), seedanceSettings.load(), minimaxSettings.load(), volcengineTtsSettings.load(), providerModelSettings.load()]);
+    }), tools.load(), pluginSettings.load(), pluginCapabilities.configuration.load(), bundledPlugins.load(), preinstalledPlugins.load(), webSearchSettings.load(), openAIEndpoint.load(), loadOpenAIImages(), meshySettings.load(), tripoSettings.load(), hyper3dSettings.load(), seedanceSettings.load(), minimaxSettings.load(), volcengineTtsSettings.load(), sunoSettings.load(), providerModelSettings.load()]);
     await Promise.all(projects.list().map(async (project) => { projectWrites.initialize(project.id, await readWorkspaceVersion(project)); }));
     for (const error of await preinstalledPlugins.seed(localPlugins)) app.log.warn(error);
     const examplesWarning = await examples.load();
@@ -2090,6 +2095,16 @@ export function createApp(options: AppOptions = {}) {
       methods: [{ type: "api_key" as const, label: `${DOUBAO_SPEECH_PROVIDER_NAME} API key` }],
       credentialType: "api_key" as const,
       capabilities: ["audio"] as const,
+    }, {
+      id: SUNO_PROVIDER_ID,
+      name: SUNO_PROVIDER_NAME,
+      configured: sunoSettings.get().configured,
+      enabled: providerEnabled(SUNO_PROVIDER_ID),
+      custom: false,
+      status: sunoSettings.get().configured ? "connected" as const : "not_configured" as const,
+      methods: [{ type: "api_key" as const, label: "MuMu API key" }],
+      credentialType: "api_key" as const,
+      capabilities: ["audio"] as const,
     }];
     // Cloud quota/catalog verification can take tens of seconds. Refresh it in
     // the background and serve the last known snapshot so opening Settings does
@@ -2213,7 +2228,8 @@ export function createApp(options: AppOptions = {}) {
     const seedance = isSeedanceProviderId(providerId);
     const minimax = isMinimaxProviderId(providerId);
     const volcengineTts = providerId === "volcengine-tts";
-    if (!native && !seedance && !minimax && !volcengineTts && !runtime.getProvider(providerId)) throw new ModelAuthError("Model provider not found", 404);
+    const suno = providerId === SUNO_PROVIDER_ID;
+    if (!native && !seedance && !minimax && !volcengineTts && !suno && !runtime.getProvider(providerId)) throw new ModelAuthError("Model provider not found", 404);
     const previousEndpoint = providerId === "openai" ? openAIEndpoint.override() : undefined;
     try {
       await providerModelSettings.removeProviderSettings(providerId, async () => {
@@ -2223,6 +2239,7 @@ export function createApp(options: AppOptions = {}) {
         else if (seedance) await seedanceSettings.clear(providerId);
         else if (minimax) await minimaxSettings.clear(providerId);
         else if (volcengineTts) await volcengineTtsSettings.clear();
+        else if (suno) await sunoSettings.clear();
         else await runtime.logout(providerId);
         await syncOpenAIEndpoint(runtime);
         if (providerId === "openai") await openAIImages.clear(false);
@@ -2285,6 +2302,19 @@ export function createApp(options: AppOptions = {}) {
   app.delete<{ Params: { providerId: string } }>("/settings/models/providers/:providerId/minimax-key", async (request, reply) => {
     if (!isMinimaxProviderId(request.params.providerId)) return reply.code(404).send({ error: "MiniMax provider not found" });
     await minimaxSettings.clear(request.params.providerId);
+    return reply.code(204).send();
+  });
+
+  app.get("/settings/models/providers/suno-mumu", async () => sunoSettings.get());
+  app.put<{ Body: { apiKey: string } }>("/settings/models/providers/suno-mumu", { schema: { body: {
+    type: "object", additionalProperties: false, required: ["apiKey"],
+    properties: { apiKey: { type: "string", minLength: 1, maxLength: 10_000 } },
+  } } }, async (request, reply) => {
+    try { return await sunoSettings.update(request.body.apiKey); }
+    catch (cause) { return reply.code(400).send({ error: cause instanceof Error ? cause.message : String(cause) }); }
+  });
+  app.delete("/settings/models/providers/suno-mumu", async (_request, reply) => {
+    await removeProvider(SUNO_PROVIDER_ID);
     return reply.code(204).send();
   });
 

@@ -24,6 +24,7 @@ import {
   updateMinimaxApiKey,
   updateSeedanceApiKey,
   updateVolcengineTtsApiKey,
+  updateSunoApiKey,
   getVolcengineTtsSettings,
   saveVolcengineTtsDefaultVoiceId,
   previewVolcengineTtsSpeech,
@@ -48,6 +49,7 @@ import { HYPER3D_CONNECTION_ID } from "../shared/cloud-models.js";
 import { isLocalModelProvider, LOCAL_MODEL_PROVIDERS, withLocalModelProviders, type LocalModelProviderId } from "./local-model-providers.js";
 import { groupProviders } from "./provider-groups.js";
 import { t } from "./i18n.js";
+import { SUNO_PROVIDER_ID } from "../shared/suno.js";
 
 export type ModelsView = { page: "providers" } | { page: "provider"; provider: ProviderSummary };
 
@@ -249,6 +251,7 @@ function ProviderAuthView({ provider, onBack, onCompleted }: { provider: Provide
   if (SEEDANCE_PROVIDER_IDS.has(provider.id)) return <SeedanceAuthView provider={provider} onBack={onBack} onCompleted={onCompleted} />;
   if (MINIMAX_PROVIDER_IDS.has(provider.id)) return <MinimaxAuthView provider={provider} onBack={onBack} onCompleted={onCompleted} />;
   if (provider.id === "volcengine-tts") return <VolcengineTtsAuthView provider={provider} onBack={onBack} onCompleted={onCompleted} />;
+  if (provider.id === SUNO_PROVIDER_ID) return <SunoAuthView provider={provider} onBack={onBack} onCompleted={onCompleted} />;
   const [method, setMethod] = useState<ModelAuthMethod | undefined>(provider.configured ? undefined : provider.methods.length === 1 ? provider.methods[0]?.type : undefined);
   if (provider.configured || provider.id === "openai") return <ConnectedProvider provider={provider} onBack={onBack} onRemoved={onCompleted} />;
   if (!method) return <AuthMethodChoice provider={provider} onBack={onBack} onChoose={setMethod} />;
@@ -462,6 +465,40 @@ function MinimaxAuthView({ provider, onBack, onCompleted }: { provider: Provider
       {provider.configured ? <SeedanceModels key={`minimax-${modelsRevision}`} providerId={provider.id} /> : null}
     </section>
   );
+}
+
+function SunoAuthView({ provider, onBack, onCompleted }: { provider: ProviderSummary; onBack: () => void; onCompleted: () => void }) {
+  const deletion = useProviderDeletion(provider.id, onCompleted);
+  const [apiKey, setApiKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string>();
+  const [modelsRevision, setModelsRevision] = useState(0);
+  async function save(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    setSaving(true); setError(undefined);
+    try {
+      await updateSunoApiKey(apiKey.trim());
+      setApiKey("");
+      onCompleted();
+    } catch (cause) { setError(errorMessage(cause)); }
+    finally { setSaving(false); }
+  }
+  return <section className="settings-panel settings-provider-detail">
+    <ProviderDetailHeader provider={provider} description={t("providers.sunoDescription")} onBack={onBack}>
+      {provider.configured ? <><ProviderEnableControl provider={provider} disabled={deletion.busy} onChanged={() => setModelsRevision((value) => value + 1)} /><ProviderDeleteButton deletion={deletion} disabled={saving} /></> : null}
+    </ProviderDetailHeader>
+    {provider.configured ? <ProviderDeleteConfirmation provider={provider} deletion={deletion} disabled={saving} /> : null}
+    <form className="settings-detail-field" onSubmit={(event) => void save(event)}>
+      <label className="settings-search-field-label" htmlFor="suno-mumu-api-key">{t("providers.apiKey")}</label>
+      <div className="settings-detail-inline">
+        <input id="suno-mumu-api-key" className="settings-search-input" type="password" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={provider.configured ? t("providers.replaceKeyPlaceholder") : t("providers.keyPlaceholder", { name: "MuMu" })} disabled={saving || deletion.busy} />
+        <button className="settings-primary-button" type="submit" disabled={saving || deletion.busy || !apiKey.trim()}>{saving ? t("common.saving") : t("common.save")}</button>
+      </div>
+      <p className="settings-detail-hint">{t("providers.sunoHint")}</p>
+    </form>
+    {error || deletion.error ? <p className="settings-error" role="alert">{error ?? deletion.error}</p> : null}
+    {provider.configured ? <AudioModels key={`suno-${modelsRevision}`} providerId={provider.id} /> : null}
+  </section>;
 }
 
 function VolcengineTtsAuthView({ provider, onBack, onCompleted }: { provider: ProviderSummary; onBack: () => void; onCompleted: () => void }) {

@@ -2290,7 +2290,7 @@ function PromptAudioNode({ data, selected, operation }: Pick<NodeProps<AssetCanv
   const selectedModel = runtime?.models.find((model) => sameModel(model, data.audioModel));
   const maximumDuration = selectedModel?.capabilities.maxDurationSeconds;
   const durations = AUDIO_DURATION_OPTIONS.filter((value) => maximumDuration === undefined || value <= maximumDuration);
-  const durationOptions: number[] = data.durationSeconds !== undefined && !durations.some((duration) => duration === data.durationSeconds)
+  const durationOptions: number[] = selectedModel?.capabilities.supportsDuration === false ? [] : data.durationSeconds !== undefined && !durations.some((duration) => duration === data.durationSeconds)
     ? [...durations, data.durationSeconds].sort((left, right) => left - right)
     : durations;
   const change = (next: Partial<AssetCanvasFlowData>) => runtime?.onChange({ ...data, ...next, audioRuntime: undefined });
@@ -2303,6 +2303,7 @@ function PromptAudioNode({ data, selected, operation }: Pick<NodeProps<AssetCanv
       ...(!model.capabilities.supportsLoop ? { loop: undefined } : {}),
       ...(!model.capabilities.supportsNegativePrompt ? { negativePrompt: undefined } : {}),
       ...(!model.capabilities.supportsLyrics ? { lyrics: undefined } : {}),
+      ...(model.capabilities.supportsDuration === false ? { durationSeconds: undefined } : {}),
       ...(!model.capabilities.supportsInstrumental && operation === "music" ? { instrumental: true } : {}),
       ...(maxDuration !== undefined && data.durationSeconds !== undefined && data.durationSeconds > maxDuration ? { durationSeconds: maxDuration } : {}),
     });

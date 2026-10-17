@@ -562,44 +562,43 @@ export class ToolRunner {
     const id = randomUUID();
     const temporary = path.join(this.#runsDirectory, `.${id}.tmp`);
     const destination = path.join(this.#runsDirectory, id);
-    let registeredAssetId: string | undefined;
+    const registeredAssetIds: string[] = [];
     try {
       signal?.throwIfAborted();
       const generated = await this.audioGenerator.generate(input, signal);
       signal?.throwIfAborted();
-      const extension = generated.mediaType === "audio/wav" ? "wav" : "mp3";
-      const fileName = `output.${extension}`;
       const prompt = input.operation === "speech" ? input.text.trim()
         : input.operation === "dialogue" ? input.turns.map((turn) => turn.text.trim()).filter(Boolean).join("\n")
           : input.prompt.trim();
-      if (this.assetLibrary) {
-        registeredAssetId = (await this.assetLibrary.add(fileName, generated.bytes, {
-          origin: "generated",
-          prompt,
-          sourceKey: `tool:${id}:${fileName}`,
-          ...(generated.metadata?.durationMs !== undefined ? { duration: generated.metadata.durationMs / 1_000 } : {}),
-        })).id;
+      const files: StoredToolRun["files"] = [];
+      await mkdir(temporary, { recursive: true });
+      for (const [index, track] of [generated, ...(generated.alternatives ?? [])].entries()) {
+        signal?.throwIfAborted();
+        const extension = track.mediaType === "audio/wav" ? "wav" : "mp3";
+        const fileName = index === 0 ? `output.${extension}` : `output-${index + 1}.${extension}`;
+        const assetId = this.assetLibrary ? (await this.assetLibrary.add(fileName, track.bytes, {
+          origin: "generated", prompt, sourceKey: `tool:${id}:${fileName}`,
+          ...(track.metadata?.durationMs !== undefined ? { duration: track.metadata.durationMs / 1_000 } : {}),
+        })).id : undefined;
+        if (assetId) registeredAssetIds.push(assetId);
+        files.push({ name: fileName, mediaType: track.mediaType, ...(assetId ? { assetId } : {}) });
+        await writeFile(path.join(temporary, fileName), track.bytes);
       }
+      signal?.throwIfAborted();
       const run: StoredToolRun = {
         version: 1,
         id,
         toolId,
         model: generated.model,
         createdAt: new Date().toISOString(),
-        files: [{
-          name: fileName,
-          mediaType: generated.mediaType,
-          ...(registeredAssetId ? { assetId: registeredAssetId } : {}),
-        }],
+        files,
       };
-      await mkdir(temporary, { recursive: true });
-      await writeFile(path.join(temporary, fileName), generated.bytes);
       await writeFile(path.join(temporary, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
       await rename(temporary, destination);
       return publicRun(run);
     } catch (cause) {
       await rm(temporary, { recursive: true, force: true });
-      if (this.assetLibrary && registeredAssetId) await this.assetLibrary.delete(registeredAssetId).catch(() => undefined);
+      for (const assetId of registeredAssetIds) await this.assetLibrary?.delete(assetId).catch(() => undefined);
       if (cause instanceof ToolRunError) throw cause;
       if (cause instanceof AudioGenerationError) throw new ToolRunError(cause.message, cause.statusCode);
       throw cause;

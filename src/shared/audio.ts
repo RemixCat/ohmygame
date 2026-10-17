@@ -92,6 +92,8 @@ export interface AudioModelCapabilities {
   supportsVoiceDesign?: boolean;
   supportsAlignment?: boolean;
   supportsLoop?: boolean;
+  /** False when the provider chooses duration automatically. Missing preserves existing adapters. */
+  supportsDuration?: boolean;
   supportsLyrics?: boolean;
   supportsInstrumental?: boolean;
   supportsReferenceAudio?: boolean;
@@ -136,6 +138,8 @@ export interface GeneratedAudio {
   mediaType: "audio/mpeg" | "audio/wav";
   model: ModelRef;
   metadata?: AudioMetadata;
+  /** Additional completed tracks from the same generation, all persisted in the Library. */
+  alternatives?: Array<Omit<GeneratedAudio, "alternatives">>;
 }
 
 export interface RunSpeechToolRequest extends Omit<

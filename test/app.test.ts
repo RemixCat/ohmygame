@@ -1617,7 +1617,7 @@ describe("daemon", () => {
       .toEqual({ configured: false });
     expect((await app.inject({ method: "GET", url: "/audio-models/catalog" })).json()).toEqual({
       models: [],
-      providers: [expect.objectContaining({ provider: "volcengine-tts", configured: false, state: "not_configured" })],
+      providers: expect.arrayContaining([expect.objectContaining({ provider: "volcengine-tts", configured: false, state: "not_configured" })]),
     });
     expect((await app.inject({
       method: "PUT",
@@ -1646,7 +1646,7 @@ describe("daemon", () => {
 
     expect((await app.inject({ method: "GET", url: "/audio-models/catalog" })).json()).toEqual({
       models: [expect.objectContaining({ provider: "volcengine-tts", id: "seed-tts-2.0" })],
-      providers: [expect.objectContaining({ provider: "volcengine-tts", state: "ready" })],
+      providers: expect.arrayContaining([expect.objectContaining({ provider: "volcengine-tts", state: "ready" })]),
     });
 
     expect((await app.inject({
@@ -1659,7 +1659,7 @@ describe("daemon", () => {
       .toEqual({ configured: false });
     expect((await app.inject({ method: "GET", url: "/audio-models/catalog" })).json()).toEqual({
       models: [],
-      providers: [expect.objectContaining({ provider: "volcengine-tts", state: "not_configured" })],
+      providers: expect.arrayContaining([expect.objectContaining({ provider: "volcengine-tts", state: "not_configured" })]),
     });
   });
 
