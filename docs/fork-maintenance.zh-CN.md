@@ -104,9 +104,11 @@ git merge --no-ff v0.0.0-beta.4.9
 
 ## 发布与验证
 
-没有独立安装包也可以从 `studio` 运行源码。CI 在 PR 以及 `studio`、`dev`、`main`
-分支推送时运行，检查命令见
+没有独立安装包也可以从 `studio` 运行源码。CI 配置覆盖 PR 以及 `studio`、`dev`、`main`
+分支推送，检查命令见
 [CONTRIBUTING.md](../CONTRIBUTING.md#make-and-check-your-change)。
+GitHub 可能要求先在 Fork 的 Actions 页面启用工作流。没有检查结果不代表远端 CI 已通过，
+本地验证结果需要明确标注为本地。
 部分云发布测试需要私有云权限，公共测试可能跳过；测试通过不代表真实服务商生成质量已经验证。
 
 后续 Studio 安装包需要独立的发行标识、下载渠道和更新源，见
