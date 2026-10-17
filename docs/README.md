@@ -38,6 +38,10 @@ Projects URL preserves its type filter, search (`q`), and name sorting
 
 ## Architecture and feature guides
 
+[Community Studio fork](fork-maintenance.md) ([中文](fork-maintenance.zh-CN.md))
+documents this fork's available extensions, source installation, branch policy,
+and migration when upstream adds equivalent features.
+
 [Git changes in Code](workspace-git.md) covers the read-only project changes
 view, its comparison baseline and refresh behavior.
 

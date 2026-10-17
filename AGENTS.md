@@ -6,6 +6,10 @@ their code, documentation, and tests.
 
 ## Git
 
+- This fork's community extensions use `studio` as the integration branch.
+  Start fork-specific contribution branches from `studio` and target PRs at
+  `RemixCat/ohmygame:studio`; see [fork maintenance](docs/fork-maintenance.md).
+  The `dev`/`main` rules below apply to contributions intended for upstream.
 - Keep PRs focused on one feature, bug fix, documentation change, chore, or refactor.
 - Start contribution branches from `dev` and target ordinary PRs at `dev`.
   `main` receives maintainer release PRs from `dev`.

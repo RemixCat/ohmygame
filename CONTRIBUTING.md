@@ -1,5 +1,11 @@
 # Contributing to OhMyGame
 
+For **RemixCat's community Studio extensions**, start from `studio` and open
+PRs against `RemixCat/ohmygame:studio`. See the
+[fork guide](docs/fork-maintenance.md) ([中文](docs/fork-maintenance.zh-CN.md))
+for feature status, source installation, and upstream synchronization.
+The upstream `dev`/`main` contribution workflow below remains unchanged.
+
 OhMyGame is in beta. Bug reports, documentation improvements, small fixes,
 plugins, and feedback from making real games are welcome.
 

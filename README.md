@@ -1,3 +1,11 @@
+> [!IMPORTANT]
+> **Community Studio fork:** this is [RemixCat/ohmygame](https://github.com/RemixCat/ohmygame),
+> based on [WhiteTowerAI/ohmygame](https://github.com/WhiteTowerAI/ohmygame).
+> Use the **`studio` branch** for this fork's extensions. See the
+> [feature status, source installation, and contribution guide](docs/fork-maintenance.md).
+> SpriteCook integration is **planned, not available yet**. The download buttons
+> below install the upstream app and do **not** include this fork's additions.
+
 <div align="center">
 
 <img src="docs/assets/banner.webp" alt="OhMyGame — the open-source studio for making games with AI" width="100%" />
