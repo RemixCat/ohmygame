@@ -97,7 +97,7 @@ export function createAgentTools(
       const file = await tools.file(run.id, output.name);
       if (!file) throw new Error("Generated audio could not be read");
       signal?.throwIfAborted();
-      const extension = output.mediaType === "audio/wav" ? "wav" : "mp3";
+      const extension = output.mediaType === "audio/wav" ? "wav" : output.mediaType === "audio/mp4" ? "m4a" : "mp3";
       const relativePath = await projects.addGeneratedAsset(project.id, `${prefix}-${run.id}.${extension}`, file.bytes, {
         prompt,
         ...(file.assetId ? { libraryAssetId: file.assetId } : {}),

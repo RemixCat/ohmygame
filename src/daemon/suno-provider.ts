@@ -135,22 +135,29 @@ export class SunoProvider implements AudioProviderAdapter {
             );
           const tracks: GeneratedAudio[] = [];
           for (const clip of task.data) {
+            // MuMu's suno_music_open channel returns camel-case URLs and status 30,
+            // while the published New API examples use audio_url / complete.
+            const audioUrl = object(clip)
+              ? (clip.audio_url ?? clip.cld2AudioUrl)
+              : undefined;
             if (
               !object(clip) ||
-              typeof clip.audio_url !== "string" ||
-              (clip.status !== undefined && clip.status !== "complete")
+              typeof audioUrl !== "string" ||
+              !audioUrl.trim() ||
+              (clip.status !== undefined &&
+                clip.status !== "complete" &&
+                clip.status !== 30)
             )
               throw new AudioGenerationError(
                 "Suno returned an incomplete music track",
                 502,
               );
-            const bytes = await this.download(clip.audio_url, combined);
+            const audio = await this.download(audioUrl, combined);
             const duration = object(clip.metadata)
-              ? clip.metadata.duration
-              : undefined;
+              ? (clip.metadata.duration ?? clip.duration)
+              : clip.duration;
             tracks.push({
-              bytes,
-              mediaType: "audio/mpeg",
+              ...audio,
               model: input.model,
               metadata: {
                 providerRequestId: taskId,
@@ -188,7 +195,14 @@ export class SunoProvider implements AudioProviderAdapter {
           `Suno timed out${taskId ? ` (task ${taskId})` : ""}. Check the MuMu task history before generating again.`,
           504,
         );
-      if (cause instanceof AudioGenerationError) throw cause;
+      if (cause instanceof AudioGenerationError) {
+        if (taskId)
+          throw new AudioGenerationError(
+            `${cause.message} (Suno task ${taskId}; already submitted, check task history before generating again)`,
+            cause.statusCode,
+          );
+        throw cause;
+      }
       throw new AudioGenerationError(
         `Could not reach Suno${taskId ? ` (task ${taskId})` : ""}. Check the MuMu task history before retrying.`,
         502,
@@ -246,7 +260,7 @@ export class SunoProvider implements AudioProviderAdapter {
   private async download(
     value: string,
     signal: AbortSignal,
-  ): Promise<Uint8Array> {
+  ): Promise<Pick<GeneratedAudio, "bytes" | "mediaType">> {
     let url: URL;
     try {
       url = new URL(value);
@@ -256,7 +270,11 @@ export class SunoProvider implements AudioProviderAdapter {
     if (url.protocol !== "https:" || url.username || url.password)
       throw new AudioGenerationError("Suno returned an invalid audio URL", 502);
     // CDN requests deliberately carry no MuMu credentials.
-    const response = await this.request(url.href, { signal });
+    // This CDN rejects non-browser user agents even for the public file URL.
+    const response = await this.request(url.href, {
+      signal,
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
     if (
       !response.ok ||
       !response.body ||
@@ -269,11 +287,13 @@ export class SunoProvider implements AudioProviderAdapter {
       ![
         "audio/mpeg",
         "audio/mp3",
+        "audio/mp4",
+        "audio/x-m4a",
         "application/octet-stream",
         "binary/octet-stream",
       ].includes(type)
     )
-      throw new AudioGenerationError("Suno returned a non-MP3 download", 502);
+      throw new AudioGenerationError("Suno returned a non-audio download", 502);
     const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
     let size = 0;
@@ -293,7 +313,12 @@ export class SunoProvider implements AudioProviderAdapter {
       await reader.cancel().catch(() => undefined);
     }
     if (!size) throw new AudioGenerationError("Suno returned empty audio", 502);
-    return Buffer.concat(chunks);
+    const bytes = Buffer.concat(chunks);
+    const m4a =
+      bytes.length >= 8 && bytes.subarray(4, 8).toString("ascii") === "ftyp";
+    if ((type === "audio/mp4" || type === "audio/x-m4a") && !m4a)
+      throw new AudioGenerationError("Suno returned invalid M4A audio", 502);
+    return { bytes, mediaType: m4a ? "audio/mp4" : "audio/mpeg" };
   }
 }
 
@@ -321,10 +346,10 @@ function validate(input: MusicAudioRequest): void {
     input.referenceAssetId ||
     input.output?.sampleRate !== undefined ||
     input.output?.channels !== undefined ||
-    (input.output?.format && input.output.format !== "mp3")
+    input.output?.format !== undefined
   )
     throw new AudioGenerationError(
-      "This Suno connection supports MP3 music with automatic duration; looping, reference audio and output conversion are unavailable",
+      "This Suno connection chooses MP3 or M4A and duration automatically; looping, reference audio and output conversion are unavailable",
       400,
     );
 }

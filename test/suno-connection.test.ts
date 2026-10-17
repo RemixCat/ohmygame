@@ -64,7 +64,7 @@ it("connects through a key-only API, filters the music catalog, stores both gene
             })),
           },
         });
-      expect(init).not.toHaveProperty("headers");
+      expect(new Headers(init?.headers).has("authorization")).toBe(false);
       return new Response("ID3-fixture-audio", {
         headers: { "Content-Type": "audio/mpeg" },
       });
@@ -156,4 +156,49 @@ it("rolls back all audio variants if a later Library write fails", async () => {
     runner.run("generate-music", { prompt: "harbor", instrumental: true }),
   ).rejects.toThrow("disk full");
   expect(library.list()).toEqual([]);
+});
+
+it("stores native M4A results with an m4a extension and audio/mp4 Library content type", async () => {
+  const dir = await directory(),
+    library = new AssetLibrary(dir);
+  await library.load();
+  const audio = {
+    bytes: Buffer.from([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]),
+    mediaType: "audio/mp4" as const,
+    model: { provider: SUNO_PROVIDER_ID, id: "chirp-v5" },
+    metadata: { durationMs: 107560 },
+  };
+  const runner = new ToolRunner(
+    dir,
+    { generate: vi.fn() },
+    undefined,
+    undefined,
+    library,
+    undefined,
+    {
+      catalog: () => ({ models: [], providers: [] }),
+      generate: async () => ({ ...audio, alternatives: [audio] }),
+    },
+  );
+  cleanups.push(() => runner.close());
+  await runner.load();
+  const run = await runner.run("generate-music", {
+    prompt: "harbor",
+    instrumental: true,
+  });
+  expect(run.files.map((file) => [file.name, file.mediaType])).toEqual([
+    ["output.m4a", "audio/mp4"],
+    ["output-2.m4a", "audio/mp4"],
+  ]);
+  expect(library.list()).toHaveLength(2);
+  for (const file of run.files) {
+    expect(library.get(file.assetId!)).toMatchObject({
+      mediaType: "audio",
+      contentType: "audio/mp4",
+      duration: 107.56,
+    });
+    expect(Buffer.from((await runner.file(run.id, file.name))!.bytes)).toEqual(
+      audio.bytes,
+    );
+  }
 });

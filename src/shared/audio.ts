@@ -82,7 +82,8 @@ export interface AudioModelCapabilities {
   operations: AudioOperation[];
   executionModes: Array<"synchronous" | "streaming" | "async-task">;
   languages?: string[];
-  formats: AudioOutputFormat[];
+  /** Includes native M4A output when conversion settings are unavailable. */
+  formats: Array<AudioOutputFormat | "m4a">;
   sampleRates?: AudioSampleRate[];
   maxTextCharacters?: number;
   maxDurationSeconds?: number;
@@ -135,7 +136,7 @@ export interface AudioMetadata {
 
 export interface GeneratedAudio {
   bytes: Uint8Array;
-  mediaType: "audio/mpeg" | "audio/wav";
+  mediaType: "audio/mpeg" | "audio/wav" | "audio/mp4";
   model: ModelRef;
   metadata?: AudioMetadata;
   /** Additional completed tracks from the same generation, all persisted in the Library. */

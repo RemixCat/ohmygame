@@ -574,7 +574,7 @@ export class ToolRunner {
       await mkdir(temporary, { recursive: true });
       for (const [index, track] of [generated, ...(generated.alternatives ?? [])].entries()) {
         signal?.throwIfAborted();
-        const extension = track.mediaType === "audio/wav" ? "wav" : "mp3";
+        const extension = track.mediaType === "audio/wav" ? "wav" : track.mediaType === "audio/mp4" ? "m4a" : "mp3";
         const fileName = index === 0 ? `output.${extension}` : `output-${index + 1}.${extension}`;
         const assetId = this.assetLibrary ? (await this.assetLibrary.add(fileName, track.bytes, {
           origin: "generated", prompt, sourceKey: `tool:${id}:${fileName}`,
@@ -738,7 +738,7 @@ function isRunId(value: string): boolean {
 }
 
 function isToolRunFileName(value: string): boolean {
-  return /^(?:output(?:-[1-4])?\.(?:png|jpg|webp)|model\.glb|output\.(?:mp4|mp3|wav))$/.test(value);
+  return /^(?:output(?:-[1-4])?\.(?:png|jpg|webp|mp3|wav|m4a)|model\.glb|output\.mp4)$/.test(value);
 }
 
 function isToolId(value: unknown): value is ToolId {

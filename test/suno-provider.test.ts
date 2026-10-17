@@ -78,7 +78,8 @@ describe("standalone MuMu Suno adapter", () => {
       String(url).includes("cdn.suno.ai"),
     )) {
       expect(String(url)).not.toContain("stream");
-      expect(init).not.toHaveProperty("headers");
+      expect(new Headers(init?.headers).has("authorization")).toBe(false);
+      expect(new Headers(init?.headers).get("user-agent")).toBe("Mozilla/5.0");
     }
   });
   it("sends exact lyrics separately from style and advertises music capabilities only", async () => {
@@ -216,6 +217,81 @@ describe("standalone MuMu Suno adapter", () => {
       );
     await expect(
       new SunoProvider(() => "key", request).generate(input),
-    ).rejects.toThrow("non-MP3");
+    ).rejects.toThrow("non-audio");
   });
+
+  it("accepts MuMu's live open-channel status 30, cld2AudioUrl and M4A without losing duration", async () => {
+    const m4a = Buffer.from([
+      0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x4d, 0x34, 0x41, 0x20,
+    ]);
+    const request = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(json("task-1"))
+      .mockResolvedValueOnce(
+        json({
+          task_id: "task-1",
+          status: "SUCCESS",
+          data: [
+            {
+              id: "one",
+              status: 30,
+              cld2AudioUrl: "https://cdn.suno.ai/one.m4a",
+              duration: 107.56,
+            },
+            {
+              id: "two",
+              status: 30,
+              cld2AudioUrl: "https://cdn.suno.ai/two.m4a",
+              duration: 123.12,
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(m4a, { headers: { "content-type": "audio/mp4" } }),
+      )
+      .mockResolvedValueOnce(
+        new Response(m4a, {
+          headers: { "content-type": "application/octet-stream" },
+        }),
+      );
+    const result = await new SunoProvider(
+      () => "test-secret",
+      request,
+    ).generate(input);
+    expect(result).toMatchObject({
+      mediaType: "audio/mp4",
+      metadata: { durationMs: 107560 },
+      alternatives: [
+        { mediaType: "audio/mp4", metadata: { durationMs: 123120 } },
+      ],
+    });
+    expect(Buffer.from(result.bytes)).toEqual(m4a);
+    for (const [, init] of request.mock.calls.slice(2))
+      expect(new Headers(init?.headers).has("authorization")).toBe(false);
+    expect(
+      request.mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    { status: 20, cld2AudioUrl: "https://cdn.suno.ai/stream.m4a" },
+    { status: 30, cld2AudioUrl: "" },
+    { status: "error", audio_url: "https://cdn.suno.ai/error.mp3" },
+  ])(
+    "still rejects incomplete/failed open-channel tracks: %j",
+    async (track) => {
+      const request = vi
+        .fn<typeof fetch>()
+        .mockResolvedValueOnce(json("task-1"))
+        .mockResolvedValueOnce(json({ status: "SUCCESS", data: [track] }));
+      await expect(
+        new SunoProvider(() => "key", request).generate(input),
+      ).rejects.toMatchObject({
+        statusCode: 502,
+        message: expect.stringContaining("Suno task task-1"),
+      });
+      expect(request).toHaveBeenCalledTimes(2);
+    },
+  );
 });

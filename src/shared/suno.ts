@@ -22,7 +22,7 @@ export const SUNO_MODELS: readonly AudioModel[] = [
   capabilities: {
     operations: ["music"],
     executionModes: ["async-task"],
-    formats: ["mp3"],
+    formats: ["mp3", "m4a"],
     supportsLyrics: true,
     supportsInstrumental: true,
     supportsDuration: false,

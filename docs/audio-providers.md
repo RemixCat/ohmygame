@@ -11,7 +11,7 @@ The daemon owns credentials, provider calls, generated files, and Library regist
 
 ## Architecture
 
-`src/shared/audio.ts` defines requests, output settings, model capabilities, catalogs, and generated-audio metadata. A provider adapter implements `AudioProviderAdapter`; `ProviderAudio` selects only a configured, enabled model that advertises the requested operation. `ToolRunner` then persists MP3 or WAV output through the same job and Library flow used by image, video, and 3D generation.
+`src/shared/audio.ts` defines requests, output settings, model capabilities, catalogs, and generated-audio metadata. A provider adapter implements `AudioProviderAdapter`; `ProviderAudio` selects only a configured, enabled model that advertises the requested operation. `ToolRunner` then persists MP3, WAV or native M4A output through the same job and Library flow used by image, video, and 3D generation.
 
 The stable tool boundary is:
 
@@ -77,11 +77,11 @@ V3/V3.5/V4/V4.5/V5 presets, instrumental music, prompted songs, and exact lyrics
 For exact lyrics, the node's music description supplies the style (`tags`) and
 the lyrics field supplies `prompt`; without lyrics the description supplies
 `gpt_description_prompt`. The adapter submits `/suno/submit/music`, polls
-`/suno/fetch/{task_id}` until the task succeeds, then downloads complete MP3s.
+`/suno/fetch/{task_id}` until the task succeeds, then downloads complete audio.
 It does not download streaming previews. Every returned variation is stored
 as a separate Library asset and tool artifact; the canvas node uses the first.
 
-Duration is automatic. Fixed duration, looping, reference audio, conversion,
+Duration and the native MP3/M4A container are automatic. Fixed duration, looping, reference audio, conversion,
 continuation and stems are not advertised by this adapter. Cancelling stops
 local polling/download; it cannot cancel or refund a task already submitted
 to MuMu. Requests time out after 15 minutes. Submission is never automatically
@@ -114,7 +114,26 @@ tracks in the Library, disabling and the deletion confirmation. The fixture
 returned local one-second MP3s and made no paid provider requests. Automated
 checks also verify key deletion, secret redaction, no automatic resubmission,
 timeout/cancellation and cleanup after a later variant fails to save. Real MuMu
-credentials, model permissions, credit and generation quality remain unverified.
+credentials, model permissions, credit and generation quality were not exercised
+in that initial validation.
+
+Compatibility fix on 2026-10-18: MuMu's live `suno_music_open` channel returns
+`cld2AudioUrl`, numeric track status `30` and top-level `duration`, rather than
+the documentation's `audio_url`, `complete` and nested duration fields. Both
+shapes are now accepted only after task success. Native M4A files (`audio/mp4`)
+retain their container and extension, including all alternative outputs. The
+download uses a browser-compatible user agent because the CDN rejects the
+default Node/Python agent. CDN requests still carry no MuMu key. Later errors
+retain the provider task ID so an already paid task can be located without
+submitting it again. The affected account's completed task was queried and
+both original tracks downloaded; no new generation was submitted during repair.
+The two assets were restored with their original container, duration and generated
+origin; the existing canvas node was rebound and its failed job repaired after a
+backup and graceful application shutdown. The restarted desktop successfully
+played the recovered track. Regression checks passed 2891 tests (23 skipped),
+typecheck, renderer build and Node runtime checks. An adapter replay used the
+actual task response and live CDN downloads while intercepting submission
+locally, verifying both tracks without creating another remote task.
 
 ## Adding another provider
 
