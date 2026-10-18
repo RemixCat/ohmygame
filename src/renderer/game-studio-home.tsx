@@ -175,7 +175,7 @@ export function GameStudioHome({
                   agentStatus={activity.get(project.id)}
                   fallback={index % 4}
                   onOpen={() => onOpenProject(project.id)}
-                  actions={{
+                  actions={{ onWorkspaceChanged: updated => setProjects(current => current.map(item => item.id === updated.id ? updated : item)),
                     onRename: () => {
                       renameTrigger.current =
                         document.querySelector<HTMLElement>(

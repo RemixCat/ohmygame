@@ -133,7 +133,7 @@ export function ProjectsPage({ projectType = "all", query = "", sort = "updated"
               agentStatus={activity.get(project.id)}
               fallback={index % 4}
               onOpen={() => onOpenProject(project.id)}
-              actions={{ onRename: () => {
+              actions={{ onWorkspaceChanged: updated => setProjects(current => current.map(item => item.id === updated.id ? updated : item)), onRename: () => {
                 renameTrigger.current = document.querySelector<HTMLElement>('.project-card-menu[aria-expanded="true"]');
                 setRenameTarget(project);
               }, onDuplicate: () => duplicate(project), onDelete: () => remove(project), ...(project.type !== "asset-canvas" ? { onDesign: () => onOpenProject(project.id, "design") } : {}) }}

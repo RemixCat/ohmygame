@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { menuPlacement } from "./popover-placement.js";
 import type { ProjectAgentActivity, ProjectState } from "../shared/contracts.js";
 import { getProjectCover } from "./api.js";
+import { ProjectWorkspaceDialog } from "./project-workspace-dialog.js";
 import { ProjectTypeIcon, projectTypeLabel } from "./project-types.js";
 import { language, t } from "./i18n.js";
 
@@ -12,6 +13,7 @@ export interface ProjectCardActions {
   onDuplicate: () => void;
   onDelete: () => void;
   onDesign?: () => void;
+  onWorkspaceChanged?: (project: ProjectState) => void;
 }
 
 interface ProjectCardProps {
@@ -25,6 +27,7 @@ interface ProjectCardProps {
 export function ProjectCard({ project, fallback, onOpen, actions, agentStatus }: ProjectCardProps) {
   const activityLabel = agentStatus === "cancelling" ? t("projectCard.stopping") : t("projectCard.working");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState<{ top: number; left: number }>();
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
@@ -104,6 +107,7 @@ export function ProjectCard({ project, fallback, onOpen, actions, agentStatus }:
               style={menuPosition ?? { top: 0, left: 0, visibility: "hidden" }}
             >
               <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); actions.onRename(); }}>{t("common.rename")}</button>
+              <button type="button" role="menuitem" disabled={!!agentStatus} onClick={() => { setMenuOpen(false); setWorkspaceOpen(true); }}>{t("projectWorkspace.title")}</button>
               {actions.onDesign ? <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); actions.onDesign?.(); }}>{t("projectCard.gameDesign")}</button> : null}
               <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); actions.onDuplicate(); }}>{t("common.duplicate")}</button>
               <button className="project-card-actions-delete" type="button" role="menuitem" onClick={() => { setMenuOpen(false); actions.onDelete(); }}>
@@ -114,6 +118,7 @@ export function ProjectCard({ project, fallback, onOpen, actions, agentStatus }:
           ) : null}
         </div>
       ) : null}
+      {workspaceOpen ? createPortal(<ProjectWorkspaceDialog project={project} onClose={() => { setWorkspaceOpen(false); trigger.current?.focus(); }} onSaved={updated => { actions?.onWorkspaceChanged?.(updated); setWorkspaceOpen(false); trigger.current?.focus(); }} />, document.body) : null}
     </article>
   );
 }

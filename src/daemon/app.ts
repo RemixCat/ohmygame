@@ -4,6 +4,7 @@ import { inspectPreviewConfiguration } from "./preview-configuration.js";
 import { CheckpointStore } from "./checkpoints.js";
 import { ProjectWrites } from "./project-writes.js";
 import { registerCheckpointRoutes } from "./checkpoint-routes.js";
+import { registerProjectWorkspaceRoute } from "./project-workspace-route.js";
 import { readWorkspaceVersion } from "./workspace-notice.js";
 import { withCanvasLock } from "./canvas-workspace.js";
 import { validatePreviewSettings } from "../shared/preview-settings.js";
@@ -1560,6 +1561,20 @@ export function createApp(options: AppOptions = {}) {
       return projects.setMediaModelDefaults(project.id, request.body);
     },
   );
+
+  registerProjectWorkspaceRoute(app, {
+    projects, writes: projectWrites, agents, checkpoints, previews, events,
+    busy: id => publishing.has(id) || canvasStore.isProjectBusy(id) || tools.jobs().some(job => job.context?.projectId === id && ["running", "queued"].includes(job.status)),
+    clearRuntime: async project => {
+      for (const [key, driver] of agentPlaytests) {
+        if (!key.startsWith(`${project.id}:`)) continue;
+        await driver.cleanup();
+        agentPlaytests.delete(key);
+      }
+      await canvasStore.cancelProject(project.id);
+      conversations.invalidateWorkspace(project);
+    },
+  });
 
   app.post<{ Params: { projectId: string } }>("/projects/:projectId/duplicate", async (request, reply) => {
     try {

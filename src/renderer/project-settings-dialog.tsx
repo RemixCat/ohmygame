@@ -24,11 +24,13 @@ import { t } from "./i18n.js";
 
 export function ProjectSettingsDialogFrame({
   children,
+  title,
   busy = false,
   initialFocusRef,
   onClose,
 }: {
   children: ReactNode;
+  title?: string;
   busy?: boolean;
   initialFocusRef?: RefObject<HTMLElement | null>;
   onClose: () => void;
@@ -99,7 +101,7 @@ export function ProjectSettingsDialogFrame({
         tabIndex={-1}
       >
         <header>
-          <h2 id={titleId}>{t("projectSettings.title")}</h2>
+          <h2 id={titleId}>{title ?? t("projectSettings.title")}</h2>
           <button
             type="button"
             disabled={busy}

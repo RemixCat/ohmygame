@@ -46,7 +46,7 @@ import {
   type TreeEntry,
 } from "./checkpoint-objects.js";
 
-type CheckpointProject = Pick<ProjectState, "workspacePath" | "storagePath">;
+type CheckpointProject = Pick<ProjectState, "workspacePath" | "storagePath" | "workspaceCheckpointId">;
 
 export interface CheckpointChange {
   /** Workspace path with forward slashes. */
@@ -230,7 +230,7 @@ const UNREADABLE = new Set(["EACCES", "EPERM", "EBUSY"]);
 export function checkpointDirectory(project: CheckpointProject): string {
   return path.join(
     project.storagePath ?? path.dirname(project.workspacePath),
-    "checkpoints",
+    ...(project.workspaceCheckpointId ? ["workspace-checkpoints", project.workspaceCheckpointId] : ["checkpoints"]),
   );
 }
 
