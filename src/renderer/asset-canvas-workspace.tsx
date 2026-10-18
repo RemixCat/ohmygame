@@ -1,3 +1,5 @@
+import { createTopic, diagramEdge, diagramComponent, layoutDiagram, relatedTopic, type TopicNode } from "../shared/canvas-diagram.js";
+import { CanvasTopicNode, CanvasDiagramDialog, diagramFlowEdges, persistCanvasEdge, separateDiagramLabels, type TopicRuntime } from "./canvas-diagram.js";
 import { TripoControls } from "./tripo-controls.js";
 import { Provider3DBalance } from "./provider-3d-balance.js";
 import { isTripoCreditError, tripoPolycount } from "../shared/tripo-options.js";
@@ -57,7 +59,7 @@ import {
 import { CANVAS_GRID_SIZE, snapCanvasPosition } from "./canvas-alignment.js";
 import { RESIZABLE_CANVAS_NODE_SIZES, canvasNodeLayout, isResizableCanvasNodeType } from "../shared/canvas-node-layout.js";
 import { CanvasNodeResizer, CanvasNodeSizeActions, type CanvasNodeResizeRuntime } from "./canvas-node-resizer.js";
-import { MAX_ASSET_CANVAS_NODES, MAX_TEXT_NODE_REFERENCES } from "../shared/asset-canvas-schema.js";
+import { MAX_ASSET_CANVAS_NODES, MAX_ASSET_CANVAS_EDGES, MAX_TEXT_NODE_REFERENCES } from "../shared/asset-canvas-schema.js";
 import { createCanvasClipboard, duplicateAssetCanvasNode, duplicateCanvasSelection, lastCanvasClipboard, parseCanvasClipboard, rememberCanvasClipboard, type CanvasClipboard } from "./asset-canvas-clipboard.js";
 import { clipboardFiles, hasTransferredFiles, pasteNativeFiles, transferredFiles, type TransferredFile } from "./file-transfer.js";
 import { CanvasContextMenu, EditorCanvas, isTextEntry, undoShortcut, useCanvasCenter, type CanvasContextMenuState } from "./editor-canvas.js";
@@ -197,10 +199,13 @@ function canvasCreationGroups(documents: CanvasDocuments, tables: CanvasTables, 
       return canvasNodeTypeAvailable(item.action.type, audioOperations);
     }),
   }));
-  return [{ label: t("assetCanvas.group.documents"), items }, ...assetGroups];
+  return [{ label: t("canvasDiagram.title"), items: [{ label: t("canvasDiagram.title"), description: t("canvasDiagram.hint"), icon: FolderPlus, action: { kind: "node", type: "topic" } }] }, { label: t("assetCanvas.group.documents"), items }, ...assetGroups];
 }
 
 type AssetCanvasFlowData = {
+  topicColor?: TopicNode["data"]["color"];
+  topicShape?: TopicNode["data"]["shape"];
+  topicRuntime?: TopicRuntime;
   resizeRuntime?: CanvasNodeResizeRuntime;
   nodeDetails?: CanvasNodeDetails;
   panelOpen?: boolean;
@@ -336,6 +341,7 @@ interface MediaReferenceView {
 
 const STORY_NODE_TYPES: NodeTypes = {
   "studio-group": StudioGroupFrame,
+  topic: CanvasTopicNode,
   table: CanvasTableNode,
   document: CanvasDocumentNode,
   text: TextNode,
@@ -397,6 +403,8 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   const finishInitialFit = useCallback((viewport: AssetCanvasEditorLayout["viewport"]) => {
     setEditorLayout(({ fitView: _fitView, ...current }) => ({ ...current, viewport }));
   }, []);
+  const [diagramId, setDiagramId] = useState<string>();
+  const [diagramEdgeId, setDiagramEdgeId] = useState<string>();
   const [selectedAssetEdgeId, setSelectedAssetEdgeId] = useState<string>();
   const [canvasContextMenu, setCanvasContextMenu] = useState<CanvasContextMenuState>();
   const [quickMenu, setQuickMenu] = useState<{ sourceId: string; screenPosition: { x: number; y: number }; flowPosition: { x: number; y: number } }>();
@@ -509,7 +517,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
         request.onHandled?.();
       }
       setEditorLayout(story.editorLayout);
-      setEdges(story.edges);
+      setEdges(diagramFlowEdges(story.edges));
       queuedCanvas.current = undefined;
       lastSave.current = Promise.resolve();
       syncFailed.current = false;
@@ -857,7 +865,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     observeHistoryDocument(merged);
     setNodes(merged.nodes.map((node) => ({ ...toFlowNode(node, imageModelsRef.current, videoModelsRef.current), selected: selected.has(node.id) })));
     setGroups(merged.groups ?? []); setBoardVersion(merged.version);
-    setEdges(merged.edges); setViewport(merged.viewport); setEditorLayout(merged.editorLayout);
+    setEdges(diagramFlowEdges(merged.edges)); setViewport(merged.viewport); setEditorLayout(merged.editorLayout);
     updateHistoryControls();
   }
   const flush = useCallback(async () => {
@@ -1004,6 +1012,12 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     const source = nodes.find((node) => node.id === connection.source);
     if (!source || !target) return;
     const relation = connectionRelation(source, target, connection.sourceHandle, nodes, libraryAssets, imageModels, model3DModels);
+    if (relation === "diagram") {
+      if (edges.length >= MAX_ASSET_CANVAS_EDGES) { setNotice({ kind: "action", message: t("canvasDiagram.edgeLimit") }); return; }
+      if (edges.some(e => e.source === source.id && e.target === target.id && e.data?.diagram)) return;
+      const edge = diagramFlowEdges([diagramEdge(source.id, target.id)])[0]!;
+      setEdges(current => [...current, edge]); return;
+    }
     if (relation === "image-reference" && (target.type === "image" || target.type === "model-3d")) {
       setNodes((current) => current.map((node) => node.id === target.id && (node.type === "image" || node.type === "model-3d")
         ? { ...node, data: { ...node.data, images: [...(node.data.images ?? []), { type: "node", nodeId: source.id }] } }
@@ -1165,7 +1179,57 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     finally { if (batchRunner.current === runner) { setBatchCancelled((current) => new Set([...current, ...runner.cancelled])); batchRunner.current = undefined; setBatchOwner(undefined); } }
   }
 
+  function focusTopic(id: string) {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const element = canvasElement.current?.querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"] .canvas-topic`);
+      element?.focus({ preventScroll: true });
+      const outer = canvasElement.current?.getBoundingClientRect(), bounds = element?.getBoundingClientRect();
+      const node = flowInstance.current?.getNode(id);
+      if (node && outer && bounds && (bounds.left < outer.left + 24 || bounds.right > outer.right - 24 || bounds.top < outer.top + 72 || bounds.bottom > outer.bottom - 64)) {
+        void flowInstance.current?.setCenter(node.position.x + 112, node.position.y + 64, { zoom: flowInstance.current.getViewport().zoom, duration: 150 });
+      }
+    }));
+  }
+  function addRelatedTopic(id: string, sibling: boolean) {
+    if (phase !== "ready" || conflicted || closing || resolving) return;
+    if (nodes.length >= MAX_ASSET_CANVAS_NODES) { setNotice({ kind: "action", message: t("canvasDiagram.limit") }); return; }
+    const result = relatedTopic(nodes.map(n => toAssetCanvasNode(n, model3DModels)), edges.map(persistCanvasEdge), id, sibling, t("canvasDiagram.topic"));
+    if (!result) return;
+    if (result.edge && edges.length >= MAX_ASSET_CANVAS_EDGES) { setNotice({ kind: "action", message: t("canvasDiagram.edgeLimit") }); return; }
+    setNodes(current => [...current.map(n => ({ ...n, selected: false })), { ...toFlowNode(result.node, imageModels, videoModels), selected: true }]);
+    if (result.edge) setEdges(current => [...current, ...diagramFlowEdges([result.edge!])]);
+    focusTopic(result.node.id);
+  }
+  function arrangeDiagram(id: string, mode: "tree" | "layers") {
+    if (phase !== "ready" || conflicted || closing || resolving) return;
+    const component = diagramComponent(nodes.map(n => toAssetCanvasNode(n, model3DModels)), edges.map(persistCanvasEdge), id);
+    const positions = layoutDiagram(component.nodes, component.edges, mode);
+    setNodes(current => current.map(node => positions.has(node.id) ? { ...node, position: positions.get(node.id)! } : node));
+    requestAnimationFrame(() => requestAnimationFrame(() => { void flowInstance.current?.fitView({ nodes: component.nodes.map(node => ({ id: node.id })), padding: .25, maxZoom: 1, duration: 200 }); }));
+  }
+  function addIndependentTopic() {
+    if (phase !== "ready" || conflicted || closing || resolving) return;
+    if (nodes.length >= MAX_ASSET_CANVAS_NODES) { setNotice({ kind: "action", message: t("canvasDiagram.limit") }); return; }
+    const selected = nodes.find(n => n.id === diagramId);
+    const node = createTopic(t("canvasDiagram.topic"), { x: selected?.position.x ?? 96, y: Math.max(0, ...nodes.map(n => n.position.y)) + 240 });
+    setNodes(current => [...current.map(n => ({ ...n, selected: false })), { ...toFlowNode(node, imageModels, videoModels), selected: true }]);
+    setDiagramId(undefined); focusTopic(node.id);
+    void flowInstance.current?.setCenter(node.position.x + 112, node.position.y + 64, { zoom: 1, duration: 200 });
+  }
   function addNode(type: Exclude<AssetCanvasNodeType, "asset">, position: { x: number; y: number }, existingResourceId?: string): void {
+    if (type === "topic") {
+      if (phase !== "ready" || conflicted || closing || resolving) return;
+      if (nodes.length + 3 > MAX_ASSET_CANVAS_NODES) { setNotice({ kind: "action", message: t("canvasDiagram.limit") }); return; }
+      if (edges.length + 2 > MAX_ASSET_CANVAS_EDGES) { setNotice({ kind: "action", message: t("canvasDiagram.edgeLimit") }); return; }
+      const root = createTopic(t("canvasDiagram.root"), position);
+      const children = [0, 1].map(i => createTopic(`${t("canvasDiagram.branch")} ${i + 1}`, { x: position.x + 320, y: position.y + i * 176 - 88 }, i ? "purple" : "green"));
+      const created = [root, ...children];
+      setNodes(current => [...current.map(n => ({ ...n, selected: false })), ...created.map(n => ({ ...toFlowNode(n, imageModels, videoModels), selected: n.id === root.id }))]);
+      setEdges(current => [...current, ...diagramFlowEdges(children.map(n => diagramEdge(root.id, n.id)))]);
+      focusTopic(root.id);
+      requestAnimationFrame(() => requestAnimationFrame(() => { void flowInstance.current?.fitView({ nodes: created.map(n => ({ id: n.id })), padding: .3, maxZoom: 1, duration: 200 }); }));
+      return;
+    }
     if (type === "document" || type === "table") {
       void (existingResourceId ? Promise.resolve(existingResourceId) : type === "document" ? documents.add() : tables.add()).then((id) => {
         if (!id || !mounted.current) return;
@@ -1280,7 +1344,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     setTransferError(undefined);
     const copied = duplicateCanvasSelection(value.nodes, value.edges, position);
     setNodes((current) => [...current.map((node) => ({ ...node, selected: false })), ...copied.nodes.map((node) => ({ ...toFlowNode(node, imageModels, videoModels), selected: true }))]);
-    setEdges((current) => [...current, ...copied.edges]);
+    setEdges((current) => [...current, ...diagramFlowEdges(copied.edges)]);
     setSelectedAssetEdgeId(undefined);
   }
 
@@ -1581,6 +1645,11 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
       title: original.title?.trim(), label: canvasNodeTitle(toAssetCanvasNode(original, model3DModels), documents.documents, libraryAssets, tableContents), description: original.description,
       edit: () => setNodeDetails({ id: original.id, title: original.title ?? "", description: original.description ?? "" }),
     } } };
+    if (node.type === "topic") return { ...node, data: { ...node.data, topicRuntime: {
+      busy: phase !== "ready" || conflicted || closing || resolving,
+      change: (text: string) => setNodes(current => current.map(n => n.id === node.id ? { ...n, data: { ...n.data, text } } : n)),
+      add: (sibling: boolean) => addRelatedTopic(node.id, sibling), tools: () => { setDiagramEdgeId(undefined); setDiagramId(node.id); },
+    } } };
     if (node.type === "table") {
       const session = tables.storage.sessions.get(node.data.tableId ?? "");
       return { ...node, data: { ...node.data, tableRuntime: { tables, table: session?.local, issue: session?.issue ?? tables.issues?.find((issue) => issue.id === node.data.tableId)?.message, models: textModelCatalog.models, modelStatus: textModelCatalog.status, defaultModel: defaultTextModel, defaultReasoningLevel: textModelCatalog.defaultReasoningLevel } } };
@@ -1787,7 +1856,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
     setGroups(next.groups ?? []); setBoardVersion(next.version);
     setViewport(next.viewport);
     setNodes(next.nodes.map((node) => toFlowNode(node, imageModels, videoModels)));
-    setEdges(next.edges);
+    setEdges(diagramFlowEdges(next.edges));
     setEditorLayout(next.editorLayout);
   }
 
@@ -1797,9 +1866,18 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   }
   const toggleGroup = (id: string) => { const next = structuredClone(document); const p = (next.editorLayout.groups ??= {})[id] ??= { x: 32, y: 32 }; p.collapsed = !p.collapsed; changeGroups(next); };
   const groupNodes = groupCanvasNodes(document, toggleGroup) as unknown as AssetCanvasFlowNode[];
+  const diagramDisplayEdges = useMemo(() => separateDiagramLabels(edges), [edges]);
   const visibleNodes = renderedNodes.map((n) => ({ ...n, hidden: !!collapsedAncestor(document, n as unknown as AssetCanvasNode) }));
   return (
     <section className="viewer-pane interactive-story-workspace" hidden={hidden} aria-label={t("canvas.assetCanvasWorkspace")}>
+      {diagramId && (() => {
+        const component = diagramComponent(nodes.map(n => toAssetCanvasNode(n, model3DModels)), edges.map(persistCanvasEdge), diagramId);
+        if (!component.nodes.length) return null;
+        return <CanvasDiagramDialog key={`${diagramId}:${diagramEdgeId ?? ""}`} initialEdgeId={diagramEdgeId} nodes={component.nodes} edges={component.edges} selectedId={diagramId} busy={phase !== "ready" || conflicted || closing || resolving}
+          onClose={() => setDiagramId(undefined)} onAdd={addIndependentTopic} onLayout={mode => arrangeDiagram(diagramId, mode)}
+          onChangeTopic={(id, data) => setNodes(current => current.map(n => n.id === id ? { ...n, data: { ...n.data, text: data.text, topicColor: data.color, topicShape: data.shape } } : n))}
+          onChangeEdge={(id, patch) => setEdges(current => current.map(edge => edge.id === id ? diagramFlowEdges([{ ...persistCanvasEdge(edge), ...patch }])[0]! : edge))} />;
+      })()}
       {spriteWorkbench && <SpriteWorkbench initialAssetId={libraryAssets.find(a => a.id === selectedNodes[0]?.data.assetId && a.mediaType === "image")?.libraryAssetId ?? globalAssets.find(a => a.id === selectedNodes[0]?.data.assetId && a.mediaType === "image")?.id} onClose={() => setSpriteWorkbench(false)} onAssets={outputs => {
         if (phase !== "ready" || conflicted) throw new Error(t("sprite.canvasNotReady"));
         setLibraryAssets(current => [...outputs.map(a => ({ ...a, assetId: a.id, path: a.name })), ...current.filter(a => !outputs.some(b => b.id === a.id))]);
@@ -1844,7 +1922,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
           {phase === "ready" ? (
             <EditorCanvas<AssetCanvasFlowNode>
               nodes={[...groupNodes, ...visibleNodes]}
-              edges={groupCanvasEdges(document, [...edges, ...assetEdges])}
+              edges={groupCanvasEdges(document, [...diagramDisplayEdges, ...assetEdges])}
               nodeTypes={STORY_NODE_TYPES}
               onInit={(instance) => { flowInstance.current = instance; }}
               addControl={<AssetCanvasAddControl
@@ -1881,6 +1959,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
                 setCanvasContextMenu(undefined);
               }}
               onMoveEnd={(_event, viewport) => setEditorLayout((current) => ({ ...current, viewport }))}
+              onEdgeDoubleClick={(_event, edge) => { if (edge.data?.diagram) { setDiagramEdgeId(edge.id); setDiagramId(edge.source); } }}
               onEdgeClick={(_event, edge) => setSelectedAssetEdgeId(edge.id.startsWith(ASSET_EDGE_PREFIX) ? edge.id : undefined)}
               onSelectionStart={() => setMarqueeActive(true)}
               onSelectionEnd={() => {
@@ -3342,6 +3421,7 @@ function toFlowNode(node: AssetCanvasNode, imageModels: ImageModel[], videoModel
 }
 function flowNodeData(node: AssetCanvasNode, imageModels: ImageModel[], videoModels: VideoModel[]): AssetCanvasFlowNode {
   if (node.type === "asset") return { ...node, deletable: true };
+  if (node.type === "topic") return { ...node, data: { text: node.data.text, topicColor: node.data.color, topicShape: node.data.shape } };
   if (node.type === "text") return {
     id: node.id,
     type: "text",
@@ -3472,6 +3552,7 @@ function flowNodeData(node: AssetCanvasNode, imageModels: ImageModel[], videoMod
 }
 
 function createFlowNode(type: Exclude<AssetCanvasNodeType, "asset">, position: { x: number; y: number }, imageModels: ImageModel[], videoModels: VideoModel[], defaultTextModel?: AgentModelRef): AssetCanvasFlowNode {
+  if (type === "topic") return toFlowNode(createTopic(t("canvasDiagram.topic"), position), imageModels, videoModels);
   if (type === "image") {
     const model = imageModels[0];
     const option = preferredImageOption(model);
@@ -3596,7 +3677,7 @@ function assetCanvasDocument(
     editorLayout,
     viewport,
     nodes: nodes.map((node) => toAssetCanvasNode(node, model3DModels)),
-    edges: edges.map(({ id, source, target, sourceHandle }) => ({ id, source, target, ...(sourceHandle ? { sourceHandle } : {}) })),
+    edges: edges.map(persistCanvasEdge),
   };
 }
 
@@ -3604,6 +3685,7 @@ export function toAssetCanvasNode(node: AssetCanvasFlowNode, model3DModels?: rea
   return { ...assetCanvasNodeData(node, model3DModels), ...(node.groupId ? { groupId: node.groupId } : {}), ...(node.standardId ? { standardId: node.standardId } : {}), ...(node.standardOverrides ? { standardOverrides: node.standardOverrides } : {}), ...(node.template ? { template: node.template } : {}), ...(node.quickAction ? { quickAction: node.quickAction } : {}), ...(node.width !== undefined ? { width: node.width } : {}), ...(node.height !== undefined ? { height: node.height } : {}), ...(node.title !== undefined ? { title: node.title } : {}), ...(node.description !== undefined ? { description: node.description } : {}) };
 }
 function assetCanvasNodeData(node: AssetCanvasFlowNode, model3DModels?: readonly Model3DModel[]): AssetCanvasNode {
+  if (node.type === "topic") return { id: node.id, type: "topic", position: node.position, data: { text: node.data.text ?? "", ...(node.data.topicColor ? { color: node.data.topicColor } : {}), ...(node.data.topicShape ? { shape: node.data.topicShape } : {}) } };
   if (node.type === "animate-3d") {
     const source = node.data.images?.[0];
     return {
@@ -3858,7 +3940,7 @@ function nodeModel3DConfig(node: Pick<AssetCanvasFlowNode, "type" | "data">, mod
   return normalizeModel3DConfig(config, nodeModel3D(node, models), node.data.model3DOperation, node.data.model3DOptions);
 }
 
-type ConnectionRelation = "image-reference" | "video-reference" | "model-reference" | "prompt" | "text-reference";
+type ConnectionRelation = "diagram" | "image-reference" | "video-reference" | "model-reference" | "prompt" | "text-reference";
 
 export function connectionRelation(
   source: AssetCanvasFlowNode,
@@ -3870,6 +3952,7 @@ export function connectionRelation(
   model3DModels: readonly Model3DModel[] = [],
 ): ConnectionRelation | undefined {
   if (source.id === target.id) return undefined;
+  if (source.type === "topic" || target.type === "topic") return source.type === "topic" && target.type === "topic" ? "diagram" : undefined;
   if (target.type === "text" || target.type === "document") {
     if (source.type === "asset" && !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(libraryAssets.find((asset) => asset.id === source.data.assetId)?.contentType ?? "")) return undefined;
     if (!isTextGenerationReferenceNode(source) || (target.data.references?.length ?? 0) >= MAX_TEXT_NODE_REFERENCES ||

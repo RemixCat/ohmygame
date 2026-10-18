@@ -25,6 +25,12 @@ optional `title` and `description`, content, and references. Markdown bodies
 are shared between document nodes. Connections for prompts and media are
 derived from `promptSource`, `images`, `references`, and `source`.
 
+Topic nodes (`type: "topic"`) contain `data.text`, optional `color` and `shape`.
+Their visual relationships use `edges` with `kind: "diagram"`, `source`, `target`,
+`sourceHandle: "out"`, optional `label` and `directed`. Both endpoints are topics;
+cross-links and cycles are allowed. They do not supply prompts or trigger media
+generation. See [mind maps and topology diagrams](canvas-diagrams.md).
+
 Generation nodes use these semantic board fields (runtime state and visual size
 do not belong in the board file):
 
