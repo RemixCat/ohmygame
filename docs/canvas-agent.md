@@ -25,6 +25,12 @@ optional `title` and `description`, content, and references. Markdown bodies
 are shared between document nodes. Connections for prompts and media are
 derived from `promptSource`, `images`, `references`, and `source`.
 
+Topic nodes (`type: "topic"`) contain `data.text`, optional `color` and `shape`.
+Their visual relationships use `edges` with `kind: "diagram"`, `source`, `target`,
+`sourceHandle: "out"`, optional `label` and `directed`. Both endpoints are topics;
+cross-links and cycles are allowed. They do not supply prompts or trigger media
+generation. See [mind maps and topology diagrams](canvas-diagrams.md).
+
 Generation nodes use these semantic board fields (runtime state and visual size
 do not belong in the board file):
 
@@ -174,3 +180,5 @@ all connections, including connections within a copied selection. The originals
 stay in place. Releasing at the starting position cancels the copies; a completed
 drag is one board undo step. If the copies would exceed the 2,000-node limit,
 the editor rejects the drag and keeps the originals in place.
+
+Topic nodes may include `data.boardLink: {projectId, boardId}` for navigation into detailed boards. Preserve these stable references during diagram edits; names come from the workspace index. Links are independent of generation edges, may be shared/cyclic, and a missing target must remain repairable. See [topic board links](canvas-board-links.md).

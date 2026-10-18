@@ -56,6 +56,7 @@ are `test/checkpoints.test.ts`, `test/turn-checkpoints.test.ts`, and
 | [runtime.md](runtime.md)                         | Process boundaries, toolchains, proxies, trust boundary, game use, persistence, and publishing.                                |
 | [preview-runtime.md](preview-runtime.md)         | Startup modes, dependency installation, leases, browser storage, and diagnostics.                                              |
 | [runtime-recovery.md](runtime-recovery.md)       | Preview isolation, daemon supervision, reconnect behavior, and recovery scenarios.                                             |
+| [canvas-diagrams.md](canvas-diagrams.md) | Native mind maps, topology relationships, layouts and text exports; [中文](canvas-diagrams.zh-CN.md). |
 | [canvas-agent.md](canvas-agent.md)               | Canvas files, concurrent editing, agent tools, media, and migration.                                                           |
 | [studio-workflow.md](studio-workflow.md) | Library organization, project standards, groups, templates and receipts; [Chinese guide](studio-workflow.zh-CN.md), [rollback](studio-rollback.md). |
 | [canvas-quick-actions.md](canvas-quick-actions.md) | Image shortcuts, object checklists, three-view batches, model defaults and result persistence.                               |
@@ -121,3 +122,5 @@ Asset-specific terms are documented in the
 [provider logo notes](../src/renderer/assets/providers/README.md) and the
 [Home](../src/renderer/assets/home/OFL.txt) and
 [Sidebar](../src/renderer/assets/sidebar/OFL.txt) font licenses.
+
+- [Topic board links](canvas-board-links.md) ([中文](canvas-board-links.zh-CN.md)): connect planning topics to detailed boards, return navigation and file contract.

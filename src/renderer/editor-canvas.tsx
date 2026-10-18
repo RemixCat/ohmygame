@@ -151,7 +151,7 @@ export function EditorCanvas<N extends Node>({
       ref={root}
       className={`story-canvas story-canvas-${mode}`}
       nodes={nodes}
-      edges={edges?.map((edge) => edge.selected ? { ...edge, ...SELECTED_EDGE_OPTIONS } : edge)}
+      edges={edges?.map((edge) => edge.selected ? { ...edge, ...SELECTED_EDGE_OPTIONS, markerEnd: edge.markerEnd === "" ? "" : SELECTED_EDGE_OPTIONS.markerEnd } : edge)}
       defaultEdgeOptions={EDGE_OPTIONS}
       connectionLineStyle={EDGE_OPTIONS.style}
       minZoom={0.1}

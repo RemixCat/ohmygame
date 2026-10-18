@@ -12,6 +12,7 @@ import { EDITOR_LAYOUT_SCHEMA } from "./editor-layout-schema.js";
 import { MAX_ANIMATION_ACTIONS, MODEL_3D_MAX_POLYCOUNT, MODEL_3D_MAX_REFERENCE_IMAGES } from "./generation-config.js";
 
 export const MAX_ASSET_CANVAS_NODES = 2_000;
+export const MAX_ASSET_CANVAS_EDGES = 8_000;
 export const MAX_TEXT_NODE_REFERENCES = 14;
 
 export const ASSET_CANVAS_EDITOR_LAYOUT_SCHEMA = {
@@ -80,6 +81,7 @@ const model3DOptions = { type: "object", additionalProperties: false, properties
   rigModel: { enum: ["v1.0-20240301", "v2.5-20260210"] }, rigType: { enum: ["biped", "quadruped", "hexapod", "octopod", "serpentine", "aquatic"] }, animateInPlace: { type: "boolean" },
 } } as const;
 const nodes = [
+  node("topic", { type: "object", additionalProperties: false, required: ["text"], properties: { text: { type: "string", maxLength: 2000 }, color: { enum: ["blue", "green", "orange", "purple", "gray"] }, shape: { enum: ["card", "rounded", "pill"] }, boardLink: { type: "object", additionalProperties: false, required: ["projectId", "boardId"], properties: { projectId: id, boardId: { type: "string", pattern: "^[a-zA-Z0-9_-]{1,100}$" } } } } }),
   node("table", { type: "object", additionalProperties: false, required: ["tableId"], properties: { tableId: { type: "string", pattern: "^[a-zA-Z0-9_-]{1,100}$" } } }),
   node("document", { type: "object", additionalProperties: false, required: ["documentId"], properties: { documentId: id, references: nodeReferences } }),
   node("text", {
@@ -224,8 +226,8 @@ export const ASSET_CANVAS_SCHEMA = {
     },
     edges: {
       type: "array",
-      maxItems: 8_000,
-      items: { type: "object", additionalProperties: false, required: ["id", "source", "target"], properties: { id, source: id, target: id, sourceHandle: { type: "string", minLength: 1 } } },
+      maxItems: MAX_ASSET_CANVAS_EDGES,
+      items: { type: "object", additionalProperties: false, required: ["id", "source", "target"], properties: { id, source: id, target: id, kind: { const: "diagram" }, label: { type: "string", maxLength: 200 }, directed: { type: "boolean" }, sourceHandle: { type: "string", minLength: 1 } } },
     },
   },
 } as const;

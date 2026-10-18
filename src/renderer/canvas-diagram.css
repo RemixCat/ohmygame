@@ -1,0 +1,191 @@
+.canvas-topic {
+  --topic-color: #4981c8;
+  width: 224px;
+  height: 128px;
+  box-sizing: border-box;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--topic-color) 10%, var(--surface));
+  border: 1.5px solid color-mix(in srgb, var(--topic-color) 60%, var(--border));
+  color: var(--text);
+  font: 500 14px/1.5 var(--font-sans, sans-serif);
+  border-radius: 14px;
+  outline: none;
+}
+.canvas-topic-green {
+  --topic-color: #3b946e;
+}
+.canvas-topic-orange {
+  --topic-color: #bd7b30;
+}
+.canvas-topic-purple {
+  --topic-color: #9766c5;
+}
+.canvas-topic-gray {
+  --topic-color: #82858c;
+}
+.canvas-topic-card {
+  border-radius: 3px;
+}
+.canvas-topic-pill {
+  border-radius: 52px;
+}
+.canvas-topic.is-selected {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--topic-color) 22%, transparent);
+  padding-bottom: 40px;
+}
+.canvas-topic:focus-visible {
+  outline: 2px solid var(--theme-accent);
+  outline-offset: 4px;
+}
+.canvas-topic-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 84px;
+  overflow: hidden;
+  text-align: center;
+}
+.canvas-topic.is-selected .canvas-topic-text {
+  max-height: 66px;
+}
+.canvas-topic > textarea {
+  width: 100%;
+  height: 64px;
+  resize: none;
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px;
+}
+.canvas-topic-actions {
+  position: absolute;
+  bottom: 7px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+.canvas-topic-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 5px;
+  min-width: 24px;
+  min-height: 24px;
+  font-size: 10px;
+  color: var(--text-secondary);
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+.canvas-topic-actions button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.canvas-topic .react-flow__handle {
+  width: 10px;
+  height: 10px;
+  background: var(--topic-color);
+  border: 2px solid var(--surface);
+}
+.canvas-diagram-dialog {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  font-size: 12px;
+}
+.canvas-diagram-dialog > p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+.canvas-diagram-commands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.canvas-diagram-dialog fieldset {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.canvas-diagram-dialog label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-secondary);
+}
+.canvas-diagram-dialog :is(input:not([type="checkbox"]), select, textarea) {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  font: inherit;
+  color: var(--text);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 6px;
+}
+.canvas-diagram-dialog .canvas-diagram-check {
+  flex-direction: row;
+  align-items: center;
+  align-self: end;
+  min-height: 30px;
+}
+.canvas-diagram-dialog > textarea {
+  height: 100px;
+  resize: vertical;
+  font-family: var(--font-mono, monospace);
+}
+.canvas-diagram-dialog button {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+}
+.canvas-diagram-dialog button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.canvas-topic-board {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex-shrink: 0;
+  max-width: 100%;
+  margin: 6px auto 0;
+  padding: 2px 5px;
+  min-height: 22px;
+  font: 11px/1.4 var(--font-sans, sans-serif);
+  color: var(--topic-color);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.canvas-topic-board svg { flex-shrink: 0; }
+.canvas-topic-board span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-topic.has-board-link .canvas-topic-text { max-height: 54px; }
+.canvas-topic.has-board-link.is-selected .canvas-topic-text { max-height: 36px; }
+.canvas-topic.has-board-link.is-selected > textarea { height: 36px; min-height: 36px; }
+.canvas-board-link-dialog form { display: grid; gap: 8px; }
+.canvas-board-link-dialog form button { justify-self: start; }
+.canvas-board-link-dialog { padding: 0 20px 20px; }
+.project-settings-dialog .canvas-board-link-dialog form { padding: 0; gap: 8px; }

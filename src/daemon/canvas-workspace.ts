@@ -32,6 +32,17 @@ export function withCanvasLock<T>(workspace: string, operation: () => Promise<T>
 }
 const validId = (id: string) => { if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id)) throw new CanvasError("Invalid canvas ID"); return id; };
 const revision = (value: unknown) => createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex");
+const DIAGRAM_INSTRUCTIONS = `## Diagram topics
+
+- Topic nodes support mind maps and topology diagrams: type "topic", data {text, color?, shape?}. Colors: blue/green/orange/purple/gray; shapes: card/rounded/pill. Topic cards have fixed intrinsic size; keep x/y in the editor layout.
+- Store visual relationships in edges with kind "diagram", optional label (up to 200 characters), directed (defaults true), and sourceHandle "out". Both endpoints must be different topic nodes. Cross-links and cycles are allowed; these edges never declare generation dependencies.
+- Preserve topic content, relationship labels/direction, grouping and existing media nodes when editing a diagram. Run canvas_check after editing. Older application versions cannot read topic nodes; back up before downgrading.
+`;
+const BOARD_LINK_INSTRUCTIONS = `## Topic board links
+
+- Topics may have data.boardLink: {projectId, boardId}. This is a navigation reference to an existing board in that project, not a generation dependency or ownership relationship. Use stable IDs, never board names or file paths. The current UI opens links within the same project only; copied links from another project need relinking.
+- Multiple topics may share one board, and navigation cycles are allowed. Renaming boards or deleting/unlinking topics must not change/delete their targets. A deleted target remains a repairable link; do not erase content or invent a replacement automatically.
+`;
 const CANVAS_INSTRUCTIONS = `# Canvas workspace
 
 Canvas files are the source of truth in both Design and Asset Canvas. Use normal read, edit, and write tools to create and change boards, nodes, documents, and references.
@@ -52,6 +63,9 @@ Canvas files are the source of truth in both Design and Asset Canvas. Use normal
 - Do not trigger generation merely by editing a prompt or adding a reference. A game-creation request includes its needed media unless the user narrows the scope. Use generate_canvas_media with the saved boardId and nodeId for generation; it uses the node settings and shared generation history.
 - Removing a node or board keeps its documents, tables, and assets. Remove references to a deleted node from the same board.
 - An editor-context block identifies the current board and selected nodes. Read the referenced files before editing, and preserve other user changes.
+
+${DIAGRAM_INSTRUCTIONS}
+${BOARD_LINK_INSTRUCTIONS}
 `;
 const CANVAS_README = `# Canvas workspace
 
@@ -69,6 +83,9 @@ The canvas edits ordinary project files. Documents are Markdown and media files 
 | jobs.json | Generation history managed by the application |
 
 Read AGENTS.md for editing conventions. Asset paths are relative to the project root; Markdown image links are relative to the document file. Node IDs need only be unique within their board; asset, document and table IDs are shared across the canvas workspace.
+
+${DIAGRAM_INSTRUCTIONS}
+${BOARD_LINK_INSTRUCTIONS}
 `;
 export async function ensureCanvasContract(workspace: string, replaceReadme = false): Promise<void> {
   for (const [name, value] of [["index", CANVAS_INDEX_SCHEMA], ["board", CANVAS_BOARD_SCHEMA], ["layout", CANVAS_LAYOUT_SCHEMA], ["assets", CANVAS_ASSETS_SCHEMA], ["table", CANVAS_TABLE_SCHEMA], ["production", PRODUCTION_SCHEMA]] as const) {
@@ -79,6 +96,12 @@ export async function ensureCanvasContract(workspace: string, replaceReadme = fa
     const current = await readCanvasFile(workspace, name);
     if ((replaceReadme && name === "README.md") || current === undefined) await writeAtomic(workspace, name, text);
     else if (current.startsWith("# Canvas workspace\n") && !current.includes("Production extensions (format 2)")) await writeAtomic(workspace, name, `${current}\n\n## Production extensions (format 2)\n\nGroups form an acyclic parent hierarchy. Nodes have optional groupId, standardId and template provenance; preserve these fields. Group coordinates and collapse state live in editor/<board-id>.json groups. production.json stores draft/activated standards, per-project asset review and selected versions; historical activated revisions are immutable. Run canvas_check after edits. Media generation applies the project -> ancestor groups -> node direction and records an immutable snapshot. Editing standards does not rewrite existing game code or regenerate assets.\n`);
+    const updated = await readCanvasFile(workspace, name);
+    if (updated?.startsWith("# Canvas workspace\n") && !updated.includes("## Diagram topics"))
+      await writeAtomic(workspace, name, `${updated}\n\n${DIAGRAM_INSTRUCTIONS}`);
+    const withDiagrams = await readCanvasFile(workspace, name);
+    if (withDiagrams?.startsWith("# Canvas workspace\n") && !withDiagrams.includes("## Topic board links"))
+      await writeAtomic(workspace, name, `${withDiagrams}\n\n${BOARD_LINK_INSTRUCTIONS}`);
   }
 }
 export async function readCanvasIndex(workspace: string): Promise<CanvasWorkspaceIndex | undefined> {
