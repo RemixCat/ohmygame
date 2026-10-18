@@ -36,8 +36,8 @@ They demonstrate layout and interaction, not generation quality.
 ## Verification
 
 Public checks passed: pinned plugin preparation, changelog check, TypeScript,
-renderer/sandbox builds and Node daemon/player startup. The integration preview
-suite passed **2933 tests**, with **23 expected skips** for unavailable private
+renderer/sandbox builds and Node daemon/player startup. The focused `studio` contribution suite passed **2900 tests**; the integration
+preview passed **2933 tests**. Both completed with **23 expected skips** for unavailable private
 cloud/environment-dependent checks. Model credentials were removed from the test
 environment. No paid generation was submitted.
 

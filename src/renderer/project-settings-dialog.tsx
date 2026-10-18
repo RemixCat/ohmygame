@@ -87,7 +87,7 @@ export function ProjectSettingsDialogFrame({
 
   return (
     <div
-      className="project-settings-backdrop"
+      className="project-settings-backdrop nokey"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget && !busy) onClose();
       }}
