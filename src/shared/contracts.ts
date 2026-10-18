@@ -495,7 +495,7 @@ export interface CanvasQuickAction {
 }
 
 export type AssetCanvasNode = (
-  | { id: string; type: "topic"; position: AssetCanvasPosition; data: { text: string; color?: "blue" | "green" | "orange" | "purple" | "gray"; shape?: "card" | "rounded" | "pill" } }
+  | { id: string; type: "topic"; position: AssetCanvasPosition; data: { text: string; color?: "blue" | "green" | "orange" | "purple" | "gray"; shape?: "card" | "rounded" | "pill"; boardLink?: { projectId: string; boardId: string } } }
   | { id: string; type: "table"; position: AssetCanvasPosition; data: { tableId: string } }
   | { id: string; type: "document"; position: AssetCanvasPosition; data: { documentId: string; references?: AssetCanvasTextReference[] } }
   | { id: string; type: "asset"; position: AssetCanvasPosition; data: {

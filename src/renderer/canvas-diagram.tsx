@@ -16,7 +16,7 @@ import {
   type TopicNode,
 } from "../shared/canvas-diagram.js";
 import { ProjectSettingsDialogFrame } from "./project-settings-dialog.js";
-import { Plus, MoreHorizontal, Pencil } from "./icons.js";
+import { Plus, MoreHorizontal, Pencil, ExternalLink } from "./icons.js";
 import { t } from "./i18n.js";
 import "./canvas-diagram.css";
 
@@ -25,6 +25,7 @@ export interface TopicRuntime {
   add(sibling: boolean): void;
   tools(): void;
   busy: boolean;
+  board?: { linked: boolean; foreign: boolean; name?: string; edit(): void; open(): void };
 }
 type TopicData = {
   text?: string;
@@ -65,7 +66,7 @@ export function CanvasTopicNode({
   }
   return (
     <div
-      className={`canvas-topic canvas-topic-${data.topicColor ?? "blue"} canvas-topic-${data.topicShape ?? "rounded"}${selected ? " is-selected" : ""}`}
+      className={`canvas-topic canvas-topic-${data.topicColor ?? "blue"} canvas-topic-${data.topicShape ?? "rounded"}${selected ? " is-selected" : ""}${runtime?.board?.linked ? " has-board-link" : ""}`}
       tabIndex={0}
       aria-label={data.text || t("canvasDiagram.topic")}
       onDoubleClick={edit}
@@ -128,6 +129,12 @@ export function CanvasTopicNode({
           {data.text || t("canvasDiagram.topic")}
         </div>
       )}
+      {runtime?.board?.linked && <button type="button" className="canvas-topic-board nodrag nokey"
+        title={runtime.board.name ? t("canvasBoardLinks.open", { name: runtime.board.name }) : runtime.board.foreign ? t("canvasBoardLinks.foreign") : t("canvasBoardLinks.missing")}
+        disabled={runtime.busy} onDoubleClick={event => event.stopPropagation()}
+        onClick={event => { event.stopPropagation(); if (runtime.board?.name) runtime.board.open(); else runtime.board?.edit(); }}>
+        <ExternalLink size={12} /><span>{runtime.board.name ?? (runtime.board.foreign ? t("canvasBoardLinks.foreignShort") : t("canvasBoardLinks.missing"))}</span>
+      </button>}
       {selected && (
         <div
           className="canvas-topic-actions nodrag nokey"
@@ -159,6 +166,7 @@ export function CanvasTopicNode({
           >
             {t("canvasDiagram.sibling")}
           </button>
+          {runtime?.board && <button type="button" onClick={() => runtime.board?.edit()} disabled={runtime.busy} aria-label={t("canvasBoardLinks.title")} title={t("canvasBoardLinks.title")}><ExternalLink size={13} /></button>}
           <button
             type="button"
             onClick={() => runtime?.tools()}

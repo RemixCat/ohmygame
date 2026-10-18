@@ -72,7 +72,19 @@ const settle = () =>
   act(async () => {
     await vi.advanceTimersByTimeAsync(1000);
   });
-async function mount(b = createAssetCanvasDocument()) {
+const linkedBoards = {
+  boards: [
+    { id: "b", name: "Overview" },
+    { id: "detail", name: "Fishing system" },
+  ],
+  busy: false,
+  open: vi.fn(async (_id: string) => {}),
+  create: vi.fn(async (_name: string) => "created"),
+};
+async function mount(
+  b = createAssetCanvasDocument(),
+  topicBoards = linkedBoards,
+) {
   const storage: CanvasBoardStorage = {
     key: "p:b",
     boardId: "b",
@@ -92,6 +104,7 @@ async function mount(b = createAssetCanvasDocument()) {
     root.render(
       <CanvasBoardEditor
         project={{ id: "p", type: "asset-canvas" } as ProjectState}
+        topicBoards={topicBoards}
         storage={storage}
         documents={{ documents: [] } as unknown as CanvasDocuments}
         tables={{
@@ -113,6 +126,8 @@ beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   save.mockClear();
   generate.mockClear();
+  linkedBoards.open.mockClear();
+  linkedBoards.create.mockReset().mockResolvedValue("created");
   await mount();
 });
 afterEach(async () => {
@@ -296,4 +311,169 @@ it("edits relationship labels and direction through the graph dialog and persist
     color: "purple",
   });
   expect(isAssetCanvasDocument(saved)).toBe(true);
+});
+
+async function linkDialog() {
+  await act(async () =>
+    (
+      captured.nodes.find((n) => n.selected)!.data.topicRuntime as any
+    ).board.edit(),
+  );
+}
+async function clickText(text: string) {
+  const button = [
+    ...document.querySelectorAll<HTMLButtonElement>("button"),
+  ].find((b) => b.textContent === text)!;
+  expect(button).toBeDefined();
+  await act(async () => button.click());
+}
+it("links an existing board, preserves it through appearance edits/reload, and unlinks with undo", async () => {
+  await add();
+  await linkDialog();
+  const select = document.querySelector<HTMLSelectElement>(
+    '[aria-label="Existing board"]',
+  )!;
+  expect([...select.options].map((o) => o.value)).not.toContain("b");
+  await act(async () => {
+    select.value = "detail";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await clickText("Link board");
+  await settle();
+  await act(async () => {
+    await flush!();
+  });
+  const saved = save.mock.lastCall![0];
+  const id = captured.nodes.find((n) => n.selected)!.id;
+  expect(saved.nodes.find((n) => n.id === id)!.data).toMatchObject({
+    boardLink: { projectId: "p", boardId: "detail" },
+  });
+  expect(isAssetCanvasDocument(saved)).toBe(true);
+  await act(async () =>
+    host.querySelector<HTMLButtonElement>(".canvas-topic-board")!.click(),
+  );
+  expect(linkedBoards.open).toHaveBeenCalledWith("detail");
+  expect(host.querySelector(".canvas-topic textarea")).toBeNull();
+  await act(async () =>
+    (captured.nodes.find((n) => n.id === id)!.data.topicRuntime as any).tools(),
+  );
+  const color = document.querySelector<HTMLSelectElement>(
+    '[aria-label="Color"]',
+  )!;
+  await act(async () => {
+    color.value = "green";
+    color.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await clickText("Close");
+  await settle();
+  await act(async () => {
+    await flush!();
+  });
+  const styled = save.mock.lastCall![0];
+  expect(styled.nodes.find((n) => n.id === id)!.data).toMatchObject({
+    color: "green",
+    boardLink: { projectId: "p", boardId: "detail" },
+  });
+  await act(async () => root.unmount());
+  host.remove();
+  await mount(styled, {
+    ...linkedBoards,
+    boards: [
+      { id: "b", name: "Overview" },
+      { id: "detail", name: "Renamed board" },
+    ],
+  });
+  expect(host.querySelector(".canvas-topic-board")?.textContent).toContain(
+    "Renamed board",
+  );
+  await act(async () =>
+    (
+      captured.nodes.find((n) => n.id === id)!.data.topicRuntime as any
+    ).board.edit(),
+  );
+  await clickText("Unlink board");
+  await settle();
+  expect(host.querySelector(".canvas-topic-board")).toBeNull();
+  await act(async () =>
+    host
+      .querySelector(".react-flow__node")!
+      .dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "z",
+          metaKey: true,
+          bubbles: true,
+        }),
+      ),
+  );
+  await settle();
+  await act(async () => {
+    await flush!();
+  });
+  expect(
+    save.mock.lastCall![0].nodes.find((n) => n.id === id)!.data,
+  ).toMatchObject({ boardLink: { projectId: "p", boardId: "detail" } });
+  expect(linkedBoards.create).not.toHaveBeenCalled();
+  expect(generate).not.toHaveBeenCalled();
+});
+it("keeps creation errors retryable and creates/associates once without navigating away", async () => {
+  await add();
+  await linkDialog();
+  linkedBoards.create.mockRejectedValueOnce(new Error("Board quota reached"));
+  await clickText("Create and link");
+  expect(document.querySelector('[role="alert"]')?.textContent).toContain(
+    "Board quota reached",
+  );
+  expect(
+    document.querySelector('[aria-label="New board name"]'),
+  ).not.toBeNull();
+  await clickText("Create and link");
+  await settle();
+  await act(async () => {
+    await flush!();
+  });
+  expect(
+    save.mock.lastCall![0].nodes.some(
+      (n) => n.type === "topic" && n.data.boardLink?.boardId === "created",
+    ),
+  ).toBe(true);
+  expect(linkedBoards.create).toHaveBeenCalledTimes(2);
+  expect(linkedBoards.open).not.toHaveBeenCalled();
+});
+it("keeps missing/foreign links editable and never opens a board in the wrong project", async () => {
+  await add();
+  await act(async () => {
+    await flush!();
+  });
+  const saved = structuredClone(save.mock.lastCall![0]);
+  const topic = saved.nodes.find((n) => n.type === "topic")!;
+  if (topic.type !== "topic") throw new Error("Expected topic");
+  topic.data.boardLink = { projectId: "another-project", boardId: "detail" };
+  await act(async () => root.unmount());
+  host.remove();
+  await mount(saved);
+  expect(host.querySelector(".canvas-topic-board")?.textContent).toContain(
+    "Relink board",
+  );
+  await act(async () =>
+    host.querySelector<HTMLButtonElement>(".canvas-topic-board")!.click(),
+  );
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+    "another project",
+  );
+  expect(linkedBoards.open).not.toHaveBeenCalled();
+  await clickText("Cancel");
+  topic.data.boardLink = { projectId: "p", boardId: "deleted" };
+  await act(async () => root.unmount());
+  host.remove();
+  await mount(saved);
+  expect(host.querySelector(".canvas-topic-board")?.textContent).toContain(
+    "Board deleted or unavailable",
+  );
+  await act(async () =>
+    host.querySelector<HTMLButtonElement>(".canvas-topic-board")!.click(),
+  );
+  expect(
+    document.querySelector('[aria-label="Existing board"]'),
+  ).not.toBeNull();
+  expect(linkedBoards.open).not.toHaveBeenCalled();
 });

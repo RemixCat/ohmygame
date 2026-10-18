@@ -163,3 +163,29 @@
   opacity: 0.45;
   cursor: default;
 }
+.canvas-topic-board {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex-shrink: 0;
+  max-width: 100%;
+  margin: 6px auto 0;
+  padding: 2px 5px;
+  min-height: 22px;
+  font: 11px/1.4 var(--font-sans, sans-serif);
+  color: var(--topic-color);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.canvas-topic-board svg { flex-shrink: 0; }
+.canvas-topic-board span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-topic.has-board-link .canvas-topic-text { max-height: 54px; }
+.canvas-topic.has-board-link.is-selected .canvas-topic-text { max-height: 36px; }
+.canvas-topic.has-board-link.is-selected > textarea { height: 36px; min-height: 36px; }
+.canvas-board-link-dialog form { display: grid; gap: 8px; }
+.canvas-board-link-dialog form button { justify-self: start; }
+.canvas-board-link-dialog { padding: 0 20px 20px; }
+.project-settings-dialog .canvas-board-link-dialog form { padding: 0; gap: 8px; }

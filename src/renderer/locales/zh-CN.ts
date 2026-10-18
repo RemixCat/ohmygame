@@ -2273,6 +2273,22 @@ const zhCN: typeof en = {
     retry: "重试",
     noObjects: "未识别到前景物体，可调整识别指令后重试。",
   },
+  canvasBoardLinks: {
+    "title": "关联画板",
+    "help": "将主题关联到当前项目的画板。新建后会留在当前总览，点击快捷入口即可打开。解除关联不会删除画板。",
+    "existing": "已有画板",
+    "choose": "选择一个画板",
+    "link": "关联此画板",
+    "newName": "新画板名称",
+    "create": "新建并关联",
+    "unlink": "解除关联",
+    "missing": "画板已删除或不可用",
+    "foreign": "此关联来自其他项目，请重新选择当前项目的画板。",
+    "foreignShort": "请重新关联",
+    "open": "打开 {{name}}",
+    "back": "返回 {{name}}",
+    "createFailed": "无法识别新建的画板"
+},
   canvasDiagram: {
     edgeLimit: "画板连线数量已达到上限",
     "title": "思维导图 / 拓扑图",

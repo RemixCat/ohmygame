@@ -122,3 +122,5 @@ Asset-specific terms are documented in the
 [provider logo notes](../src/renderer/assets/providers/README.md) and the
 [Home](../src/renderer/assets/home/OFL.txt) and
 [Sidebar](../src/renderer/assets/sidebar/OFL.txt) font licenses.
+
+- [Topic board links](canvas-board-links.md) ([中文](canvas-board-links.zh-CN.md)): connect planning topics to detailed boards, return navigation and file contract.
