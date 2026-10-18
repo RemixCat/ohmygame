@@ -42,6 +42,14 @@ export class ConversationManager {
     return [...persisted, ...pending].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
 
+  /** One directory enumeration for read-only project-wide reporting. */
+  async listStored(project: ProjectState): Promise<StoredConversation[]> {
+    const persisted = (await this.#sessions(project)).map(session => ({ summary: summary(project.id, session), sessionPath: session.path }));
+    const ids = new Set(persisted.map(item => item.summary.id));
+    const pending = [...this.#pending.values()].flatMap(({ stored }) => stored.summary.projectId === project.id && !ids.has(stored.summary.id) ? [stored] : []);
+    return [...persisted, ...pending];
+  }
+
   async create(project: ProjectState, model?: AgentModelRef, reasoningLevel?: AgentReasoningLevel): Promise<StoredConversation> {
     const manager = SessionManager.create(project.workspacePath, sessionDirectory(project));
     if (model) manager.appendModelChange(model.provider, model.id);

@@ -1,3 +1,4 @@
+import { ProjectStatisticsDialog } from "./project-usage.js";
 import { LoaderCircle, MoreHorizontal } from "./icons.js";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -24,6 +25,7 @@ interface ProjectCardProps {
 
 export function ProjectCard({ project, fallback, onOpen, actions, agentStatus }: ProjectCardProps) {
   const activityLabel = agentStatus === "cancelling" ? t("projectCard.stopping") : t("projectCard.working");
+  const [statisticsOpen, setStatisticsOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState<{ top: number; left: number }>();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -82,6 +84,7 @@ export function ProjectCard({ project, fallback, onOpen, actions, agentStatus }:
           </span>
         </span>
       </button>
+      {statisticsOpen ? <ProjectStatisticsDialog projectId={project.id} onClose={() => setStatisticsOpen(false)} /> : null}
       {actions ? (
         <div className="project-card-actions">
           <button
@@ -105,6 +108,7 @@ export function ProjectCard({ project, fallback, onOpen, actions, agentStatus }:
             >
               <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); actions.onRename(); }}>{t("common.rename")}</button>
               {actions.onDesign ? <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); actions.onDesign?.(); }}>{t("projectCard.gameDesign")}</button> : null}
+              <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); setStatisticsOpen(true); }}>{t("projectUsage.projectStats")}</button>
               <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); actions.onDuplicate(); }}>{t("common.duplicate")}</button>
               <button className="project-card-actions-delete" type="button" role="menuitem" onClick={() => { setMenuOpen(false); actions.onDelete(); }}>
                 {project.workspaceLocation === "external" ? t("projectCard.remove") : t("common.delete")}

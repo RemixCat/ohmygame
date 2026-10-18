@@ -121,3 +121,5 @@ Asset-specific terms are documented in the
 [provider logo notes](../src/renderer/assets/providers/README.md) and the
 [Home](../src/renderer/assets/home/OFL.txt) and
 [Sidebar](../src/renderer/assets/sidebar/OFL.txt) font licenses.
+
+- [Conversation usage and project statistics](project-statistics.md) ([中文](project-statistics.zh-CN.md)): token/cache/cost definitions, project reporting, read-only API and export scope.
