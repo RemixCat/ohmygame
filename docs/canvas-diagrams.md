@@ -80,3 +80,8 @@ widths 1200, 960, 720, 520 and 360 px; controls and reciprocal labels did not
 overlap. Screenshots are local fixtures, with no real project changes or paid
 generation. The integration preview's public checks pass; detailed counts are
 recorded in the pull request.
+
+The integration preview passed **2947 tests**, with **23 expected skips**, plus
+typecheck, plugin/changelog checks, renderer/sandbox builds and Node startup.
+Electron was restarted with these builds and its real Add menu was checked; no
+diagram was inserted into the user's existing project during acceptance.
