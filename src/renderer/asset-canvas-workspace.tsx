@@ -6,6 +6,7 @@ import { isTripoCreditError, tripoPolycount } from "../shared/tripo-options.js";
 import { StudioGroupsPanel, StudioGroupFrame, groupCanvasNodes, groupCanvasEdges, GROUP_PREFIX } from "./studio-groups.js";
 import { collapsedAncestor, moveGroup } from "../shared/canvas-groups.js";
 import type { CanvasGroup } from "../shared/studio.js";
+import { CanvasTopicBoardDialog, type CanvasTopicBoards } from "./canvas-board-links.js";
 import { workspaceVersion } from "./workspace-version.js";
 import { CanvasTableNode, type CanvasTables, type TableNodeRuntime } from "./canvas-table-node.js";
 import {
@@ -203,6 +204,7 @@ function canvasCreationGroups(documents: CanvasDocuments, tables: CanvasTables, 
 }
 
 type AssetCanvasFlowData = {
+  boardLink?: TopicNode["data"]["boardLink"];
   topicColor?: TopicNode["data"]["color"];
   topicShape?: TopicNode["data"]["shape"];
   topicRuntime?: TopicRuntime;
@@ -355,8 +357,9 @@ const STORY_NODE_TYPES: NodeTypes = {
   asset: AssetNode,
 };
 
-export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled, hidden = false, storage, documents, tables, assets: localAssets, conflicted = false, overlay, onSaveReady, onSyncReady, onResolveReady, onStatusChange, onSelectionChange, expandedDocument, onEditStandards }: {
+export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled, hidden = false, storage, documents, tables, assets: localAssets, conflicted = false, overlay, onSaveReady, onSyncReady, onResolveReady, onStatusChange, onSelectionChange, expandedDocument, onEditStandards, topicBoards }: {
   onEditStandards?: () => void;
+  topicBoards?: CanvasTopicBoards;
   project: ProjectState;
   initialNodeId?: string;
   onInitialNodeHandled?: () => void;
@@ -403,6 +406,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   const finishInitialFit = useCallback((viewport: AssetCanvasEditorLayout["viewport"]) => {
     setEditorLayout(({ fitView: _fitView, ...current }) => ({ ...current, viewport }));
   }, []);
+  const [boardLinkTopicId, setBoardLinkTopicId] = useState<string>();
   const [diagramId, setDiagramId] = useState<string>();
   const [diagramEdgeId, setDiagramEdgeId] = useState<string>();
   const [selectedAssetEdgeId, setSelectedAssetEdgeId] = useState<string>();
@@ -1646,7 +1650,14 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
       edit: () => setNodeDetails({ id: original.id, title: original.title ?? "", description: original.description ?? "" }),
     } } };
     if (node.type === "topic") return { ...node, data: { ...node.data, topicRuntime: {
-      busy: phase !== "ready" || conflicted || closing || resolving,
+      busy: phase !== "ready" || conflicted || closing || resolving || topicBoards?.busy === true,
+      ...(topicBoards ? { board: {
+        name: node.data.boardLink?.projectId === projectId ? topicBoards.boards.find(b => b.id === node.data.boardLink?.boardId)?.name : undefined,
+        linked: !!node.data.boardLink,
+        foreign: !!node.data.boardLink && node.data.boardLink.projectId !== projectId,
+        edit: () => setBoardLinkTopicId(node.id),
+        open: () => { if (node.data.boardLink?.projectId === projectId) void topicBoards.open(node.data.boardLink.boardId); },
+      } } : {}),
       change: (text: string) => setNodes(current => current.map(n => n.id === node.id ? { ...n, data: { ...n.data, text } } : n)),
       add: (sibling: boolean) => addRelatedTopic(node.id, sibling), tools: () => { setDiagramEdgeId(undefined); setDiagramId(node.id); },
     } } };
@@ -1870,6 +1881,11 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   const visibleNodes = renderedNodes.map((n) => ({ ...n, hidden: !!collapsedAncestor(document, n as unknown as AssetCanvasNode) }));
   return (
     <section className="viewer-pane interactive-story-workspace" hidden={hidden} aria-label={t("canvas.assetCanvasWorkspace")}>
+      {boardLinkTopicId && topicBoards && nodes.some(n => n.id === boardLinkTopicId && n.type === "topic") ? <CanvasTopicBoardDialog
+        key={boardLinkTopicId} topic={toAssetCanvasNode(nodes.find(n => n.id === boardLinkTopicId)!, model3DModels) as TopicNode}
+        projectId={projectId} currentBoardId={storage.boardId} boards={topicBoards} disabled={phase !== "ready" || conflicted || closing || resolving}
+        onChange={boardLink => setNodes(current => current.map(n => n.id === boardLinkTopicId ? { ...n, data: { ...n.data, boardLink } } : n))}
+        onClose={() => setBoardLinkTopicId(undefined)} /> : null}
       {diagramId && (() => {
         const component = diagramComponent(nodes.map(n => toAssetCanvasNode(n, model3DModels)), edges.map(persistCanvasEdge), diagramId);
         if (!component.nodes.length) return null;
@@ -3421,7 +3437,7 @@ function toFlowNode(node: AssetCanvasNode, imageModels: ImageModel[], videoModel
 }
 function flowNodeData(node: AssetCanvasNode, imageModels: ImageModel[], videoModels: VideoModel[]): AssetCanvasFlowNode {
   if (node.type === "asset") return { ...node, deletable: true };
-  if (node.type === "topic") return { ...node, data: { text: node.data.text, topicColor: node.data.color, topicShape: node.data.shape } };
+  if (node.type === "topic") return { ...node, data: { text: node.data.text, topicColor: node.data.color, topicShape: node.data.shape, boardLink: node.data.boardLink } };
   if (node.type === "text") return {
     id: node.id,
     type: "text",
@@ -3685,7 +3701,7 @@ export function toAssetCanvasNode(node: AssetCanvasFlowNode, model3DModels?: rea
   return { ...assetCanvasNodeData(node, model3DModels), ...(node.groupId ? { groupId: node.groupId } : {}), ...(node.standardId ? { standardId: node.standardId } : {}), ...(node.standardOverrides ? { standardOverrides: node.standardOverrides } : {}), ...(node.template ? { template: node.template } : {}), ...(node.quickAction ? { quickAction: node.quickAction } : {}), ...(node.width !== undefined ? { width: node.width } : {}), ...(node.height !== undefined ? { height: node.height } : {}), ...(node.title !== undefined ? { title: node.title } : {}), ...(node.description !== undefined ? { description: node.description } : {}) };
 }
 function assetCanvasNodeData(node: AssetCanvasFlowNode, model3DModels?: readonly Model3DModel[]): AssetCanvasNode {
-  if (node.type === "topic") return { id: node.id, type: "topic", position: node.position, data: { text: node.data.text ?? "", ...(node.data.topicColor ? { color: node.data.topicColor } : {}), ...(node.data.topicShape ? { shape: node.data.topicShape } : {}) } };
+  if (node.type === "topic") return { id: node.id, type: "topic", position: node.position, data: { text: node.data.text ?? "", ...(node.data.topicColor ? { color: node.data.topicColor } : {}), ...(node.data.topicShape ? { shape: node.data.topicShape } : {}), ...(node.data.boardLink ? { boardLink: node.data.boardLink } : {}) } };
   if (node.type === "animate-3d") {
     const source = node.data.images?.[0];
     return {

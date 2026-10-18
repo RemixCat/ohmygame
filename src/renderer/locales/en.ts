@@ -2605,6 +2605,22 @@ const en = {
     retry: "Retry",
     noObjects: "No foreground objects found. You can adjust the recognition instruction and try again.",
   },
+  canvasBoardLinks: {
+    "title": "Link canvas board",
+    "help": "Link this topic to a board in this project. Creating a board keeps you on this overview; use its shortcut to open it. Unlinking never deletes the board.",
+    "existing": "Existing board",
+    "choose": "Choose a board",
+    "link": "Link board",
+    "newName": "New board name",
+    "create": "Create and link",
+    "unlink": "Unlink board",
+    "missing": "Board deleted or unavailable",
+    "foreign": "This link belongs to another project. Choose a board in this project to relink it.",
+    "foreignShort": "Relink board",
+    "open": "Open {{name}}",
+    "back": "Back to {{name}}",
+    "createFailed": "Could not identify the newly created board"
+},
   canvasDiagram: {
     edgeLimit: "Canvas relationship limit reached",
     "title": "Mind map / topology",

@@ -38,6 +38,11 @@ const DIAGRAM_INSTRUCTIONS = `## Diagram topics
 - Store visual relationships in edges with kind "diagram", optional label (up to 200 characters), directed (defaults true), and sourceHandle "out". Both endpoints must be different topic nodes. Cross-links and cycles are allowed; these edges never declare generation dependencies.
 - Preserve topic content, relationship labels/direction, grouping and existing media nodes when editing a diagram. Run canvas_check after editing. Older application versions cannot read topic nodes; back up before downgrading.
 `;
+const BOARD_LINK_INSTRUCTIONS = `## Topic board links
+
+- Topics may have data.boardLink: {projectId, boardId}. This is a navigation reference to an existing board in that project, not a generation dependency or ownership relationship. Use stable IDs, never board names or file paths. The current UI opens links within the same project only; copied links from another project need relinking.
+- Multiple topics may share one board, and navigation cycles are allowed. Renaming boards or deleting/unlinking topics must not change/delete their targets. A deleted target remains a repairable link; do not erase content or invent a replacement automatically.
+`;
 const CANVAS_INSTRUCTIONS = `# Canvas workspace
 
 Canvas files are the source of truth in both Design and Asset Canvas. Use normal read, edit, and write tools to create and change boards, nodes, documents, and references.
@@ -60,6 +65,7 @@ Canvas files are the source of truth in both Design and Asset Canvas. Use normal
 - An editor-context block identifies the current board and selected nodes. Read the referenced files before editing, and preserve other user changes.
 
 ${DIAGRAM_INSTRUCTIONS}
+${BOARD_LINK_INSTRUCTIONS}
 `;
 const CANVAS_README = `# Canvas workspace
 
@@ -79,6 +85,7 @@ The canvas edits ordinary project files. Documents are Markdown and media files 
 Read AGENTS.md for editing conventions. Asset paths are relative to the project root; Markdown image links are relative to the document file. Node IDs need only be unique within their board; asset, document and table IDs are shared across the canvas workspace.
 
 ${DIAGRAM_INSTRUCTIONS}
+${BOARD_LINK_INSTRUCTIONS}
 `;
 export async function ensureCanvasContract(workspace: string, replaceReadme = false): Promise<void> {
   for (const [name, value] of [["index", CANVAS_INDEX_SCHEMA], ["board", CANVAS_BOARD_SCHEMA], ["layout", CANVAS_LAYOUT_SCHEMA], ["assets", CANVAS_ASSETS_SCHEMA], ["table", CANVAS_TABLE_SCHEMA], ["production", PRODUCTION_SCHEMA]] as const) {
@@ -92,6 +99,9 @@ export async function ensureCanvasContract(workspace: string, replaceReadme = fa
     const updated = await readCanvasFile(workspace, name);
     if (updated?.startsWith("# Canvas workspace\n") && !updated.includes("## Diagram topics"))
       await writeAtomic(workspace, name, `${updated}\n\n${DIAGRAM_INSTRUCTIONS}`);
+    const withDiagrams = await readCanvasFile(workspace, name);
+    if (withDiagrams?.startsWith("# Canvas workspace\n") && !withDiagrams.includes("## Topic board links"))
+      await writeAtomic(workspace, name, `${withDiagrams}\n\n${BOARD_LINK_INSTRUCTIONS}`);
   }
 }
 export async function readCanvasIndex(workspace: string): Promise<CanvasWorkspaceIndex | undefined> {

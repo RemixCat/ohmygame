@@ -8,6 +8,8 @@ charge. This feature is implemented on `feat/canvas-diagrams`; the integration
 preview also includes the separate workspace-picker, SpriteCook and Studio UI
 changes.
 
+See [topic board links](canvas-board-links.md) to use topics as navigation into detailed boards.
+
 ## Create and edit
 
 1. Open a canvas, click **Add node → Mind map / topology**, or use the same entry

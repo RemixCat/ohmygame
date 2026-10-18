@@ -81,7 +81,7 @@ const model3DOptions = { type: "object", additionalProperties: false, properties
   rigModel: { enum: ["v1.0-20240301", "v2.5-20260210"] }, rigType: { enum: ["biped", "quadruped", "hexapod", "octopod", "serpentine", "aquatic"] }, animateInPlace: { type: "boolean" },
 } } as const;
 const nodes = [
-  node("topic", { type: "object", additionalProperties: false, required: ["text"], properties: { text: { type: "string", maxLength: 2000 }, color: { enum: ["blue", "green", "orange", "purple", "gray"] }, shape: { enum: ["card", "rounded", "pill"] } } }),
+  node("topic", { type: "object", additionalProperties: false, required: ["text"], properties: { text: { type: "string", maxLength: 2000 }, color: { enum: ["blue", "green", "orange", "purple", "gray"] }, shape: { enum: ["card", "rounded", "pill"] }, boardLink: { type: "object", additionalProperties: false, required: ["projectId", "boardId"], properties: { projectId: id, boardId: { type: "string", pattern: "^[a-zA-Z0-9_-]{1,100}$" } } } } }),
   node("table", { type: "object", additionalProperties: false, required: ["tableId"], properties: { tableId: { type: "string", pattern: "^[a-zA-Z0-9_-]{1,100}$" } } }),
   node("document", { type: "object", additionalProperties: false, required: ["documentId"], properties: { documentId: id, references: nodeReferences } }),
   node("text", {
