@@ -7,7 +7,7 @@ import {
   writeStudioDraft,
   clearStudioDraft,
 } from "./studio-drafts.js";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import {
   getStudioLibrary,
   saveStudioLibrary,
@@ -19,7 +19,11 @@ import {
   uploadLibraryAsset,
 } from "./api.js";
 import { loadLibraryAssets, type LibraryAsset } from "./library-assets.js";
-import { WorkspaceAssetCard, WorkspaceAssetDialog } from "./asset-browser.js";
+import {
+  WorkspaceAssetCard,
+  WorkspaceAssetDialog,
+  AssetThumbnail,
+} from "./asset-browser.js";
 import { useWorkspaceAssetUrl } from "./use-workspace-asset-url.js";
 import {
   ASSET_ROLES,
@@ -38,6 +42,17 @@ import {
 import type { ProjectState } from "../shared/contracts.js";
 import { t } from "./i18n.js";
 import "./studio.css";
+import {
+  Search,
+  SlidersHorizontal,
+  FolderOpen,
+  Upload,
+  MoreHorizontal,
+  X,
+  Check,
+  Heart as Star,
+  Pencil,
+} from "./icons.js";
 import { SpriteWorkbench } from "./sprite-workbench.js";
 
 export function StudioLibraryView({
@@ -67,6 +82,25 @@ export function StudioLibraryView({
   const [nameRequest, setNameRequest] = useState<StudioNameRequest>();
   const [unfiled, setUnfiled] = useState(false);
   const [spriteWorkbench, setSpriteWorkbench] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const importingRef = useRef(false);
+  const importInput = useRef<HTMLInputElement>(null);
+  const toolsMenu = useRef<HTMLDetailsElement>(null);
+  const filterPanelId = useId(),
+    railId = useId(),
+    detailsId = useId();
+  useEffect(() => {
+    const closeTools = (event: PointerEvent) => {
+      if (
+        toolsMenu.current &&
+        !toolsMenu.current.contains(event.target as Node)
+      )
+        toolsMenu.current.open = false;
+    };
+    document.addEventListener("pointerdown", closeTools);
+    return () => document.removeEventListener("pointerdown", closeTools);
+  }, []);
   async function load() {
     try {
       const [d, a, p] = await Promise.all([
@@ -183,29 +217,83 @@ export function StudioLibraryView({
     setFilter(next);
     setUnfiled(false);
   };
+  async function importFiles(files: File[]) {
+    if (importingRef.current || !files.length) return;
+    importingRef.current = true;
+    setImporting(true);
+    setError("");
+    try {
+      for (const file of files)
+        await uploadLibraryAsset(
+          file,
+          file.type as import("../shared/contracts.js").LibraryUploadMediaType,
+        );
+      setAssets(await loadLibraryAssets());
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      importingRef.current = false;
+      setImporting(false);
+      if (importInput.current) importInput.current.value = "";
+    }
+  }
+  const filterCount =
+    [
+      filter.projectId,
+      filter.origin && filter.origin !== "all" ? filter.origin : undefined,
+      filter.role,
+      filter.status,
+      filter.folderId,
+      filter.seriesId,
+    ].filter(Boolean).length +
+    (filter.tags?.length ?? 0) +
+    (filter.includeReferences === false ? 1 : 0);
   return (
     <div className="studio-page studio-library">
-      <div className="studio-mobile-toolbar">
-        <button onClick={() => setRailOpen(!railOpen)}>
-          {t("productionStudio.folders")} / {t("productionStudio.tags")}
-        </button>
-        <button onClick={() => setDetailsOpen(!detailsOpen)}>
-          {t("productionStudio.details")}
-        </button>
-      </div>
-      <aside className={`studio-rail${railOpen ? " is-open" : ""}`}>
+      {railOpen && (
         <button
-          className="studio-mobile-close"
+          className="studio-drawer-scrim"
+          aria-label={t("productionStudio.close")}
           onClick={() => setRailOpen(false)}
+        />
+      )}
+      {detailsOpen && (
+        <button
+          className="studio-inspector-scrim"
+          aria-label={t("productionStudio.close")}
+          onClick={() => setDetailsOpen(false)}
+        />
+      )}
+      <aside
+        id={railId}
+        className={`studio-rail${railOpen ? " is-open" : ""}`}
+        aria-label={t("productionStudio.organize")}
+      >
+        <div className="studio-rail-heading">
+          <strong>{t("productionStudio.organize")}</strong>
+          <button
+            className="studio-icon-button"
+            onClick={() => setRailOpen(false)}
+            aria-label={t("productionStudio.close")}
+          >
+            <X size={15} />
+          </button>
+        </div>
+        <button
+          className={
+            !unfiled && !filter.favorite && !filter.folderId && !filter.seriesId
+              ? "is-active"
+              : ""
+          }
+          onClick={() => chooseFilter({})}
         >
-          {t("productionStudio.close")}
-        </button>
-        <strong>{t("productionStudio.library")}</strong>
-        <button onClick={() => chooseFilter({})}>
           {t("productionStudio.all")}
         </button>
-        <button onClick={() => chooseFilter({ favorite: true })}>
-          ☆ {t("productionStudio.favorite")}
+        <button
+          className={filter.favorite ? "is-active" : ""}
+          onClick={() => chooseFilter({ favorite: true })}
+        >
+          <Star size={14} /> {t("productionStudio.favorite")}
         </button>
         <button
           onClick={() => {
@@ -277,61 +365,65 @@ export function StudioLibraryView({
           ＋ {t("productionStudio.newFolder")}
         </button>
         <h3>{t("productionStudio.tags")}</h3>
-        <div className="studio-checks">
+        <div className="studio-tag-navigation">
           {library?.tags.map((tag) => (
-            <label key={tag.id}>
-              <input
-                type="checkbox"
-                checked={filter.tags?.includes(tag.id) ?? false}
-                onChange={(e) =>
+            <div className="studio-nav-row" key={tag.id}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={filter.tags?.includes(tag.id) ?? false}
+                  onChange={(e) =>
+                    setFilter({
+                      ...filter,
+                      tags: e.target.checked
+                        ? [...(filter.tags ?? []), tag.id]
+                        : filter.tags?.filter((id) => id !== tag.id),
+                    })
+                  }
+                />
+                <span>{tag.name}</span>
+              </label>
+              <button
+                className="studio-icon-button"
+                aria-label={t("productionStudio.renameNamed", {
+                  name: tag.name,
+                })}
+                onClick={() =>
+                  named(t("productionStudio.rename"), (name) =>
+                    edit((d) => {
+                      d.tags.find((x) => x.id === tag.id)!.name = name;
+                    }),
+                  )
+                }
+              >
+                <Pencil size={12} />
+              </button>
+              <button
+                className="studio-icon-button"
+                aria-label={t("productionStudio.removeTagNamed", {
+                  name: tag.name,
+                })}
+                onClick={() => {
+                  edit((d) => {
+                    d.tags = d.tags.filter((x) => x.id !== tag.id);
+                    for (const a of Object.values(d.assets))
+                      a.tags = a.tags.filter((id) => id !== tag.id);
+                    for (const saved of d.smart)
+                      saved.filter.tags = saved.filter.tags?.filter(
+                        (id) => id !== tag.id,
+                      );
+                  });
                   setFilter({
                     ...filter,
-                    tags: e.target.checked
-                      ? [...(filter.tags ?? []), tag.id]
-                      : filter.tags?.filter((id) => id !== tag.id),
-                  })
-                }
-              />
-              {tag.name}
-            </label>
+                    tags: filter.tags?.filter((id) => id !== tag.id),
+                  });
+                }}
+              >
+                <X size={12} />
+              </button>
+            </div>
           ))}
         </div>
-        {library?.tags.map((tag) => (
-          <div key={`manage:${tag.id}`}>
-            <button
-              title={t("productionStudio.rename")}
-              onClick={() =>
-                named(t("productionStudio.rename"), (name) =>
-                  edit((d) => {
-                    d.tags.find((t) => t.id === tag.id)!.name = name;
-                  }),
-                )
-              }
-            >
-              ✎ {tag.name}
-            </button>
-            <button
-              title={t("productionStudio.removeTag")}
-              onClick={() => {
-                edit((d) => {
-                  d.tags = d.tags.filter((t) => t.id !== tag.id);
-                  for (const a of Object.values(d.assets))
-                    a.tags = a.tags.filter((id) => id !== tag.id);
-                  for (const s of d.smart)
-                    s.filter.tags = s.filter.tags?.filter(
-                      (id) => id !== tag.id,
-                    );
-                });
-                setFilter({
-                  ...filter,
-                  tags: filter.tags?.filter((id) => id !== tag.id),
-                });
-              }}
-            >
-              ×
-            </button>
-          </div>
-        ))}
         <button
           onClick={() =>
             named(t("productionStudio.newTag"), (name) =>
@@ -417,53 +509,175 @@ export function StudioLibraryView({
         </button>
       </aside>
       <main className="studio-main">
-        <div className="studio-toolbar">
-          <button onClick={() => setSpriteWorkbench(true)}>{t("sprite.open")}</button>
-          <input
-            aria-label={t("productionStudio.filters")}
-            placeholder={t("library.title")}
-            value={filter.query ?? ""}
-            onChange={(e) => setFilter({ ...filter, query: e.target.value })}
-          />
-          <button disabled={!dirty || busy} onClick={() => void save()}>
-            {busy ? t("common.saving") : t("productionStudio.save")}
-          </button>
-          <button
-            disabled={busy}
-            onClick={() => {
-              if (!dirty || window.confirm(t("productionStudio.unsaved"))) {
-                clearStudioDraft(draftKey);
-                void load();
-              }
-            }}
-          >
-            {t("productionStudio.reload")}
-          </button>
-          <label className="studio-import">
-            {t("productionStudio.import")}
+        <header className="studio-library-header">
+          <div className="studio-library-heading">
+            <h2>{t("productionStudio.library")}</h2>
+            <span className="studio-result-count">
+              {t("productionStudio.resultCount", { count: visible.length })}
+            </span>
+            <div className="studio-save-status">
+              {dirty ? (
+                <button
+                  className="studio-primary"
+                  disabled={busy}
+                  onClick={() => void save()}
+                >
+                  {busy ? t("common.saving") : t("productionStudio.save")}
+                </button>
+              ) : (
+                <span role="status">
+                  <Check size={13} />
+                  {t("productionStudio.saved")}
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="studio-library-commandbar">
+            <label className="studio-search">
+              <Search size={15} />
+              <input
+                type="search"
+                aria-label={t("productionStudio.searchAssets")}
+                placeholder={t("productionStudio.searchAssets")}
+                value={filter.query ?? ""}
+                onChange={(e) =>
+                  setFilter({ ...filter, query: e.target.value })
+                }
+              />
+            </label>
+            <button
+              className="studio-command"
+              aria-label={t("productionStudio.organize")}
+              aria-expanded={railOpen}
+              aria-controls={railId}
+              onClick={() => {
+                setRailOpen(!railOpen);
+                setDetailsOpen(false);
+              }}
+              title={t("productionStudio.organize")}
+            >
+              <FolderOpen size={15} />
+              <span>{t("productionStudio.organize")}</span>
+            </button>
+            <button
+              className={`studio-command${filtersOpen ? " is-active" : ""}`}
+              aria-expanded={filtersOpen}
+              aria-controls={filterPanelId}
+              onClick={() => setFiltersOpen(!filtersOpen)}
+            >
+              <SlidersHorizontal size={15} />
+              <span>{t("productionStudio.filters")}</span>
+              {filterCount > 0 && (
+                <span className="studio-filter-count">{filterCount}</span>
+              )}
+            </button>
+            <button
+              className="studio-import-button"
+              disabled={importing}
+              onClick={() => importInput.current?.click()}
+            >
+              <Upload size={15} />
+              <span>
+                {importing
+                  ? t("productionStudio.importing")
+                  : t("productionStudio.import")}
+              </span>
+            </button>
             <input
+              ref={importInput}
+              hidden
+              aria-label={t("productionStudio.import")}
               type="file"
               multiple
               accept="image/*,video/*,audio/*"
-              onChange={(e) => {
-                const files = [...(e.target.files ?? [])];
-                void (async () => {
-                  try {
-                    for (const file of files)
-                      await uploadLibraryAsset(
-                        file,
-                        file.type as import("../shared/contracts.js").LibraryUploadMediaType,
-                      );
-                    setAssets(await loadLibraryAssets());
-                  } catch (e) {
-                    setError(String(e));
-                  }
-                })();
-              }}
+              onChange={(e) => void importFiles([...(e.target.files ?? [])])}
             />
-          </label>
-        </div>
-        <div className="studio-filter-list">
+            <details
+              ref={toolsMenu}
+              className="studio-tool-menu"
+              onKeyDown={(e) => {
+                if (e.key === "Escape") e.currentTarget.open = false;
+              }}
+            >
+              <summary
+                aria-label={t("productionStudio.moreTools")}
+                title={t("productionStudio.moreTools")}
+              >
+                <MoreHorizontal size={17} />
+              </summary>
+              <div role="menu">
+                <button
+                  role="menuitem"
+                  onClick={(e) => {
+                    e.currentTarget.closest("details")?.removeAttribute("open");
+                    setSpriteWorkbench(true);
+                  }}
+                >
+                  {t("sprite.open")}
+                </button>
+                <button
+                  role="menuitem"
+                  disabled={busy}
+                  onClick={(e) => {
+                    e.currentTarget.closest("details")?.removeAttribute("open");
+                    if (
+                      !dirty ||
+                      window.confirm(t("productionStudio.discardChanges"))
+                    ) {
+                      clearStudioDraft(draftKey);
+                      void load();
+                    }
+                  }}
+                >
+                  {t("productionStudio.reload")}
+                </button>
+              </div>
+            </details>
+          </div>
+          <nav
+            className="studio-media-tabs"
+            aria-label={t("productionStudio.mediaTypes")}
+          >
+            {["all", "image", "video", "audio", "model"].map((media) => (
+              <button
+                key={media}
+                aria-pressed={(filter.media ?? "all") === media}
+                onClick={() => setFilter({ ...filter, media })}
+              >
+                {t(`assets.filter.${media}` as "assets.filter.all")}
+              </button>
+            ))}
+            <button
+              className="studio-favorite-filter"
+              aria-label={t("productionStudio.favorite")}
+              title={t("productionStudio.favorite")}
+              aria-pressed={!!filter.favorite}
+              onClick={() =>
+                setFilter({
+                  ...filter,
+                  favorite: filter.favorite ? undefined : true,
+                })
+              }
+            >
+              <Star size={14} />
+            </button>
+            {filterCount > 0 && (
+              <button
+                className="studio-reset-inline"
+                onClick={() => {
+                  chooseFilter({ query: filter.query, media: filter.media });
+                }}
+              >
+                {t("productionStudio.resetFilters")}
+              </button>
+            )}
+          </nav>
+        </header>
+        <div
+          id={filterPanelId}
+          className="studio-filter-list studio-filter-panel"
+          hidden={!filtersOpen}
+        >
           <label>
             {t("productionStudio.projectReferences")}
             <select
@@ -501,19 +715,7 @@ export function StudioLibraryView({
               ))}
             </select>
           </label>
-          <label>
-            {t("productionStudio.filters")}
-            <select
-              value={filter.media ?? "all"}
-              onChange={(e) => setFilter({ ...filter, media: e.target.value })}
-            >
-              {["all", "image", "video", "audio", "model"].map((v) => (
-                <option key={v} value={v}>
-                  {t(`assets.filter.${v}` as "assets.filter.all")}
-                </option>
-              ))}
-            </select>
-          </label>
+
           <label>
             {t("productionStudio.origin")}
             <select
@@ -603,8 +805,8 @@ export function StudioLibraryView({
             {error}
           </p>
         )}
-        {ids.length > 0 && (
-          <div className="studio-toolbar">
+        {selected.length > 0 && (
+          <div className="studio-toolbar studio-bulk-toolbar">
             <span>{t("productionStudio.selected", { count: ids.length })}</span>
             <button
               onClick={() => {
@@ -716,85 +918,109 @@ export function StudioLibraryView({
             </button>
           </div>
         )}
-        <div className="studio-grid">
-          {visible.map((a) => {
-            const m = library?.assets[a.id],
-              r = production?.value.reviews[a.id] ?? emptyReview();
-            return (
-              <article
-                key={a.id}
-                className={`studio-card${selected.includes(a.id) || focused === a.id ? " is-selected" : ""}`}
-                onClick={() => {
-                  setFocused(a.id);
-                  setDetailsOpen(true);
-                }}
-              >
-                <input
-                  className="studio-select"
-                  type="checkbox"
-                  aria-label={t("productionStudio.select", { name: a.name })}
-                  checked={selected.includes(a.id)}
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={(e) =>
-                    setSelected(
-                      e.target.checked
-                        ? [...selected, a.id]
-                        : selected.filter((v) => v !== a.id),
-                    )
-                  }
-                />
-                <WorkspaceAssetCard
-                  asset={a}
-                  title={a.name}
-                  onOpen={() => {
+        <div className="studio-content-scroll">
+          {!data && !error && (
+            <p className="studio-note" role="status">
+              {t("productionStudio.loadLibrary")}
+            </p>
+          )}
+          <div className="studio-grid">
+            {visible.map((a) => {
+              const m = library?.assets[a.id],
+                r = production?.value.reviews[a.id] ?? emptyReview();
+              return (
+                <article
+                  key={a.id}
+                  className={`studio-card studio-card-${a.mediaType}${selected.includes(a.id) || focused === a.id ? " is-selected" : ""}`}
+                  onClick={() => {
                     setFocused(a.id);
                     setDetailsOpen(true);
+                    setRailOpen(false);
+                    setRailOpen(false);
                   }}
-                />
-                <div className="studio-badges">
-                  {m?.favorite && <span>★</span>}
-                  {m?.tags.map((id) => (
-                    <span className="studio-badge" key={id}>
-                      {library?.tags.find((t) => t.id === id)?.name}
-                    </span>
-                  ))}
-                  {projectId && (
-                    <>
-                      <span className="studio-badge">
-                        {t(`productionStudio.reviews.${r.status}`)}
+                >
+                  <input
+                    className="studio-select"
+                    type="checkbox"
+                    aria-label={t("productionStudio.select", { name: a.name })}
+                    checked={selected.includes(a.id)}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) =>
+                      setSelected(
+                        e.target.checked
+                          ? [...selected, a.id]
+                          : selected.filter((v) => v !== a.id),
+                      )
+                    }
+                  />
+                  <WorkspaceAssetCard
+                    asset={a}
+                    title={a.name}
+                    onOpen={() => {
+                      setFocused(a.id);
+                      setDetailsOpen(true);
+                    }}
+                  />
+                  <div className="studio-badges">
+                    {m?.favorite && <span>★</span>}
+                    {m?.tags.map((id) => (
+                      <span className="studio-badge" key={id}>
+                        {library?.tags.find((t) => t.id === id)?.name}
                       </span>
-                      {r.roles.map((v) => (
-                        <span key={v} className="studio-badge">
-                          {t(`productionStudio.roles.${v}`)}
+                    ))}
+                    {projectId && (
+                      <>
+                        <span className="studio-badge">
+                          {t(`productionStudio.reviews.${r.status}`)}
                         </span>
-                      ))}
-                      {m?.seriesId &&
-                        production?.value.selectedVersions[m.seriesId] ===
-                          a.id && (
-                          <span className="studio-badge is-current">
-                            {t("productionStudio.current")}
+                        {r.roles.map((v) => (
+                          <span key={v} className="studio-badge">
+                            {t(`productionStudio.roles.${v}`)}
                           </span>
-                        )}
-                    </>
-                  )}
-                </div>
-              </article>
-            );
-          })}
+                        ))}
+                        {m?.seriesId &&
+                          production?.value.selectedVersions[m.seriesId] ===
+                            a.id && (
+                            <span className="studio-badge is-current">
+                              {t("productionStudio.current")}
+                            </span>
+                          )}
+                      </>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+          {data && !visible.length && (
+            <p className="studio-note">{t("productionStudio.noMatch")}</p>
+          )}
         </div>
-        {data && !visible.length && (
-          <p className="studio-note">{t("productionStudio.noMatch")}</p>
-        )}
       </main>
-      <aside className={`studio-details${detailsOpen ? " is-open" : ""}`}>
-        <button
-          className="studio-mobile-close"
-          onClick={() => setDetailsOpen(false)}
-        >
-          {t("productionStudio.close")}
-        </button>
+      <aside
+        aria-label={t("productionStudio.details")}
+        id={detailsId}
+        className={`studio-details${detailsOpen ? " is-open" : ""}`}
+      >
+        <div className="studio-inspector-heading">
+          <strong>{t("productionStudio.details")}</strong>
+          <button
+            className="studio-icon-button"
+            onClick={() => setDetailsOpen(false)}
+            aria-label={t("productionStudio.close")}
+          >
+            <X size={15} />
+          </button>
+        </div>
         {asset && metadata && focused ? (
           <>
+            <button
+              className={`studio-inspector-preview studio-preview-${asset.mediaType}`}
+              onClick={() => setPreview(asset)}
+              aria-label={t("productionStudio.preview")}
+            >
+              <AssetThumbnail asset={asset} visible={detailsOpen} />
+            </button>
             <h2>{asset.name}</h2>
             <p className="studio-note">
               {asset.contentType} ·{" "}
@@ -1030,13 +1256,16 @@ export function StudioLibraryView({
             ) : (
               <p className="studio-note">{t("productionStudio.projectHint")}</p>
             )}
-            <h3>{t("productionStudio.receipt")}</h3>
-            <pre className="studio-receipt">
-              {metadata.receipt
-                ? JSON.stringify(metadata.receipt, null, 2)
-                : t("productionStudio.noReceipt")}
-            </pre>
+            <details className="studio-receipt-details">
+              <summary>{t("productionStudio.receipt")}</summary>
+              <pre className="studio-receipt">
+                {metadata.receipt
+                  ? JSON.stringify(metadata.receipt, null, 2)
+                  : t("productionStudio.noReceipt")}
+              </pre>
+            </details>
             <button
+              className="studio-danger-action"
               onClick={() => {
                 if (window.confirm(t("productionStudio.confirmDelete")))
                   void deleteLibraryAsset(asset.id)
@@ -1067,7 +1296,15 @@ export function StudioLibraryView({
           onClose={() => setPreview(undefined)}
         />
       )}
-      {spriteWorkbench && <SpriteWorkbench initialAssetId={assets.find(a => a.id === focused && a.mediaType === "image")?.id} onClose={() => setSpriteWorkbench(false)} onAssets={async () => setAssets(await loadLibraryAssets())} />}
+      {spriteWorkbench && (
+        <SpriteWorkbench
+          initialAssetId={
+            assets.find((a) => a.id === focused && a.mediaType === "image")?.id
+          }
+          onClose={() => setSpriteWorkbench(false)}
+          onAssets={async () => setAssets(await loadLibraryAssets())}
+        />
+      )}
       {compare && selected.length === 2 && (
         <Comparison
           assets={selected.map((id) => assets.find((a) => a.id === id)!)}

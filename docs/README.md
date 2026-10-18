@@ -63,7 +63,7 @@ are `test/checkpoints.test.ts`, `test/turn-checkpoints.test.ts`, and
 | [preview-runtime.md](preview-runtime.md)         | Startup modes, dependency installation, leases, browser storage, and diagnostics.                                              |
 | [runtime-recovery.md](runtime-recovery.md)       | Preview isolation, daemon supervision, reconnect behavior, and recovery scenarios.                                             |
 | [canvas-agent.md](canvas-agent.md)               | Canvas files, concurrent editing, agent tools, media, and migration.                                                           |
-| [studio-workflow.md](studio-workflow.md) | Library organization, project standards, groups, templates and receipts; [Chinese guide](studio-workflow.zh-CN.md), [rollback](studio-rollback.md). |
+| [studio-workflow.md](studio-workflow.md) | Library organization, project standards, groups, templates and receipts; [Chinese guide](studio-workflow.zh-CN.md), [rollback](studio-rollback.md), [UI validation](studio-ui-validation.md). |
 | [canvas-quick-actions.md](canvas-quick-actions.md) | Image shortcuts, object checklists, three-view batches, model defaults and result persistence.                               |
 | [plugins.md](plugins.md)                         | Plugin packages, configuration, credentials, MCP sessions, authoring, and migration.                                           |
 | [custom-models.md](custom-models.md)             | Provider protocols, capabilities, visibility, model definitions, and defaults.                                                 |

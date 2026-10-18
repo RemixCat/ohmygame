@@ -1800,7 +1800,6 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   const visibleNodes = renderedNodes.map((n) => ({ ...n, hidden: !!collapsedAncestor(document, n as unknown as AssetCanvasNode) }));
   return (
     <section className="viewer-pane interactive-story-workspace" hidden={hidden} aria-label={t("canvas.assetCanvasWorkspace")}>
-      <button className="sprite-canvas-button" disabled={phase !== "ready" || conflicted} onClick={() => setSpriteWorkbench(true)}>{t("sprite.open")}</button>
       {spriteWorkbench && <SpriteWorkbench initialAssetId={libraryAssets.find(a => a.id === selectedNodes[0]?.data.assetId && a.mediaType === "image")?.libraryAssetId ?? globalAssets.find(a => a.id === selectedNodes[0]?.data.assetId && a.mediaType === "image")?.id} onClose={() => setSpriteWorkbench(false)} onAssets={outputs => {
         if (phase !== "ready" || conflicted) throw new Error(t("sprite.canvasNotReady"));
         setLibraryAssets(current => [...outputs.map(a => ({ ...a, assetId: a.id, path: a.name })), ...current.filter(a => !outputs.some(b => b.id === a.id))]);
@@ -1837,8 +1836,8 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
             const at = flowInstance.current?.screenToFlowPosition({ x: event.clientX, y: event.clientY }) ?? { x: 96, y: 96 };
             void importCanvasFiles(transferredFiles(event.dataTransfer), at);
           }}>
-          {overlay}
-          {phase === "ready" && <StudioGroupsPanel projectId={projectId} boardId={storage.boardId} board={document} selected={nodes.filter((n) => n.selected).map((n) => n.id)} onChange={changeGroups} flush={flush} onEditStandards={onEditStandards} />}
+          {phase !== "ready" && overlay}
+          {phase === "ready" && <StudioGroupsPanel projectId={projectId} boardId={storage.boardId} board={document} selected={nodes.filter((n) => n.selected).map((n) => n.id)} onChange={changeGroups} flush={flush} onEditStandards={onEditStandards} leading={overlay} actions={<button className="sprite-canvas-button" disabled={phase !== "ready" || conflicted} onClick={() => setSpriteWorkbench(true)}>{t("sprite.open")}</button>} />}
           {fileDropActive ? <div className="canvas-file-drop-overlay"><Upload size={18} /><span>{t("assetCanvas.dropFiles")}</span></div> : importingAssets ? <div className="canvas-file-import-status" role="status"><LoaderCircle size={13} className="spin" /><span>{t("assetCanvas.importing")}</span></div> : null}
           {phase === "loading" ? <div className="story-canvas-state">{t("assetCanvas.loading")}</div> : null}
           {phase === "error" ? <div className="story-canvas-state story-canvas-state-error" role="alert"><span>{t("assetCanvas.loadFailed", { error: loadError })}</span><button type="button" onClick={() => setLoadAttempt((value) => value + 1)}>{t("assetCanvas.reload")}</button></div> : null}

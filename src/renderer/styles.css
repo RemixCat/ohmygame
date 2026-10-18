@@ -8822,6 +8822,17 @@ button {
   }
 }
 
+.story-canvas {
+  container: editor-canvas / inline-size;
+}
+
+/* A canvas can occupy a narrow split pane inside a wide desktop window. */
+@container editor-canvas (max-width: 640px) {
+  .react-flow__panel.story-canvas-zoom {
+    bottom: 62px;
+  }
+}
+
 .story-canvas-pointer .react-flow__pane {
   cursor: default;
 }

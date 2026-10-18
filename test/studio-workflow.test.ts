@@ -1,5 +1,13 @@
 import { TEST_GLB } from "./model3d-fixture.js";
-import { mkdtemp, rm, readFile, copyFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readdir,
+  writeFile,
+  rm,
+  readFile,
+  copyFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -35,6 +43,9 @@ import {
   emptyProduction,
   emptyReview,
   emptyStandard,
+  removeProductionStandard,
+  activeStandard,
+  inheritedStandardId,
   emptyStudioLibrary,
   matchesStudioFilter,
   removeFolder,
@@ -130,6 +141,43 @@ async function wait(canvas: CanvasStore, projectId: string, id: string) {
 }
 
 describe("studio organization and persistence", () => {
+  it("opens a new canvas after standards were saved first without replacing production data", async () => {
+    const f = await fixture(),
+      project = await f.projects.create("Standards first", "godot-game");
+    const p = await f.studio.read<ProjectProduction>(project.id);
+    p.value.standards.push({
+      id: "draft",
+      name: "Saved before a board",
+      draft: emptyStandard(),
+      revisions: [],
+    });
+    await f.studio.save(p.value, p.revision, project.id);
+    const file = path.join(project.workspacePath, "canvas", "production.json"),
+      before = await readFile(file, "utf8");
+    expect(await readdir(path.dirname(file))).toEqual(["production.json"]);
+    expect((await f.canvas.workspace(project.id)).boards).toHaveLength(1);
+    expect(await readFile(file, "utf8")).toBe(before);
+  });
+  it("does not initialize over an authored canvas whose index is missing", async () => {
+    const f = await fixture(),
+      project = await f.projects.create("Recover index", "godot-game");
+    const directory = path.join(project.workspacePath, "canvas", "boards");
+    await mkdir(directory, { recursive: true });
+    const board = JSON.stringify(createAssetCanvasDocument());
+    await writeFile(path.join(directory, "preserve.json"), board);
+    const p = await f.studio.read<ProjectProduction>(project.id);
+    await f.studio.save(p.value, p.revision, project.id);
+    await expect(f.canvas.workspace(project.id)).rejects.toThrow(
+      "missing index",
+    );
+    expect(await readFile(path.join(directory, "preserve.json"), "utf8")).toBe(
+      board,
+    );
+    await expect(
+      readFile(path.join(project.workspacePath, "canvas", "index.json")),
+    ).rejects.toThrow();
+  });
+
   it("intersects filters, matches tag modes and promotes children without deleting assets", () => {
     const d = emptyStudioLibrary();
     d.folders = [
@@ -228,6 +276,58 @@ describe("studio organization and persistence", () => {
     await expect(
       reloaded.save(invalid.value, invalid.revision, f.other.id),
     ).rejects.toThrow("belong");
+  });
+  it("removes drafts and archives published standards without rewriting receipts", async () => {
+    const f = await fixture(),
+      p = await standard(f);
+    const receipt = await f.studio.receipt(f.project.id, "Fox", {});
+    const asset = await f.library.add("fox.png", Buffer.from("png"));
+    await f.studio.record([asset.id], receipt, "node");
+    p.value.standards.push({
+      id: "scratch",
+      name: "Draft",
+      draft: emptyStandard(),
+      revisions: [],
+    });
+    removeProductionStandard(p.value, "scratch");
+    expect(p.value.standards.some((s) => s.id === "scratch")).toBe(false);
+    removeProductionStandard(p.value, "direction");
+    expect(p.value.defaultStandardId).toBeUndefined();
+    expect(p.value.standards[0]?.archived).toBe(true);
+    expect(activeStandard(p.value, "direction")).toBeUndefined();
+    const saved = await f.studio.save(p.value, p.revision, f.project.id);
+    expect(
+      (await f.studio.receipt(f.project.id, "Fox", {})).effectivePrompt,
+    ).not.toContain("Copper and teal");
+    expect((await f.studio.read()).value.assets[asset.id]?.receipt).toEqual(
+      receipt,
+    );
+    delete saved.value.standards[0]!.archived;
+    await f.studio.save(saved.value, saved.revision, f.project.id);
+    expect(
+      activeStandard(
+        (await f.studio.read<ProjectProduction>(f.project.id)).value,
+        "direction",
+      )?.content.art,
+    ).toBe("Copper and teal");
+  });
+  it("falls back past removed node/group standards and refuses archived project defaults", async () => {
+    const f = await fixture(),
+      p = await standard(f);
+    p.value.standards.push({
+      ...structuredClone(p.value.standards[0]!),
+      id: "removed",
+      archived: true,
+    });
+    const { b, n, root, child } = grouped();
+    n.standardId = "removed";
+    b.groups!.find((g) => g.id === child)!.standardId = "removed";
+    b.groups!.find((g) => g.id === root)!.standardId = "direction";
+    expect(inheritedStandardId(p.value, b, n)).toBe("direction");
+    p.value.defaultStandardId = "removed";
+    await expect(
+      f.studio.save(p.value, p.revision, f.project.id),
+    ).rejects.toThrow("Default standard");
   });
   it("keeps activated standards and generation receipts immutable while drafts evolve", async () => {
     const f = await fixture(),

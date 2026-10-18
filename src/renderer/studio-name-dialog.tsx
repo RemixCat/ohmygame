@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { ProjectSettingsDialogFrame } from "./project-settings-dialog.js";
 import { t } from "./i18n.js";
 
 export interface StudioNameRequest {
   label: string;
   initial?: string;
+  validate?(name: string): string | undefined;
   action(name: string): void;
 }
 export function StudioNameDialog({
@@ -14,41 +17,110 @@ export function StudioNameDialog({
   onClose(): void;
 }) {
   const [name, setName] = useState(request.initial ?? "");
-  return (
-    <div
-      className="studio-modal nokey"
-      role="dialog"
-      aria-modal="true"
-      aria-label={request.label}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onClose();
-      }}
+  const [error, setError] = useState("");
+  const submitted = useRef(false);
+  const input = useRef<HTMLInputElement>(null);
+  return createPortal(
+    <ProjectSettingsDialogFrame
+      title={request.label}
+      initialFocusRef={input}
+      onClose={onClose}
     >
       <form
-        className="studio-comparison"
+        className="studio-name-form"
         onSubmit={(e) => {
           e.preventDefault();
-          if (name.trim()) {
-            request.action(name.trim());
+          const value = name.trim();
+          if (!value || submitted.current) return;
+          const invalid = request.validate?.(value);
+          if (invalid) {
+            setError(invalid);
+            return;
+          }
+          submitted.current = true;
+          try {
+            request.action(value);
             onClose();
+          } catch (cause) {
+            submitted.current = false;
+            setError(cause instanceof Error ? cause.message : String(cause));
           }
         }}
       >
-        <h3>{request.label}</h3>
-        <input
-          autoFocus
-          aria-label={t("productionStudio.name")}
-          maxLength={200}
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-        />
-        <button type="submit" disabled={!name.trim()}>
-          {t("common.save")}
-        </button>
-        <button type="button" onClick={onClose}>
-          {t("common.cancel")}
-        </button>
+        <label>
+          {t("productionStudio.name")}
+          <input
+            ref={input}
+            maxLength={200}
+            value={name}
+            onChange={(e) => {
+              setName(e.target.value);
+              setError("");
+            }}
+          />
+        </label>
+        {error && (
+          <p className="project-settings-error" role="alert">
+            {error}
+          </p>
+        )}
+        <footer>
+          <button type="button" onClick={onClose}>
+            {t("common.cancel")}
+          </button>
+          <button
+            className="project-settings-submit"
+            type="submit"
+            disabled={!name.trim()}
+          >
+            {t("common.save")}
+          </button>
+        </footer>
       </form>
-    </div>
+    </ProjectSettingsDialogFrame>,
+    document.body,
+  );
+}
+
+export function StudioConfirmDialog({
+  title,
+  message,
+  onConfirm,
+  onClose,
+}: {
+  title: string;
+  message: string;
+  onConfirm(): void;
+  onClose(): void;
+}) {
+  const cancel = useRef<HTMLButtonElement>(null);
+  const submitted = useRef(false);
+  return createPortal(
+    <ProjectSettingsDialogFrame
+      title={title}
+      initialFocusRef={cancel}
+      onClose={onClose}
+    >
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (submitted.current) return;
+          submitted.current = true;
+          onConfirm();
+          onClose();
+        }}
+      >
+        <p className="studio-confirm-copy">{message}</p>
+        <footer>
+          <button ref={cancel} type="button" onClick={onClose}>
+            {t("common.cancel")}
+          </button>
+          <button className="studio-confirm-delete" type="submit">
+            {t("common.delete")}
+          </button>
+        </footer>
+      </form>
+    </ProjectSettingsDialogFrame>,
+    document.body,
   );
 }
