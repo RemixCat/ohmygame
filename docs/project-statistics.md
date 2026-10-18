@@ -64,7 +64,7 @@ also occurs for custom providers, free/OAuth plans and missing price tables.
 
 The report uses **all retained session entries**, including inactive branches.
 Rewinding and compaction therefore do not erase previously recorded spend.
-Project totals deduplicate shared responses by provider/model/response ID, or
+Project totals deduplicate shared responses by provider/model/response ID and timestamp, or
 copied entry ID/timestamp when no response ID exists. Earlier-created
 conversations own shared rows in project breakdowns. Individual conversation
 reports include their retained shared history, so their totals can differ from
