@@ -57,6 +57,16 @@ also checked. Search, audio filtering and opening the 2D workbench were exercise
 Name/create/cancel, draft removal, published removal/restore, saving and reload
 were verified through the UI and the production API.
 
+## Electron follow-up
+
+After the host was unlocked, the desktop application exited through its normal
+save-before-close flow and restarted with the current built renderer. Verified
+the existing-project workspace chooser, Library gallery and audio thumbnails,
+the canvas toolbar with its expanded group panel, and opening/cancelling the
+standard name dialog without creating a draft. Existing workspace selections,
+production standards, media and game files were not changed. Desktop screenshots
+remain local because they contain the user's actual project content.
+
 This does not verify paid provider output, private hosted publishing, or every
 operating-system font/scale combination. Published standards use an optional
 `archived` field in production metadata; back up data before downgrading to a
