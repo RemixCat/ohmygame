@@ -29,6 +29,8 @@ These are entry points, not an exhaustive ownership map. HTTP API and event
 definitions live in the code; use the corresponding shared types and tests
 when changing a contract.
 
+[Choose a workspace](project-workspace.md) ([中文](project-workspace.zh-CN.md)) covers rebinding an existing project, preserved files/conversations, and checkpoint isolation. Start with `src/daemon/project-workspace-route.ts`, `src/renderer/project-workspace-dialog.tsx`, and `test/project-workspace.test.ts`.
+
 Project workspaces return to their entry page using the top-left Back arrow.
 The destination survives conversation/view changes and refreshes in the same
 tab; a project link opened without an entry page returns to Projects. The

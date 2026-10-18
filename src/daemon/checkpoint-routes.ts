@@ -46,7 +46,7 @@ export function registerCheckpointRoutes(
     options;
   // Cancel remains available while a boundary waits for generation to settle.
   const exempt = (url: string) =>
-    /\/checkpoints\/|\/events(?:\?|$)/.test(url) ||
+    /\/checkpoints\/|\/events(?:\?|$)|\/settings\/workspace(?:\?|$)/.test(url) ||
     /\/cancel(?:\?|$)/.test(url);
   app.addHook("preHandler", async (request, reply) => {
     // Studio bulk reviews live under Library but write a project's production file.

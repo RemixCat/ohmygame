@@ -16219,3 +16219,6 @@ button {
 .model3d-error a { color: var(--theme-accent); }
 .story-canvas .react-flow__node.is-connection-target { outline: 2px solid var(--theme-accent); outline-offset: 5px; border-radius: 16px; }
 .story-node .react-flow__handle::after { content: ""; position: absolute; inset: -10px; border-radius: 50%; }
+
+.project-workspace-form p { margin: 0; overflow-wrap: anywhere; }
+.project-workspace-form input { width: 100%; min-width: 0; }

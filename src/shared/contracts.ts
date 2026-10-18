@@ -404,6 +404,8 @@ export interface ProjectState extends ProjectPreviewSettings {
   storagePath?: string;
   /** Whether OhMyGame owns the workspace directory or only references it. */
   workspaceLocation?: "managed" | "external";
+  /** Separates file checkpoints after selecting a different workspace. */
+  workspaceCheckpointId?: string;
   /** False when a previously selected workspace is no longer available on disk. */
   workspaceAvailable?: boolean;
   preview: PreviewRuntimeState;
