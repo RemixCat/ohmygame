@@ -322,11 +322,16 @@ it("projects real edit/write diffs before the turn ends and restores them from d
   const restored = conversationItems(
     SessionManager.open(sessionManager.getSessionFile()!).getBranch(),
   ).filter((item) => item.type === "dynamicToolCall");
-  expect(
-    restored.map(({ lineChanges, fileDiff }) => ({ lineChanges, fileDiff })),
-  ).toEqual(
-    live.map(({ lineChanges, fileDiff }) => ({ lineChanges, fileDiff })),
-  );
+  // Disk order follows invocation order; live completion order may differ.
+  expect(restored).toHaveLength(live.length);
+  for (const item of live) {
+    const saved = restored.find((entry) => entry.toolCallId === item.toolCallId);
+    expect(saved).toBeDefined();
+    expect({ lineChanges: saved?.lineChanges, fileDiff: saved?.fileDiff }).toEqual({
+      lineChanges: item.lineChanges,
+      fileDiff: item.fileDiff,
+    });
+  }
   const olderEntries = SessionManager.open(
     sessionManager.getSessionFile()!,
   ).getBranch();
