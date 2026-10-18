@@ -925,6 +925,18 @@ const zhCN: typeof en = {
     frozen: "冻结 {{amount}} 积分",
     error: "无法获取余额，请刷新重试。",
   },
+  projectWorkspace: {
+    title: "选择工作区",
+    description: "为“{{name}}”选择使用的文件夹。",
+    current: "当前工作区",
+    selected: "所选文件夹",
+    placeholder: "请选择已有文件夹",
+    filesHint: "这会更改文件夹引用。现有文件保留在各自目录，不会自动移动、复制或覆盖。",
+    historyHint: "保留项目和对话记录。每次切换后重新记录文件快照，旧快照不会恢复到新目录。请先结束 Agent、生成和发布任务。",
+    apply: "使用此文件夹",
+    busy: "请等待 Agent、生成和发布任务结束后再切换。",
+    stale: "打开此窗口后工作区已发生变化，请关闭窗口后重新选择。",
+  },
   projectCard: {
     stopping: "正在停止",
     working: "工作中",

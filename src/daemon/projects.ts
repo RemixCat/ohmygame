@@ -39,6 +39,7 @@ interface ProjectMetadata extends ProjectPreviewSettings {
   previewViewport?: PreviewViewport;
   /** Present only when the user chose a workspace outside OhMyGame storage. */
   workspacePath?: string;
+  workspaceCheckpointId?: string;
   publication?: PublicationState;
   mediaModelDefaults?: MediaModelDefaults;
 }
@@ -85,6 +86,7 @@ export class ProjectManager {
   readonly #assetMetadataWrites = new Map<string, Promise<unknown>>();
   readonly #workspaceWrites = new Map<string, Promise<unknown>>();
   readonly #projectsDirectory: string;
+  #workspaceSelection: Promise<unknown> = Promise.resolve();
 
   constructor(dataDirectory: string, private readonly assetLibrary?: AssetLibrary) {
     this.#projectsDirectory = path.join(dataDirectory, "projects");
@@ -123,6 +125,39 @@ export class ProjectManager {
   }
 
   async create(name?: string, type: ProjectType = "web-game", selectedWorkspacePath?: string): Promise<ProjectState> {
+    return this.#selectWorkspace(() => this.#create(name, type, selectedWorkspacePath));
+  }
+
+  async #selectWorkspace<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.#workspaceSelection.catch(() => {}).then(operation);
+    this.#workspaceSelection = next.catch(() => {});
+    return next;
+  }
+
+  async setWorkspace(id: string, selectedWorkspacePath: string): Promise<ProjectState> {
+    return this.#selectWorkspace(async () => {
+      const project = this.#projects.get(id);
+      if (!project) throw new Error(`Project not found: ${id}`);
+      const workspacePath = await this.validateWorkspaceSelection(id, selectedWorkspacePath);
+      if (workspacePath === project.workspacePath) return project;
+      const runnable = await isRunnableStartupWorkspace({ ...project, workspacePath });
+      await this.#save(project, { workspacePath, workspaceCheckpointId: randomUUID(), updatedAt: new Date().toISOString() });
+      project.workspaceAvailable = true;
+      project.preview = { status: runnable ? "stopped" : "waiting" };
+      return project;
+    });
+  }
+
+  async validateWorkspaceSelection(id: string, selectedWorkspacePath: string): Promise<string> {
+    if (!path.isAbsolute(selectedWorkspacePath)) throw new ProjectWorkspaceError("Workspace path must be absolute");
+    const project = this.#projects.get(id);
+    if (!project) throw new Error(`Project not found: ${id}`);
+    const selected = await realpath(selectedWorkspacePath).catch(() => { throw new ProjectWorkspaceError("Selected workspace folder is not available"); });
+    if (selected === await realpath(project.workspacePath).catch(() => path.resolve(project.workspacePath))) return project.workspacePath;
+    return this.#validateExternalWorkspace(selectedWorkspacePath, id);
+  }
+
+  async #create(name?: string, type: ProjectType = "web-game", selectedWorkspacePath?: string): Promise<ProjectState> {
     const id = randomUUID();
     const projectDirectory = path.join(this.#projectsDirectory, id);
     const hasExternalWorkspace = selectedWorkspacePath !== undefined;
@@ -666,13 +701,17 @@ export class ProjectManager {
 
   async #save(
     project: ProjectState,
-    changes: Partial<Pick<ProjectMetadata, "name" | "updatedAt" | "webPreviewEnabled" | "startupDirectory" | "startupScript" | "packageManager" | "previewPath" | "previewViewport" | "publication" | "mediaModelDefaults" | keyof ProjectPreviewSettings>>,
+    changes: Partial<Pick<ProjectMetadata, "name" | "updatedAt" | "workspacePath" | "workspaceCheckpointId" | "webPreviewEnabled" | "startupDirectory" | "startupScript" | "packageManager" | "previewPath" | "previewViewport" | "publication" | "mediaModelDefaults" | keyof ProjectPreviewSettings>>,
   ): Promise<void> {
     const operation = (this.#metadataWrites.get(project.id) ?? Promise.resolve()).catch(() => {}).then(async () => {
       const metadata = { ...metadataFor(project), ...changes };
       await writeMetadata(this.#projectDirectory(project.id), metadata);
       for (const key of PREVIEW_SETTING_KEYS) { delete project[key]; }
       Object.assign(project, previewSettings(metadata));
+      project.workspacePath = metadata.workspacePath ?? path.join(this.#projectDirectory(project.id), "workspace");
+      project.workspaceLocation = metadata.workspacePath ? "external" : "managed";
+      if (metadata.workspaceCheckpointId) project.workspaceCheckpointId = metadata.workspaceCheckpointId;
+      else delete project.workspaceCheckpointId;
       project.name = metadata.name;
       project.updatedAt = metadata.updatedAt;
       if (project.type === "general") project.webPreviewEnabled = metadata.webPreviewEnabled ?? false;
@@ -712,7 +751,7 @@ export class ProjectManager {
     return [...this.#projects.values()].find((project) => path.resolve(project.workspacePath) === workspacePath);
   }
 
-  async #validateExternalWorkspace(selectedWorkspacePath: string): Promise<string> {
+  async #validateExternalWorkspace(selectedWorkspacePath: string, excludingId?: string): Promise<string> {
     if (!path.isAbsolute(selectedWorkspacePath)) throw new ProjectWorkspaceError("Workspace path must be absolute");
     let entry: Awaited<ReturnType<typeof lstat>>;
     let workspacePath: string;
@@ -728,10 +767,10 @@ export class ProjectManager {
     if (path.parse(workspacePath).root === workspacePath) {
       throw new ProjectWorkspaceError("The filesystem root cannot be used as a workspace");
     }
-    if (pathsOverlap(workspacePath, this.#projectsDirectory)) {
+    if (pathsOverlap(workspacePath, await realpath(this.#projectsDirectory))) {
       throw new ProjectWorkspaceError("OhMyGame's project storage cannot be used as a workspace");
     }
-    const owner = this.#workspaceOwner(workspacePath);
+    const owner = excludingId ? [...this.#projects.values()].find(p => p.id !== excludingId && pathsOverlap(workspacePath, p.workspacePath)) : this.#workspaceOwner(workspacePath);
     if (owner) throw new ProjectWorkspaceError(`This folder is already the workspace of “${owner.name}”`);
     return workspacePath;
   }
@@ -756,6 +795,7 @@ function projectState(
     ...(metadata.type === "general" ? { webPreviewEnabled: metadata.webPreviewEnabled ?? false } : {}),
     updatedAt: metadata.updatedAt,
     workspacePath,
+    ...(metadata.workspaceCheckpointId ? { workspaceCheckpointId: metadata.workspaceCheckpointId } : {}),
     ...previewSettings(metadata),
     ...(metadata.startupDirectory ? { startupDirectory: metadata.startupDirectory } : {}),
     ...(metadata.startupScript ? { startupScript: metadata.startupScript } : {}),
@@ -932,6 +972,7 @@ async function readMetadata(projectDirectory: string, id: string, fallbackUpdate
       (parsed.previewPath === undefined || normalizePreviewPath(parsed.previewPath) !== undefined) &&
       (parsed.previewViewport === undefined || isPreviewViewport(parsed.previewViewport)) &&
       (parsed.workspacePath === undefined || (typeof parsed.workspacePath === "string" && path.isAbsolute(parsed.workspacePath))) &&
+      (parsed.workspaceCheckpointId === undefined || (typeof parsed.workspaceCheckpointId === "string" && isProjectId(parsed.workspaceCheckpointId))) &&
       (parsed.mediaModelDefaults === undefined || validMediaModelDefaults(parsed.mediaModelDefaults)) &&
       (parsed.publication === undefined || validPublication(parsed.publication))
     ) {
@@ -960,6 +1001,7 @@ async function readMetadata(projectDirectory: string, id: string, fallbackUpdate
           ...(previewPath && previewPath !== "/" ? { previewPath } : {}),
           ...(previewViewport && previewViewport !== "fit" ? { previewViewport } : {}),
           ...(workspacePath ? { workspacePath } : {}),
+          ...(parsed.workspaceCheckpointId ? { workspaceCheckpointId: parsed.workspaceCheckpointId } : {}),
           ...(parsed.publication ? { publication: parsed.publication } : {}),
           ...(parsed.mediaModelDefaults ? { mediaModelDefaults: parsed.mediaModelDefaults } : {}),
         },
@@ -991,6 +1033,7 @@ function metadataFor(project: ProjectState): ProjectMetadata {
     ...(project.previewViewport ? { previewViewport: project.previewViewport } : {}),
     ...(project.mediaModelDefaults ? { mediaModelDefaults: project.mediaModelDefaults } : {}),
     ...(project.workspaceLocation === "external" ? { workspacePath: project.workspacePath } : {}),
+    ...(project.workspaceCheckpointId ? { workspaceCheckpointId: project.workspaceCheckpointId } : {}),
     ...(project.publication ? { publication: project.publication } : {}),
   };
 }

@@ -944,6 +944,18 @@ const en = {
     frozen: "{{amount}} credits frozen",
     error: "Balance unavailable. Refresh to try again.",
   },
+  projectWorkspace: {
+    title: "Choose workspace",
+    description: "Select the folder used by “{{name}}”.",
+    current: "Current workspace",
+    selected: "Selected folder",
+    placeholder: "Choose an existing folder",
+    filesHint: "This changes the folder reference. Existing files stay in their current folders; nothing is moved, copied or overwritten.",
+    historyHint: "Project identity and conversations are kept. File checkpoints start fresh for each switch; earlier checkpoints cannot be restored into this folder. Stop agents, generation and publishing before switching.",
+    apply: "Use this folder",
+    busy: "Wait for agents, generation and publishing to finish, then try again.",
+    stale: "The workspace changed while this dialog was open. Close it and choose again.",
+  },
   projectCard: {
     stopping: "Stopping",
     working: "Working",

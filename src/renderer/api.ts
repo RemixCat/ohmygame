@@ -213,6 +213,10 @@ export async function renameProject(projectId: string, name: string): Promise<Pr
   return request(`/projects/${projectId}`, { method: "PATCH", body: JSON.stringify({ name }) });
 }
 
+export async function updateProjectWorkspace(projectId: string, workspacePath: string, version: string): Promise<ProjectState> {
+  return request(`/projects/${projectId}/settings/workspace`, { method: "PUT", workspaceVersion: version, body: JSON.stringify({ workspacePath }) });
+}
+
 export async function updateProjectStartupDirectory(projectId: string, startupDirectory: string): Promise<ProjectState> {
   return request(`/projects/${projectId}/settings/startup-directory`, {
     method: "PUT",

@@ -129,7 +129,7 @@ export function Home({ onNavigate, onCreate, onOpen }: HomeProps) {
                   agentStatus={activity.get(project.id)}
                   fallback={index % 4}
                   onOpen={() => onOpen(project.id)}
-                  actions={{ onRename: () => {
+                  actions={{ onWorkspaceChanged: updated => setProjects(current => current.map(item => item.id === updated.id ? updated : item)), onRename: () => {
                     renameTrigger.current = document.querySelector<HTMLElement>('.project-card-menu[aria-expanded="true"]');
                     setRenameTarget(project);
                   }, onDuplicate: () => void duplicate(project), onDelete: () => void remove(project) }}

@@ -26,6 +26,11 @@ export class ConversationManager {
     this.#cache.forgetDirectory(sessionDirectory(project));
   }
 
+  /** Drop cached views after a folder switch while retaining empty, unsent conversations. */
+  invalidateWorkspace(project: ProjectState): void {
+    this.#cache.forgetDirectory(sessionDirectory(project));
+  }
+
   async view(project: ProjectState, stored: StoredConversation): Promise<SessionManager> {
     return await this.#cache.read(project, stored.sessionPath)
       ?? this.#pending.get(key(project.id, stored.summary.id))?.manager
