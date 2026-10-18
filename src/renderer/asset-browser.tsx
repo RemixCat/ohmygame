@@ -126,8 +126,8 @@ export function WorkspaceAssetCard({ asset, title, onOpen, onRename, onDelete, o
 /** An asset's thumbnail: an image, a video's first frame, or a still 3D model, loaded once `visible`. Thumbnails sit inside open buttons, so they carry no clip picker. */
 export function AssetThumbnail({ asset, visible }: { asset: BrowsableAsset; visible: boolean }) {
   const [previewFailed, setPreviewFailed] = useState(false);
-  const preview = useWorkspaceAssetUrl(visible && asset.mediaType !== "audio" ? asset.projectId : undefined, asset.path, asset.revision, visible ? asset.assetId : undefined);
-  const showPreview = Boolean(preview.url) && !previewFailed;
+  const preview = useWorkspaceAssetUrl(visible && asset.mediaType !== "audio" ? asset.projectId : undefined, asset.path, asset.revision, visible && asset.mediaType !== "audio" ? asset.assetId : undefined);
+  const showPreview = Boolean(preview.url) && !previewFailed && asset.mediaType !== "audio";
   const FallbackIcon = asset.mediaType === "video" ? Film : asset.mediaType === "audio" ? Music2 : asset.mediaType === "model" ? Box : preview.error || previewFailed ? X : ImageIcon;
   return <>
     {showPreview && asset.mediaType === "video" ? <video src={preview.url} muted playsInline preload="metadata" onError={() => setPreviewFailed(true)} onLoadedMetadata={(event) => { event.currentTarget.currentTime = 0.01; }} /> : null}
@@ -142,6 +142,7 @@ export function AssetThumbnail({ asset, visible }: { asset: BrowsableAsset; visi
 export function assetTypeBadge(mediaType: BrowsableAsset["mediaType"]): ReactNode {
   if (mediaType === "video") return <><Play size={11} />{t("assets.video")}</>;
   if (mediaType === "model") return <><Box size={11} />3D</>;
+  if (mediaType === "audio") return <><Music2 size={11} />{t("assets.filter.audio")}</>;
   return undefined;
 }
 

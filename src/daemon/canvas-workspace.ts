@@ -1,11 +1,11 @@
 import { captureWorkflow, instantiateWorkflow } from "../shared/studio-templates.js";
-import { PRODUCTION_SCHEMA, renderPrompt, type WorkflowTemplate, type GenerationReceipt } from "../shared/studio.js";
+import { PRODUCTION_SCHEMA, validateProduction, renderPrompt, type WorkflowTemplate, type GenerationReceipt } from "../shared/studio.js";
 import type { StudioStore } from "./studio-store.js";
 import { CANVAS_TABLE_SCHEMA, createCanvasTable, isCanvasTable, canvasTablePath, type CanvasTable, type CanvasTableDetail } from "../shared/canvas-table.js";
 import { createHash, randomUUID } from "node:crypto";
 import { applyCanvasNodeLayout, canvasNodeContent, canvasNodeLayout, contentNodeSizeIssue, isResizableCanvasNodeType } from "../shared/canvas-node-layout.js";
 import { resolveVideoMentions } from "../shared/video-references.js";
-import { lstat, readFile, rm } from "node:fs/promises";
+import { lstat, readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { convertToPng } from "@earendil-works/pi-coding-agent";
 import type { AssetCanvasNode, PromptImage, RunToolRequest, ToolJob, ToolId } from "../shared/contracts.js";
@@ -98,7 +98,14 @@ async function ensureCanvasIndex(workspace: string): Promise<CanvasWorkspaceInde
   }
   try {
     await lstat(path.join(workspace, "canvas"));
-    throw new CanvasError("The canvas directory is missing index.json. Restore its index before opening it.", 409);
+    // Standards can be saved before a board is ever opened. Only that exact,
+    // validated metadata-only state is safe to initialize; authored boards,
+    // documents, assets or an empty damaged canvas still require recovery.
+    const entries = await readdir(path.join(workspace, "canvas"), { withFileTypes: true });
+    if (entries.length !== 1 || entries[0]!.name !== "production.json" || !entries[0]!.isFile())
+      throw new CanvasError("The canvas directory is missing index.json. Restore its index before opening it.", 409);
+    const production = await readCanvasFile(workspace, "production.json", 16 * 1024 * 1024);
+    validateProduction(parseCanvasJson(production!, "production.json", PRODUCTION_SCHEMA));
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
   }

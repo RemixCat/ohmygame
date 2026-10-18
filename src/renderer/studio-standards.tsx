@@ -4,7 +4,7 @@ import {
   writeStudioDraft,
   clearStudioDraft,
 } from "./studio-drafts.js";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   getProjectProduction,
   saveProjectProduction,
@@ -16,6 +16,7 @@ import { getCanvasWorkspace, getCanvasBoard } from "./canvas-api.js";
 import {
   STANDARD_SECTIONS,
   emptyStandard,
+  removeProductionStandard,
   renderPrompt,
   type StandardSection,
   type ProjectProduction,
@@ -23,6 +24,12 @@ import {
   type StudioLibrary,
   type WorkflowTemplate,
 } from "../shared/studio.js";
+import { Plus, Trash2, RotateCcw, FileText } from "./icons.js";
+import {
+  StudioNameDialog,
+  StudioConfirmDialog,
+  type StudioNameRequest,
+} from "./studio-name-dialog.js";
 import { BUILTIN_WORKFLOWS } from "../shared/studio-templates.js";
 import { t } from "./i18n.js";
 import "./studio.css";
@@ -35,6 +42,12 @@ export function StudioStandards({ projectId }: { projectId: string }) {
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [nameRequest, setNameRequest] = useState<StudioNameRequest>();
+  const [removeTarget, setRemoveTarget] = useState<{
+    id: string;
+    name: string;
+  }>();
+  const saving = useRef(false);
   async function load() {
     try {
       const d = await getProjectProduction(projectId);
@@ -44,10 +57,10 @@ export function StudioStandards({ projectId }: { projectId: string }) {
       setData(recovery ?? d);
       const loaded = recovery ?? d;
       setSelected((id) =>
-        loaded.value.standards.some((s) => s.id === id)
+        loaded.value.standards.some((s) => s.id === id && !s.archived)
           ? id
           : (loaded.value.defaultStandardId ??
-            loaded.value.standards[0]?.id ??
+            loaded.value.standards.find((s) => !s.archived)?.id ??
             ""),
       );
       setDirty(!!recovery);
@@ -75,14 +88,54 @@ export function StudioStandards({ projectId }: { projectId: string }) {
   }, [dirty, data, projectId]);
   const standard = data?.value.standards.find((s) => s.id === selected);
   function edit(fn: (p: ProjectProduction) => void) {
-    if (!data || busy) return;
-    const value = structuredClone(data.value);
-    fn(value);
-    setData({ ...data, value });
+    if (busy) return;
+    setData((current) => {
+      if (!current) return current;
+      const value = structuredClone(current.value);
+      fn(value);
+      return { ...current, value };
+    });
     setDirty(true);
   }
-  async function save(activate = false) {
+  function createStandard() {
     if (!data || busy) return;
+    setNameRequest({
+      label: t("productionStudio.newStandard"),
+      validate: (name) =>
+        data.value.standards.some(
+          (s) =>
+            !s.archived &&
+            s.name.toLocaleLowerCase() === name.toLocaleLowerCase(),
+        )
+          ? t("productionStudio.duplicateStandard")
+          : undefined,
+      action: (name) => {
+        const id = crypto.randomUUID();
+        edit((p) =>
+          p.standards.push({ id, name, draft: emptyStandard(), revisions: [] }),
+        );
+        setSelected(id);
+        setSection("art");
+      },
+    });
+  }
+  function removeStandard(id: string) {
+    if (!data || busy) return;
+    const entry = data.value.standards.find((s) => s.id === id);
+    if (!entry) return;
+    setRemoveTarget({ id: entry.id, name: entry.name });
+  }
+  function confirmRemoveStandard(id: string) {
+    if (!data || busy) return;
+    edit((p) => removeProductionStandard(p, id));
+    if (selected === id)
+      setSelected(
+        data.value.standards.find((s) => s.id !== id && !s.archived)?.id ?? "",
+      );
+  }
+  async function save(activate = false) {
+    if (!data || saving.current) return;
+    saving.current = true;
     setBusy(true);
     try {
       const value = structuredClone(data.value);
@@ -104,50 +157,108 @@ export function StudioStandards({ projectId }: { projectId: string }) {
     } catch (e) {
       setError(String(e));
     } finally {
+      saving.current = false;
       setBusy(false);
     }
   }
   return (
-    <div className="studio-page">
+    <div className="studio-page studio-standards">
       <aside className="studio-rail">
-        <strong>{t("productionStudio.title")}</strong>
-        <h3>{t("productionStudio.standards")}</h3>
-        {data?.value.standards.map((s) => (
-          <button
-            className={selected === s.id ? "is-active" : ""}
-            key={s.id}
-            onClick={() => setSelected(s.id)}
-          >
-            {s.name}
-            {data.value.defaultStandardId === s.id
-              ? ` · ${t("productionStudio.default")}`
-              : ""}
-          </button>
-        ))}
+        <div className="studio-rail-heading">
+          <strong>{t("productionStudio.standards")}</strong>
+          <span className="studio-count">
+            {data?.value.standards.filter((s) => !s.archived).length ?? 0}
+          </span>
+        </div>
         <button
-          disabled={!data}
-          onClick={() => {
-            const id = crypto.randomUUID();
-            edit((p) =>
-              p.standards.push({
-                id,
-                name: t("productionStudio.newStandard"),
-                draft: emptyStandard(),
-                revisions: [],
-              }),
-            );
-            setSelected(id);
-          }}
+          className="studio-create-standard"
+          disabled={!data || busy}
+          onClick={createStandard}
         >
+          <Plus size={14} />
           {t("productionStudio.newStandard")}
         </button>
-        <button onClick={() => setSection("templates")}>
+        <div className="studio-standard-list">
+          {data?.value.standards
+            .filter((s) => !s.archived)
+            .map((s) => (
+              <div
+                className={`studio-standard-row${selected === s.id && section !== "templates" ? " is-active" : ""}`}
+                key={s.id}
+              >
+                <button
+                  className="studio-standard-select"
+                  onClick={() => {
+                    setSelected(s.id);
+                    if (section === "templates") setSection("art");
+                  }}
+                >
+                  <FileText size={14} />
+                  <span>
+                    {s.name}
+                    {data.value.defaultStandardId === s.id && (
+                      <small>{t("productionStudio.default")}</small>
+                    )}
+                  </span>
+                </button>
+                <button
+                  className="studio-icon-button studio-standard-delete"
+                  disabled={busy}
+                  onClick={() => removeStandard(s.id)}
+                  title={t("productionStudio.removeStandard", { name: s.name })}
+                  aria-label={t("productionStudio.removeStandard", {
+                    name: s.name,
+                  })}
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+        </div>
+        {data?.value.standards.some((s) => s.archived) && (
+          <details className="studio-archived">
+            <summary>{t("productionStudio.removedStandards")}</summary>
+            {data.value.standards
+              .filter((s) => s.archived)
+              .map((s) => (
+                <div className="studio-nav-row" key={s.id}>
+                  <span>{s.name}</span>
+                  <button
+                    className="studio-icon-button"
+                    title={t("productionStudio.restoreStandard")}
+                    aria-label={t("productionStudio.restoreStandardName", {
+                      name: s.name,
+                    })}
+                    disabled={busy}
+                    onClick={() => {
+                      edit((p) => {
+                        delete p.standards.find((item) => item.id === s.id)!
+                          .archived;
+                      });
+                      setSelected(s.id);
+                      setSection("art");
+                    }}
+                  >
+                    <RotateCcw size={13} />
+                  </button>
+                </div>
+              ))}
+          </details>
+        )}
+        <button
+          className={`studio-template-navigation${section === "templates" ? " is-active" : ""}`}
+          onClick={() => setSection("templates")}
+        >
           {t("productionStudio.templates")}
         </button>
       </aside>
       <main className="studio-main">
         <div className="studio-header">
-          <h2>{t("productionStudio.title")}</h2>
+          <h2>
+            {section === "templates"
+              ? t("productionStudio.templates")
+              : (standard?.name ?? t("productionStudio.title"))}
+          </h2>
           <button disabled={!dirty || busy} onClick={() => void save()}>
             {t("productionStudio.save")}
           </button>
@@ -268,6 +379,14 @@ export function StudioStandards({ projectId }: { projectId: string }) {
                   </div>
                 </>
               )}
+              <button
+                className="studio-danger-action"
+                disabled={busy}
+                onClick={() => removeStandard(standard.id)}
+              >
+                <Trash2 size={14} />
+                {t("productionStudio.deleteStandard")}
+              </button>
               {standard.revisions.length > 0 && (
                 <details>
                   <summary>{t("productionStudio.receipt")}</summary>
@@ -294,6 +413,22 @@ export function StudioStandards({ projectId }: { projectId: string }) {
             <p className="studio-note">{t("productionStudio.noStandard")}</p>
           ))}
       </main>
+      {removeTarget && (
+        <StudioConfirmDialog
+          title={t("productionStudio.deleteStandard")}
+          message={t("productionStudio.confirmRemoveStandard", {
+            name: removeTarget.name,
+          })}
+          onConfirm={() => confirmRemoveStandard(removeTarget.id)}
+          onClose={() => setRemoveTarget(undefined)}
+        />
+      )}
+      {nameRequest && (
+        <StudioNameDialog
+          request={nameRequest}
+          onClose={() => setNameRequest(undefined)}
+        />
+      )}
     </div>
   );
 }

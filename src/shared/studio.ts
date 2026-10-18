@@ -40,6 +40,8 @@ export interface ProductionStandard {
   draft: StandardContent;
   revisions: StandardRevision[];
   activeRevision?: number;
+  /** Removed from current choices; activated revisions remain available for historical receipts. */
+  archived?: boolean;
 }
 export interface AssetReview {
   specificationStatus?: "pending" | "pass" | "fail";
@@ -251,6 +253,7 @@ export const STANDARD_SCHEMA = obj({
     { maxItems: 1000 },
   ),
   activeRevision: Type.Optional(Type.Integer({ minimum: 1 })),
+  archived: Type.Optional(Type.Boolean()),
 });
 export const PRODUCTION_SCHEMA = obj({
   version: Type.Literal(1),
@@ -443,7 +446,9 @@ export function validateProduction(
   validateHierarchy(p.standards);
   if (
     p.defaultStandardId &&
-    !p.standards.some((s) => s.id === p.defaultStandardId && s.activeRevision)
+    !p.standards.some(
+      (s) => s.id === p.defaultStandardId && s.activeRevision && !s.archived,
+    )
   )
     throw new Error("Default standard must be activated");
   for (const s of p.standards) {
@@ -497,25 +502,39 @@ export function validateStudioLibrary(
     )
       throw new Error("Unknown tag, folder or version series");
 }
+/** Drafts can be removed. Published revisions are retained so past generation history stays immutable. */
+export function removeProductionStandard(
+  p: ProjectProduction,
+  id: string,
+): void {
+  const standard = p.standards.find((s) => s.id === id);
+  if (!standard) return;
+  if (standard.revisions.length) standard.archived = true;
+  else p.standards = p.standards.filter((s) => s.id !== id);
+  if (p.defaultStandardId === id) delete p.defaultStandardId;
+}
+
 export function activeStandard(
   p: ProjectProduction,
   id = p.defaultStandardId,
 ): (StandardRevision & { id: string; name: string }) | undefined {
   const s = p.standards.find((s) => s.id === id),
     r = s?.revisions.find((r) => r.revision === s.activeRevision);
-  return s && r ? { ...r, id: s.id, name: s.name } : undefined;
+  return s && r && !s.archived ? { ...r, id: s.id, name: s.name } : undefined;
 }
 export function inheritedStandardId(
   p: ProjectProduction,
   board?: AssetCanvasDocument,
   node?: AssetCanvasNode,
 ): string | undefined {
-  if (node?.standardId) return node.standardId;
+  if (node?.standardId && activeStandard(p, node.standardId))
+    return node.standardId;
   let group = board?.groups?.find((g) => g.id === node?.groupId);
   const seen = new Set<string>();
   while (group && !seen.has(group.id)) {
     seen.add(group.id);
-    if (group.standardId) return group.standardId;
+    if (group.standardId && activeStandard(p, group.standardId))
+      return group.standardId;
     group = board?.groups?.find((g) => g.id === group?.parentId);
   }
   return p.defaultStandardId;

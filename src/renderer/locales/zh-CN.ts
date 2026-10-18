@@ -2,6 +2,26 @@ import type en from "./en.js";
 
 const zhCN: typeof en = {
   productionStudio: {
+    duplicateStandard: "已有同名规范，请使用其他名称。",
+    removeStandard: "删除规范：{{name}}",
+    confirmRemoveStandard: "删除“{{name}}”？未启用的草稿将移除；已发布版本保留在“已移除规范”中，历史生成记录不受影响。保存修改后生效。",
+    removedStandards: "已移除规范",
+    restoreStandard: "恢复规范",
+    restoreStandardName: "恢复 {{name}}",
+    deleteStandard: "删除规范",
+    canvasTools: "画板工具",
+    organize: "整理",
+    searchAssets: "搜索素材…",
+    resultCount: "{{count}} 项素材",
+    moreTools: "更多工具",
+    mediaTypes: "素材类型",
+    importing: "正在导入…",
+    discardChanges: "放弃未保存的修改并从磁盘重新加载？",
+    renameNamed: "重命名 {{name}}",
+    removeTagNamed: "移除标签 {{name}}",
+    hideFilters: "收起筛选",
+    loadLibrary: "正在加载素材…",
+
     discardDraft: "丢弃模板草稿",
     addRole: "添加项目用途",
     removeRole: "移除项目用途",
