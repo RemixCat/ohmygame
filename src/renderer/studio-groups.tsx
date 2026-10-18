@@ -2,7 +2,7 @@ import {
   StudioNameDialog,
   type StudioNameRequest,
 } from "./studio-name-dialog.js";
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import {
   Handle,
   Position,
@@ -153,6 +153,8 @@ export function StudioGroupsPanel({
   onChange,
   flush,
   onEditStandards,
+  actions,
+  leading,
 }: {
   projectId: string;
   boardId: string;
@@ -161,6 +163,8 @@ export function StudioGroupsPanel({
   onChange(board: AssetCanvasDocument): void;
   flush(): Promise<void>;
   onEditStandards?(): void;
+  actions?: ReactNode;
+  leading?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const [production, setProduction] = useState<ProjectProduction>();
@@ -216,7 +220,7 @@ export function StudioGroupsPanel({
     <>
       <option value="">{t("productionStudio.inherit")}</option>
       {production?.standards
-        .filter((s) => s.activeRevision)
+        .filter((s) => s.activeRevision && !s.archived)
         .map((s) => (
           <option key={s.id} value={s.id}>
             {s.name} · v{s.activeRevision}
@@ -225,14 +229,22 @@ export function StudioGroupsPanel({
     </>
   );
   return (
-    <>
-      <button
-        className="studio-panel-toggle"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
+    <div className="studio-canvas-tools nodrag nowheel nokey">
+      <div
+        className="studio-canvas-actions"
+        role="toolbar"
+        aria-label={t("productionStudio.canvasTools")}
       >
-        {t("productionStudio.togglePanel")}
-      </button>
+        {leading && <div className="studio-canvas-leading">{leading}</div>}
+        {actions}
+        <button
+          className="studio-panel-toggle"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+        >
+          {t("productionStudio.togglePanel")}
+        </button>
+      </div>
       {open && (
         <aside
           className="studio-panel nodrag nowheel nokey"
@@ -662,6 +674,6 @@ export function StudioGroupsPanel({
           </div>
         </div>
       )}
-    </>
+    </div>
   );
 }

@@ -1826,8 +1826,8 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
             const at = flowInstance.current?.screenToFlowPosition({ x: event.clientX, y: event.clientY }) ?? { x: 96, y: 96 };
             void importCanvasFiles(transferredFiles(event.dataTransfer), at);
           }}>
-          {overlay}
-          {phase === "ready" && <StudioGroupsPanel projectId={projectId} boardId={storage.boardId} board={document} selected={nodes.filter((n) => n.selected).map((n) => n.id)} onChange={changeGroups} flush={flush} onEditStandards={onEditStandards} />}
+          {phase !== "ready" && overlay}
+          {phase === "ready" && <StudioGroupsPanel projectId={projectId} boardId={storage.boardId} board={document} selected={nodes.filter((n) => n.selected).map((n) => n.id)} onChange={changeGroups} flush={flush} onEditStandards={onEditStandards} leading={overlay} />}
           {fileDropActive ? <div className="canvas-file-drop-overlay"><Upload size={18} /><span>{t("assetCanvas.dropFiles")}</span></div> : importingAssets ? <div className="canvas-file-import-status" role="status"><LoaderCircle size={13} className="spin" /><span>{t("assetCanvas.importing")}</span></div> : null}
           {phase === "loading" ? <div className="story-canvas-state">{t("assetCanvas.loading")}</div> : null}
           {phase === "error" ? <div className="story-canvas-state story-canvas-state-error" role="alert"><span>{t("assetCanvas.loadFailed", { error: loadError })}</span><button type="button" onClick={() => setLoadAttempt((value) => value + 1)}>{t("assetCanvas.reload")}</button></div> : null}
