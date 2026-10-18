@@ -130,3 +130,5 @@ Asset-specific terms are documented in the
 [Sidebar](../src/renderer/assets/sidebar/OFL.txt) font licenses.
 
 - [Topic board links](canvas-board-links.md) ([中文](canvas-board-links.zh-CN.md)): connect planning topics to detailed boards, return navigation and file contract.
+
+- [Conversation usage and project statistics](project-statistics.md) ([中文](project-statistics.zh-CN.md)): token/cache/cost definitions, project reporting, read-only API and export scope.

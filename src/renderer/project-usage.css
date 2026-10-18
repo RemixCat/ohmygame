@@ -1,0 +1,208 @@
+.conversation-usage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 10px;
+  padding: 7px 2px 0;
+  color: var(--text-muted);
+  font: 10px/1.5 var(--font-sans, sans-serif);
+}
+.conversation-usage button {
+  border: 0;
+  padding: 2px 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+}
+.conversation-usage button:hover {
+  color: var(--text);
+}
+.conversation-usage-open {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  text-align: left;
+}
+.conversation-usage-open span {
+  white-space: nowrap;
+}
+.project-settings-dialog:has(.project-statistics) {
+  width: min(1100px, 100%);
+}
+.project-statistics {
+  padding: 0 20px 20px;
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text);
+}
+.project-statistics button,
+.project-statistics select,
+.project-statistics input {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  min-width: 0;
+}
+.project-statistics button {
+  cursor: pointer;
+}
+.project-statistics button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.project-statistics button[aria-pressed="true"] {
+  background: var(--surface-hover);
+  border-color: var(--theme-accent);
+}
+.usage-controls,
+.usage-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+.usage-controls label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.usage-controls > span {
+  font-size: 10px;
+  color: var(--text-muted);
+  align-self: center;
+}
+.usage-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.usage-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr));
+  gap: 10px;
+  margin: 0;
+  min-width: 0;
+}
+.usage-metrics > div {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 0;
+}
+.usage-metrics dt {
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.usage-metrics dd {
+  margin: 0;
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.usage-activity dd {
+  font-size: 15px;
+}
+.usage-table-scroll {
+  overflow-x: auto;
+  max-height: 52vh;
+  min-width: 0;
+}
+.project-statistics table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 11px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.project-statistics th,
+.project-statistics td {
+  padding: 9px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.project-statistics th:first-child {
+  text-align: left;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-statistics thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-raised);
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.usage-pager {
+  display: flex;
+  align-items: center;
+  justify-content: end;
+  gap: 10px;
+}
+.project-statistics footer {
+  flex-wrap: wrap;
+  align-items: center;
+}
+.project-statistics footer span {
+  margin-right: auto;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.project-statistics h3 {
+  margin: 0;
+  font-size: 13px;
+}
+.usage-composition {
+  display: grid;
+  gap: 8px;
+}
+.usage-composition-bar {
+  display: flex;
+  height: 14px;
+  overflow: hidden;
+  border-radius: 5px;
+}
+.usage-composition-bar > span {
+  min-width: 0;
+}
+.usage-segment-input {
+  background: #548cd5;
+}
+.usage-segment-cacheRead {
+  background: #459c78;
+}
+.usage-segment-cacheWrite {
+  background: #b68a3d;
+}
+.usage-segment-output {
+  background: #9a71cc;
+}
+.usage-composition-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.usage-composition-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.usage-composition-legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}

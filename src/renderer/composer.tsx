@@ -1,5 +1,5 @@
 import { FileText, X } from "./icons.js";
-import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type KeyboardEvent } from "react";
 import type { AgentModel, AgentModelRef, AgentReasoningLevel, ConversationCapabilities, PendingPrompt, PlanMode, PlanState, PluginMention, PromptAttachment, PromptContext, PromptImage, PromptMode, PromptReference } from "../shared/contracts.js";
 import { AttachmentStrip, appendAttachments, attachmentFiles, uploadAttachments, type ComposerAttachment } from "./composer-attachments.js";
 import type { AgentModelCatalogStatus } from "./model-selector.js";
@@ -21,6 +21,7 @@ import { t } from "./i18n.js";
 export type { ComposerDraft } from "./composer-drafts.js";
 
 interface ComposerProps {
+  usageFooter?: ReactNode;
   projectId?: string;
   conversationId?: string;
   supportsDesign?: boolean;
@@ -56,6 +57,7 @@ interface ComposerProps {
 }
 
 export function Composer({
+  usageFooter,
   projectId,
   conversationId,
   supportsDesign = false,
@@ -464,6 +466,7 @@ export function Composer({
         value={prompt}
         variant="project"
       />
+      {usageFooter}
     </div>
   );
 }

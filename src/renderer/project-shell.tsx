@@ -59,6 +59,7 @@ import {
   undoCheckpoint,
   waitForRuntime,
 } from "./api.js";
+import { ConversationUsageBar } from "./project-usage.js";
 import { ConversationMenu } from "./conversation-menu.js";
 import { AgentTimeline } from "./agent-timeline.js";
 import type { TurnChangesControls } from "./turn-changes.js";
@@ -839,6 +840,7 @@ export function ProjectShell({
           /> : null}
           {!questionnaire && state.plan.mode !== "awaiting_approval" ? <Composer
             key={conversation?.id}
+            usageFooter={conversation ? <ConversationUsageBar key={`${projectId}:${conversation.id}`} projectId={projectId} conversationId={conversation.id} running={currentConversationBusy} /> : null}
             projectId={project?.id}
             conversationId={conversation?.id}
             supportsDesign={project?.type !== "asset-canvas"}

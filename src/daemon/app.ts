@@ -1,3 +1,4 @@
+import { registerProjectUsageRoutes } from "./project-usage.js";
 import { StudioStore } from "./studio-store.js";
 import { registerStudioRoutes } from "./studio-routes.js";
 import { inspectPreviewConfiguration } from "./preview-configuration.js";
@@ -864,6 +865,7 @@ export function createApp(options: AppOptions = {}) {
     ajv: { customOptions: { coerceTypes: false } },
   });
   projectWrites.install(app);
+  registerProjectUsageRoutes(app, { projects, conversations, tools });
   const canvasStore = registerCanvasRoutes(app, { projects, library, tools, studio });
   registerStudioRoutes(app, studio, canvasStore);
   registerPluginCapabilityRoutes(app, { capabilities: pluginCapabilities, plugins, invalidate: invalidatePluginSessions });
