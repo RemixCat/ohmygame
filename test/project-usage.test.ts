@@ -156,15 +156,20 @@ describe("usage aggregation", () => {
             a,
             message("new-id", { responseId: "resp-1" }),
             message("retry", { model: "another-model", stopReason: "error" }),
+            message(
+              "reused-id",
+              { responseId: "resp-1" },
+              "2026-10-18T18:02:00.000Z",
+            ),
           ],
         },
       ],
       { timezone: "UTC" },
     );
     expect(stats.sharedRequests).toBe(2);
-    expect(stats.totals.requests).toBe(2);
+    expect(stats.totals.requests).toBe(3);
     expect(stats.models).toHaveLength(2);
-    expect(stats.conversations.map((c) => c.usage.requests)).toEqual([1, 1]);
+    expect(stats.conversations.map((c) => c.usage.requests)).toEqual([1, 2]);
   });
   it("filters inclusive dates in the selected timezone and bounds detail rows without truncating totals", () => {
     const entries = Array.from({ length: 505 }, (_, i) =>

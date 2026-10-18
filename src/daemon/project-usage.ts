@@ -186,7 +186,13 @@ export function aggregateUsage(
       // Forked session files may copy the same historical entries. Charge their shared prefix once.
       const key = JSON.stringify(
         typeof message?.responseId === "string" && message.responseId
-          ? ["response", message.provider, message.model, message.responseId]
+          ? [
+              "response",
+              message.provider,
+              message.model,
+              message.responseId,
+              timestamp,
+            ]
           : [
               entry.id,
               entry.timestamp,
