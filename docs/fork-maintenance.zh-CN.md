@@ -12,14 +12,14 @@
 
 这里的状态指本 Fork 源码，不代表官方安装包已包含这些功能。
 
-| 范围                                                                       | 状态                                                     | 文档                                                                                |
-| -------------------------------------------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| 素材库管理、项目美术/UI 规范、画板嵌套分组、可复用流程模板、版本对比与审阅 | 已有                                                     | [制作工作流](studio-workflow.zh-CN.md)（[English](studio-workflow.md)）             |
-| 图片快捷操作、参考原图重新生成独立物体、三视图流程                         | 已有；物体拆分不是保留原像素的无损切图                   | [画板快捷操作](canvas-quick-actions.zh-CN.md)（[English](canvas-quick-actions.md)） |
-| Tripo 扩展参数与更大的画板连线目标区域                                     | 已有                                                     | [3D 工作流](3d-providers.md)                                                        |
-| MuMu Suno 独立连接、音乐节点、原生 MP3/M4A 结果                            | 已有；需要自己的 MuMu 密钥                               | [音频服务商](audio-providers.md#standalone-suno--mumu-connection)                   |
-| SpriteCook 精灵、2D 动画、自动切图、地形瓦片                               | 计划在 `feat/spritecook-2d` 开发；当前尚无可用连接和节点 | [开发分支](https://github.com/RemixCat/ohmygame/tree/feat/spritecook-2d)            |
-| 本地帧动画编辑、UI 九宫格编辑、Unity/Godot 素材导出                        | 计划；当前尚未形成完整工具链                             | 具体范围见 SpriteCook 开发分支                                                      |
+| 范围                                                                       | 状态                                                                | 文档                                                                                |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| 素材库管理、项目美术/UI 规范、画板嵌套分组、可复用流程模板、版本对比与审阅 | 已有                                                                | [制作工作流](studio-workflow.zh-CN.md)（[English](studio-workflow.md)）             |
+| 图片快捷操作、参考原图重新生成独立物体、三视图流程                         | 已有；物体拆分不是保留原像素的无损切图                              | [画板快捷操作](canvas-quick-actions.zh-CN.md)（[English](canvas-quick-actions.md)） |
+| Tripo 扩展参数与更大的画板连线目标区域                                     | 已有                                                                | [3D 工作流](3d-providers.md)                                                        |
+| MuMu Suno 独立连接、音乐节点、原生 MP3/M4A 结果                            | 已有；需要自己的 MuMu 密钥                                          | [音频服务商](audio-providers.md#standalone-suno--mumu-connection)                   |
+| SpriteCook 精灵、2D 动画、自动切图、地形瓦片                               | `feat/spritecook-2d` 已有实验性实现；真实服务商验收待完成           | [开发分支](https://github.com/RemixCat/ohmygame/tree/feat/spritecook-2d)            |
+| 本地帧动画编辑、UI 九宫格编辑、Unity/Godot 素材导出                        | `feat/spritecook-2d` 已有实验性工作台和导出辅助；需验证目标引擎版本 | 具体范围见 SpriteCook 开发分支                                                      |
 
 目前增强版包含上游 **beta.4.9**，通过 `91ec65f` 合并。这是已确认的集成基线，
 不代表已经包含此后上游的每个提交。上游与 Fork 的修改都保留在 Git 历史里，
@@ -43,7 +43,7 @@ bun run dev:desktop
 
 在应用内填写自己的模型密钥，不要把密钥写入源码或提交应用数据。
 已有 Suno 连接方法见[音频指南](audio-providers.md#standalone-suno--mumu-connection)。
-SpriteCook 配置入口目前尚未实现。
+SpriteCook 配置与本地工具在 `feat/spritecook-2d` 上提供实验性实现，见[使用与限制](spritecook.zh-CN.md)。
 
 ## 分支与贡献方式
 

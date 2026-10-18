@@ -14,14 +14,14 @@ terms are separate from this repository.
 
 Status describes this fork's source code, not the upstream installer.
 
-| Area                                                                                                                             | Status                                                              | Guide                                                                                   |
-| -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Library organization, project art/UI standards, nested canvas groups, reusable workflow templates, version comparison and review | Available                                                           | [Studio workflow](studio-workflow.md) ([中文](studio-workflow.zh-CN.md))                |
-| Image shortcuts, object extraction by regeneration, and three-view workflows                                                     | Available; object extraction is not a lossless crop                 | [Canvas quick actions](canvas-quick-actions.md) ([中文](canvas-quick-actions.zh-CN.md)) |
-| Extended Tripo controls and larger canvas connection targets                                                                     | Available                                                           | [3D workflows](3d-providers.md)                                                         |
-| Standalone MuMu Suno connection, music nodes, and native MP3/M4A results                                                         | Available; requires your own MuMu key                               | [Audio providers](audio-providers.md#standalone-suno--mumu-connection)                  |
-| SpriteCook sprites, 2D animation, automatic slicing and tilesets                                                                 | Planned on `feat/spritecook-2d`; no working connection or nodes yet | [Development branch](https://github.com/RemixCat/ohmygame/tree/feat/spritecook-2d)      |
-| Local animation editing, 9-slice UI editing and Unity/Godot asset export                                                         | Planned; not currently a complete toolchain                         | Track scope in the SpriteCook development branch                                        |
+| Area                                                                                                                             | Status                                                                                                | Guide                                                                                   |
+| -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Library organization, project art/UI standards, nested canvas groups, reusable workflow templates, version comparison and review | Available                                                                                             | [Studio workflow](studio-workflow.md) ([中文](studio-workflow.zh-CN.md))                |
+| Image shortcuts, object extraction by regeneration, and three-view workflows                                                     | Available; object extraction is not a lossless crop                                                   | [Canvas quick actions](canvas-quick-actions.md) ([中文](canvas-quick-actions.zh-CN.md)) |
+| Extended Tripo controls and larger canvas connection targets                                                                     | Available                                                                                             | [3D workflows](3d-providers.md)                                                         |
+| Standalone MuMu Suno connection, music nodes, and native MP3/M4A results                                                         | Available; requires your own MuMu key                                                                 | [Audio providers](audio-providers.md#standalone-suno--mumu-connection)                  |
+| SpriteCook sprites, 2D animation, automatic slicing and tilesets                                                                 | Experimental implementation on `feat/spritecook-2d`; live-provider acceptance pending                 | [Development branch](https://github.com/RemixCat/ohmygame/tree/feat/spritecook-2d)      |
+| Local animation editing, 9-slice UI editing and Unity/Godot asset export                                                         | Experimental workbench and export helpers on `feat/spritecook-2d`; engine-version acceptance required | Track scope in the SpriteCook development branch                                        |
 
 The Studio extensions currently include upstream **beta.4.9**, merged through
 `91ec65f`. This is a recorded integration baseline, not a claim that every newer
@@ -49,7 +49,8 @@ and third-party generation still require their corresponding configuration.
 Configure your own model keys in the application. Do not place keys in source
 files or commit application data. Current Suno setup is documented in the
 [audio guide](audio-providers.md#standalone-suno--mumu-connection).
-SpriteCook configuration is not implemented yet.
+SpriteCook configuration and local tools are available experimentally on
+`feat/spritecook-2d`; see [setup and limits](spritecook.md).
 
 ## Branches and contributions
 

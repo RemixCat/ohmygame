@@ -3,7 +3,8 @@
 > 基于 [WhiteTowerAI/ohmygame](https://github.com/WhiteTowerAI/ohmygame) 开发。
 > 请使用 **`studio` 分支**获取本 Fork 的扩展，详见
 > [English guide](docs/fork-maintenance.md)（[功能状态、源码运行与贡献指南](docs/fork-maintenance.zh-CN.md)）。
-> SpriteCook 接入目前**处于计划阶段，尚不可用**。下面的下载按钮安装的是官方版本，
+> 实验性的 **SpriteCook 与本地 2D 工具**位于 `feat/spritecook-2d`，见
+> [English setup](docs/spritecook.md)（[中文使用与验证状态](docs/spritecook.zh-CN.md)）。下面的下载按钮安装的是官方版本，
 > **不包含本 Fork 新增功能**。
 
 <div align="center">

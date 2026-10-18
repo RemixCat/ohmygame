@@ -101,6 +101,7 @@ import { createLibraryImage, getLibraryAsset, getWorkspaceAsset, getProjectCover
 import { useAuth } from "./auth.js";
 import { accountCloudState, canAffordCloudModel, CloudQuotaStatus } from "./cloud-quota.js";
 import { downloadAssetBlob, loadLibraryAssets, type LibraryAsset } from "./library-assets.js";
+import { SpriteWorkbench } from "./sprite-workbench.js";
 import { SendToProjectDialog } from "./send-to-project-dialog.js";
 import { useAgentModels, type AgentModelCatalogStatus } from "./model-selector.js";
 import { clampReasoningLevel } from "../shared/reasoning.js";
@@ -428,6 +429,7 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   }, [globalAssets, localAssets]);
   const assetPaths = useCanvasAssetSources();
   const [nodeDetails, setNodeDetails] = useState<{ id: string; title: string; description: string }>();
+  const [spriteWorkbench, setSpriteWorkbench] = useState(false);
   const libraryImages = useMemo(() => libraryAssets.filter((asset) => asset.mediaType === "image"), [libraryAssets]);
 
   const [imageModels, setImageModels] = useState<ImageModel[]>([]);
@@ -1798,6 +1800,15 @@ export function CanvasBoardEditor({ project, initialNodeId, onInitialNodeHandled
   const visibleNodes = renderedNodes.map((n) => ({ ...n, hidden: !!collapsedAncestor(document, n as unknown as AssetCanvasNode) }));
   return (
     <section className="viewer-pane interactive-story-workspace" hidden={hidden} aria-label={t("canvas.assetCanvasWorkspace")}>
+      <button className="sprite-canvas-button" disabled={phase !== "ready" || conflicted} onClick={() => setSpriteWorkbench(true)}>{t("sprite.open")}</button>
+      {spriteWorkbench && <SpriteWorkbench initialAssetId={libraryAssets.find(a => a.id === selectedNodes[0]?.data.assetId && a.mediaType === "image")?.libraryAssetId ?? globalAssets.find(a => a.id === selectedNodes[0]?.data.assetId && a.mediaType === "image")?.id} onClose={() => setSpriteWorkbench(false)} onAssets={outputs => {
+        if (phase !== "ready" || conflicted) throw new Error(t("sprite.canvasNotReady"));
+        setLibraryAssets(current => [...outputs.map(a => ({ ...a, assetId: a.id, path: a.name })), ...current.filter(a => !outputs.some(b => b.id === a.id))]);
+        const bounds = canvasElement.current?.getBoundingClientRect();
+        const center = bounds && flowInstance.current ? flowInstance.current.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 }) : { x: 160,y: 160 };
+        const created = outputs.map((asset,i) => assetFlowNode(asset,snapCanvasPosition({ x: center.x + i % 4 * 340,y: center.y + Math.floor(i / 4) * 340 })));
+        setNodes(current => [...current.map(n => ({ ...n,selected: false })),...created]);
+      }} />}
       {expandedTextId && nodes.find((node) => node.id === expandedTextId)?.type === "text" ? <div className="design-expanded-document" role="dialog" aria-modal="true" aria-label={t("assetCanvas.expandedText")}>
         <header className="design-expanded-toolbar"><FileText size={16} /><strong>{t("assetCanvas.node.text")}</strong></header>
         <div className="design-expanded-body"><CanvasTextarea autoFocus aria-label={t("assetCanvas.expandedText")} value={nodes.find((node) => node.id === expandedTextId)?.data.text ?? ""} onChange={(text) => setNodes((current) => current.map((node) => node.id === expandedTextId ? { ...node, data: { ...node.data, text } } : node))} /></div>
