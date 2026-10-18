@@ -90,4 +90,4 @@ file persistence. Screenshots use an isolated local fixture with no provider key
 or user project content. Public checks and actual UI acceptance are recorded in
 the contribution PR.
 
-Local acceptance: plugin preparation, changelog validation, typecheck, renderer build and Node daemon/player checks passed; 2,914 tests passed and 23 expected tests skipped. The initial parallel run hit the existing 1.5-second preview-spawn timing assertion; its focused 16-test suite and the full suite with two workers then passed. Real UI checks covered linking/creating, save-and-return with identical viewport, cyclic navigation, reload, and widths 360/520/720/1200 pixels.
+Contribution-branch local acceptance: plugin preparation, changelog validation, typecheck, renderer build and Node daemon/player checks passed; 2,914 tests passed and 23 expected tests skipped. The initial parallel run hit the existing 1.5-second preview-spawn timing assertion; its focused 16-test suite and the full suite with two workers then passed. Real UI checks covered linking/creating, save-and-return with identical viewport, cyclic navigation, reload, and widths 360/520/720/1200 pixels.
