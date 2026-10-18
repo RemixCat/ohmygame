@@ -108,6 +108,15 @@ export function validateAssetCanvasDocument(document: AssetCanvasDocument): void
     if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) throw new Error(`Asset Canvas edge ${edge.id} references a missing Node`);
   }
   const nodes = new Map(document.nodes.map((node) => [node.id, node]));
+  for (const edge of document.edges) {
+    const source = nodes.get(edge.source)!, target = nodes.get(edge.target)!;
+    if (edge.kind === "diagram") {
+      if (source.type !== "topic" || target.type !== "topic" || source.id === target.id)
+        throw new Error("Diagram relationships require two different topic nodes");
+    } else if (source.type === "topic" || target.type === "topic" || edge.label !== undefined || edge.directed !== undefined) {
+      throw new Error("Topic relationships must use the diagram edge kind");
+    }
+  }
   for (const node of document.nodes) {
     if (node.type === "text" || node.type === "document") {
       for (const reference of node.data.references ?? []) {

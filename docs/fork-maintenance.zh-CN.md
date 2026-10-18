@@ -18,6 +18,7 @@
 | 图片快捷操作、参考原图重新生成独立物体、三视图流程                         | 已有；物体拆分不是保留原像素的无损切图                   | [画板快捷操作](canvas-quick-actions.zh-CN.md)（[English](canvas-quick-actions.md)） |
 | Tripo 扩展参数与更大的画板连线目标区域                                     | 已有                                                     | [3D 工作流](3d-providers.md)                                                        |
 | MuMu Suno 独立连接、音乐节点、原生 MP3/M4A 结果                            | 已有；需要自己的 MuMu 密钥                               | [音频服务商](audio-providers.md#standalone-suno--mumu-connection)                   |
+| 原生思维导图与拓扑图 | `feat/canvas-diagrams` 已实现；本地编辑、关系说明、自动整理、Mermaid/Markdown 导出 | [使用说明](canvas-diagrams.zh-CN.md)（[English](canvas-diagrams.md)） |
 | SpriteCook 精灵、2D 动画、自动切图、地形瓦片                               | 计划在 `feat/spritecook-2d` 开发；当前尚无可用连接和节点 | [开发分支](https://github.com/RemixCat/ohmygame/tree/feat/spritecook-2d)            |
 | 本地帧动画编辑、UI 九宫格编辑、Unity/Godot 素材导出                        | 计划；当前尚未形成完整工具链                             | 具体范围见 SpriteCook 开发分支                                                      |
 

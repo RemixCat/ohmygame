@@ -424,7 +424,7 @@ export interface ProjectAgentActivity {
   status: Extract<AgentStatus, "running" | "cancelling">;
 }
 
-export type AssetCanvasNodeType = "text" | "image" | "video" | "speech" | "sound-effect" | "music" | "model-3d" | "animate-3d" | "asset" | "document" | "table";
+export type AssetCanvasNodeType = "topic" | "text" | "image" | "video" | "speech" | "sound-effect" | "music" | "model-3d" | "animate-3d" | "asset" | "document" | "table";
 
 export interface AssetCanvasPosition {
   x: number;
@@ -495,6 +495,7 @@ export interface CanvasQuickAction {
 }
 
 export type AssetCanvasNode = (
+  | { id: string; type: "topic"; position: AssetCanvasPosition; data: { text: string; color?: "blue" | "green" | "orange" | "purple" | "gray"; shape?: "card" | "rounded" | "pill" } }
   | { id: string; type: "table"; position: AssetCanvasPosition; data: { tableId: string } }
   | { id: string; type: "document"; position: AssetCanvasPosition; data: { documentId: string; references?: AssetCanvasTextReference[] } }
   | { id: string; type: "asset"; position: AssetCanvasPosition; data: {
@@ -585,6 +586,10 @@ export type AssetCanvasNode = (
 ) & { title?: string; description?: string; width?: number; height?: number; quickAction?: CanvasQuickAction; groupId?: string; standardId?: string; standardOverrides?: import("./studio.js").ProductionOverrides; template?: { id: string; revision: number } };
 
 export interface AssetCanvasEdge {
+  /** Diagram relationships are visual and never trigger generation. */
+  kind?: "diagram";
+  label?: string;
+  directed?: boolean;
   id: string;
   source: string;
   target: string;
