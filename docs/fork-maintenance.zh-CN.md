@@ -34,8 +34,13 @@
 git clone --branch studio https://github.com/RemixCat/ohmygame.git
 cd ohmygame
 bun install --frozen-lockfile
-bun run dev:desktop
+bun run start:desktop
 ```
+
+日常使用 `start:desktop` 构建并加载本地界面，不需要 Vite 开发服务器。
+macOS 也可以双击 [scripts/start-desktop.command](../scripts/start-desktop.command)。
+需要热更新开发时再使用 `bun run dev:desktop`，它会占用 43120 端口。
+如果端口已被占用，先关闭之前的开发会话或改用 `start:desktop`，不要直接结束不相关的进程。
 
 首次运行会准备插件和示例，需要网络。故障排查见
 [本地开发说明](../CONTRIBUTING.md#start-local-development)。本地开发不要求私有云凭据；

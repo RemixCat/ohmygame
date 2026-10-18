@@ -18,7 +18,7 @@ version. Keep the feature PR in draft until live-provider acceptance is recorded
 git clone --branch feat/spritecook-2d https://github.com/RemixCat/ohmygame.git
 cd ohmygame
 bun install --frozen-lockfile
-bun run dev:desktop
+bun run start:desktop
 ```
 
 Use **Settings → Providers & Models → Images → SpriteCook** to enter your key.

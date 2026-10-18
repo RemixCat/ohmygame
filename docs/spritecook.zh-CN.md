@@ -16,7 +16,7 @@
 git clone --branch feat/spritecook-2d https://github.com/RemixCat/ohmygame.git
 cd ohmygame
 bun install --frozen-lockfile
-bun run dev:desktop
+bun run start:desktop
 ```
 
 在**设置 → 服务商与模型 → 图片 → SpriteCook**填写自己的 Key，点击**检查连接**验证目录。

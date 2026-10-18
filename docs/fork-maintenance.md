@@ -38,8 +38,14 @@ Use Git, Node.js 22.19 or newer, and Bun 1.4.2 or newer:
 git clone --branch studio https://github.com/RemixCat/ohmygame.git
 cd ohmygame
 bun install --frozen-lockfile
-bun run dev:desktop
+bun run start:desktop
 ```
+
+For daily use, `start:desktop` builds and loads the local interface without a Vite server.
+On macOS, you can also double-click [scripts/start-desktop.command](../scripts/start-desktop.command).
+Use `bun run dev:desktop` only when developing with hot reload; it reserves port 43120.
+If that port is occupied, stop the previous development session or use `start:desktop`;
+do not terminate an unrelated process just to free the port.
 
 First startup prepares plugins and examples and needs network access. See
 [local setup](../CONTRIBUTING.md#start-local-development) for troubleshooting.
