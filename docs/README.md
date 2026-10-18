@@ -42,6 +42,10 @@ Projects URL preserves its type filter, search (`q`), and name sorting
 documents this fork's available extensions, source installation, branch policy,
 and migration when upstream adds equivalent features.
 
+[SpriteCook and local 2D tools](spritecook.md) ([中文](spritecook.zh-CN.md))
+covers the experimental fixed provider, workbench, local 9-slice/animation/slicing,
+engine exports, agent tools, public API boundaries and outstanding live acceptance.
+
 [Git changes in Code](workspace-git.md) covers the read-only project changes
 view, its comparison baseline and refresh behavior.
 

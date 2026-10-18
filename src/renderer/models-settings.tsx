@@ -50,6 +50,9 @@ import { isLocalModelProvider, LOCAL_MODEL_PROVIDERS, withLocalModelProviders, t
 import { groupProviders } from "./provider-groups.js";
 import { t } from "./i18n.js";
 import { SUNO_PROVIDER_ID } from "../shared/suno.js";
+import { SPRITECOOK_PROVIDER_ID } from "../shared/spritecook.js";
+import { SpriteWorkbench } from "./sprite-workbench.js";
+import { saveSpriteKey, spriteCatalog } from "./sprite-api.js";
 
 export type ModelsView = { page: "providers" } | { page: "provider"; provider: ProviderSummary };
 
@@ -252,6 +255,7 @@ function ProviderAuthView({ provider, onBack, onCompleted }: { provider: Provide
   if (MINIMAX_PROVIDER_IDS.has(provider.id)) return <MinimaxAuthView provider={provider} onBack={onBack} onCompleted={onCompleted} />;
   if (provider.id === "volcengine-tts") return <VolcengineTtsAuthView provider={provider} onBack={onBack} onCompleted={onCompleted} />;
   if (provider.id === SUNO_PROVIDER_ID) return <SunoAuthView provider={provider} onBack={onBack} onCompleted={onCompleted} />;
+  if (provider.id === SPRITECOOK_PROVIDER_ID) return <SpriteCookAuthView provider={provider} onBack={onBack} onCompleted={onCompleted} />;
   const [method, setMethod] = useState<ModelAuthMethod | undefined>(provider.configured ? undefined : provider.methods.length === 1 ? provider.methods[0]?.type : undefined);
   if (provider.configured || provider.id === "openai") return <ConnectedProvider provider={provider} onBack={onBack} onRemoved={onCompleted} />;
   if (!method) return <AuthMethodChoice provider={provider} onBack={onBack} onChoose={setMethod} />;
@@ -465,6 +469,29 @@ function MinimaxAuthView({ provider, onBack, onCompleted }: { provider: Provider
       {provider.configured ? <SeedanceModels key={`minimax-${modelsRevision}`} providerId={provider.id} /> : null}
     </section>
   );
+}
+
+function SpriteCookAuthView({ provider, onBack, onCompleted }: { provider: ProviderSummary; onBack: () => void; onCompleted: () => void }) {
+  const deletion = useProviderDeletion(provider.id, onCompleted);
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [workbench, setWorkbench] = useState(false);
+  return <section className="settings-section">
+    <ProviderDetailHeader provider={provider} onBack={onBack} description={t("sprite.keyHint")}>
+      <ProviderDeleteButton deletion={deletion} />
+    </ProviderDetailHeader>
+    <form className="settings-auth-form" onSubmit={e => { e.preventDefault(); setBusy(true); setError(""); void saveSpriteKey(key).then(() => { setKey(""); onCompleted(); }).catch(e => setError(errorMessage(e))).finally(() => setBusy(false)); }}>
+      <label className="settings-search-field-label" htmlFor="spritecook-api-key">{t("providers.apiKey")}</label>
+      <input id="spritecook-api-key" className="settings-search-input" type="password" autoComplete="off" value={key} onChange={e => setKey(e.target.value)} disabled={busy} placeholder={provider.configured ? t("providers.replaceKeyPlaceholder") : t("providers.keyPlaceholder", { name: "SpriteCook" })} />
+      <div className="settings-auth-actions"><button type="submit" disabled={busy || !key.trim()}>{t("common.save")}</button><button type="button" disabled={busy || !provider.configured} onClick={() => { setBusy(true); setError(""); void spriteCatalog().then(() => setMessage(t("sprite.connected"))).catch(e => setError(errorMessage(e))).finally(() => setBusy(false)); }}>{t("sprite.check")}</button></div>
+    </form>
+    <p className="settings-detail-hint">{t("sprite.keyHint")}</p><a href="https://www.spritecook.ai/api-docs" target="_blank" rel="noreferrer">SpriteCook API</a>
+    <p><button onClick={() => setWorkbench(true)}>{t("sprite.open")}</button></p>
+    {message && <p role="status">{message}</p>}{error || deletion.error ? <p className="settings-error" role="alert">{error || deletion.error}</p> : null}
+    {workbench && <SpriteWorkbench onClose={() => setWorkbench(false)} />}
+  </section>;
 }
 
 function SunoAuthView({ provider, onBack, onCompleted }: { provider: ProviderSummary; onBack: () => void; onCompleted: () => void }) {

@@ -4,7 +4,8 @@
 > Use the **`studio` branch** for this fork's extensions. See the
 > [feature status, source installation, and contribution guide](docs/fork-maintenance.md)
 > ([中文](docs/fork-maintenance.zh-CN.md)).
-> SpriteCook integration is **planned, not available yet**. The download buttons
+> The experimental **SpriteCook and local 2D tools** are on `feat/spritecook-2d`; see
+> [setup and verification status](docs/spritecook.md) ([中文](docs/spritecook.zh-CN.md)). The download buttons
 > below install the upstream app and do **not** include this fork's additions.
 
 <div align="center">

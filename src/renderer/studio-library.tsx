@@ -38,6 +38,7 @@ import {
 import type { ProjectState } from "../shared/contracts.js";
 import { t } from "./i18n.js";
 import "./studio.css";
+import { SpriteWorkbench } from "./sprite-workbench.js";
 
 export function StudioLibraryView({
   initialProjectId,
@@ -65,6 +66,7 @@ export function StudioLibraryView({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [nameRequest, setNameRequest] = useState<StudioNameRequest>();
   const [unfiled, setUnfiled] = useState(false);
+  const [spriteWorkbench, setSpriteWorkbench] = useState(false);
   async function load() {
     try {
       const [d, a, p] = await Promise.all([
@@ -416,6 +418,7 @@ export function StudioLibraryView({
       </aside>
       <main className="studio-main">
         <div className="studio-toolbar">
+          <button onClick={() => setSpriteWorkbench(true)}>{t("sprite.open")}</button>
           <input
             aria-label={t("productionStudio.filters")}
             placeholder={t("library.title")}
@@ -1064,6 +1067,7 @@ export function StudioLibraryView({
           onClose={() => setPreview(undefined)}
         />
       )}
+      {spriteWorkbench && <SpriteWorkbench initialAssetId={assets.find(a => a.id === focused && a.mediaType === "image")?.id} onClose={() => setSpriteWorkbench(false)} onAssets={async () => setAssets(await loadLibraryAssets())} />}
       {compare && selected.length === 2 && (
         <Comparison
           assets={selected.map((id) => assets.find((a) => a.id === id)!)}

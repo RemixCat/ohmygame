@@ -995,6 +995,7 @@ export interface LibraryAssetSummary extends LibraryAsset {
 export type LibraryUploadMediaType =
   | "image/png"
   | "image/jpeg"
+  | "image/gif"
   | "image/svg+xml"
   | "image/webp"
   | "video/mp4"

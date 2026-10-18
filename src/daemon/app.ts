@@ -89,6 +89,11 @@ import { VolcengineTtsSettingsStore } from "./volcengine-tts-settings.js";
 import { SunoProvider } from "./suno-provider.js";
 import { SunoSettingsStore } from "./suno-settings.js";
 import { SUNO_PROVIDER_ID, SUNO_PROVIDER_NAME } from "../shared/suno.js";
+import { SPRITECOOK_PROVIDER_ID } from "../shared/spritecook.js";
+import { SpriteCookService } from "./spritecook.js";
+import { SpriteTools } from "./sprite-tools.js";
+import { registerSpriteRoutes } from "./sprite-routes.js";
+import { createSpriteAgentTools } from "./sprite-agent-tools.js";
 import { AUDIO_OUTPUT_FORMATS, AUDIO_SAMPLE_RATES, AUDIO_VOICE_ID_MAX_LENGTH, AUDIO_VOICE_ID_PATTERN, DOUBAO_SPEECH_PROVIDER_NAME, availableAudioOperations, type AudioOperation } from "../shared/audio.js";
 import { isSeedanceProviderId, SEEDANCE_PROVIDER_IDS, SEEDANCE_PROVIDERS } from "./seedance-models.js";
 import { SeedanceSettingsStore } from "./seedance-settings.js";
@@ -155,6 +160,8 @@ export interface AppOptions {
   videoFetch?: typeof fetch;
   audioGenerator?: AudioGenerator;
   audioFetch?: typeof fetch;
+  spritecookFetch?: typeof fetch;
+  spritecookResolveHost?: ConstructorParameters<typeof SpriteCookService>[4];
   modelDiscoveryFetch?: typeof fetch;
   createModelRuntime?: () => Promise<ModelRuntime>;
   bundledPluginsDirectory?: string;
@@ -421,7 +428,7 @@ const MAX_PROJECT_COVER_BYTES = 5 * 1024 * 1024;
 const MAX_LIBRARY_IMAGE_BYTES = 10 * 1024 * 1024;
 const MAX_LIBRARY_UPLOAD_BYTES = 200 * 1024 * 1024;
 const LIBRARY_UPLOAD_MEDIA_TYPES = new Set<LibraryUploadMediaType>([
-  "image/png", "image/jpeg", "image/svg+xml", "image/webp",
+  "image/png", "image/jpeg", "image/gif", "image/svg+xml", "image/webp",
   "video/mp4", "video/quicktime", "video/webm",
   "audio/mpeg", "audio/wav",
 ]);
@@ -592,6 +599,8 @@ export function createApp(options: AppOptions = {}) {
   const minimaxSettings = new MinimaxSettingsStore(dataDirectory);
   const volcengineTtsSettings = new VolcengineTtsSettingsStore(dataDirectory);
   const sunoSettings = new SunoSettingsStore(dataDirectory);
+  const spritecook = new SpriteCookService(dataDirectory, library, options.spritecookFetch, () => providerEnabled(SPRITECOOK_PROVIDER_ID), options.spritecookResolveHost);
+  const spriteTools = new SpriteTools(dataDirectory, library);
   const providerModelSettings = new ProviderModelSettingsStore(dataDirectory, piAgentDirectory);
   const webSearch = new WebSearchService(webSearchSettings, options.webSearchFetch);
   const openAIEndpoint = new ModelEndpointSettingsStore(
@@ -796,7 +805,7 @@ export function createApp(options: AppOptions = {}) {
       return createPiSession(
         project,
         conversations.open(project, conversation),
-        createAgentTools(
+        [...createAgentTools(
           project,
           tools,
           projects,
@@ -817,7 +826,7 @@ export function createApp(options: AppOptions = {}) {
           } : undefined,
           webSearch.enabled() ? (input, signal) => webSearch.search(conversation.summary.id, input, signal) : undefined,
           canvasStore,
-        ),
+        ), ...createSpriteAgentTools(project.id, spritecook, spriteTools, library, projects)],
         modelRuntime,
         model,
         piAgentDirectory,
@@ -889,6 +898,7 @@ export function createApp(options: AppOptions = {}) {
       app.log.warn({ err: cause, projectDirectory }, "Could not load project; skipped during startup");
     }), tools.load(), pluginSettings.load(), pluginCapabilities.configuration.load(), bundledPlugins.load(), preinstalledPlugins.load(), webSearchSettings.load(), openAIEndpoint.load(), loadOpenAIImages(), meshySettings.load(), tripoSettings.load(), hyper3dSettings.load(), seedanceSettings.load(), minimaxSettings.load(), volcengineTtsSettings.load(), sunoSettings.load(), providerModelSettings.load()]);
     await Promise.all(projects.list().map(async (project) => { projectWrites.initialize(project.id, await readWorkspaceVersion(project)); }));
+    await Promise.all([spritecook.load(), spriteTools.load()]);
     for (const error of await preinstalledPlugins.seed(localPlugins)) app.log.warn(error);
     const examplesWarning = await examples.load();
     if (examplesWarning) app.log.warn(examplesWarning);
@@ -2105,6 +2115,16 @@ export function createApp(options: AppOptions = {}) {
       methods: [{ type: "api_key" as const, label: "MuMu API key" }],
       credentialType: "api_key" as const,
       capabilities: ["audio"] as const,
+    }, {
+      id: SPRITECOOK_PROVIDER_ID,
+      name: "SpriteCook",
+      configured: spritecook.settings().configured,
+      enabled: providerEnabled(SPRITECOOK_PROVIDER_ID),
+      custom: false,
+      status: spritecook.settings().configured ? "connected" as const : "not_configured" as const,
+      methods: [{ type: "api_key" as const, label: "SpriteCook API key" }],
+      credentialType: "api_key" as const,
+      capabilities: ["image"] as const,
     }];
     // Cloud quota/catalog verification can take tens of seconds. Refresh it in
     // the background and serve the last known snapshot so opening Settings does
@@ -2113,6 +2133,7 @@ export function createApp(options: AppOptions = {}) {
     return [...providers, ...directProviders, ...cloudModels.providersSnapshot(providerEnabled)].sort((left, right) => left.name.localeCompare(right.name));
   };
   app.get("/settings/providers", providerSummaries);
+  registerSpriteRoutes(app, spritecook, spriteTools);
   registerOpenAIImageRoutes(app, openAIImages, imageConnection, options.modelDiscoveryFetch);
   app.get("/settings/onboarding", async () => {
     if (!onboarding.initialized) {
@@ -2229,7 +2250,8 @@ export function createApp(options: AppOptions = {}) {
     const minimax = isMinimaxProviderId(providerId);
     const volcengineTts = providerId === "volcengine-tts";
     const suno = providerId === SUNO_PROVIDER_ID;
-    if (!native && !seedance && !minimax && !volcengineTts && !suno && !runtime.getProvider(providerId)) throw new ModelAuthError("Model provider not found", 404);
+    const sprite = providerId === SPRITECOOK_PROVIDER_ID;
+    if (!native && !seedance && !minimax && !volcengineTts && !suno && !sprite && !runtime.getProvider(providerId)) throw new ModelAuthError("Model provider not found", 404);
     const previousEndpoint = providerId === "openai" ? openAIEndpoint.override() : undefined;
     try {
       await providerModelSettings.removeProviderSettings(providerId, async () => {
@@ -2240,6 +2262,7 @@ export function createApp(options: AppOptions = {}) {
         else if (minimax) await minimaxSettings.clear(providerId);
         else if (volcengineTts) await volcengineTtsSettings.clear();
         else if (suno) await sunoSettings.clear();
+        else if (sprite) await spritecook.clear();
         else await runtime.logout(providerId);
         await syncOpenAIEndpoint(runtime);
         if (providerId === "openai") await openAIImages.clear(false);
@@ -3323,6 +3346,7 @@ export function createApp(options: AppOptions = {}) {
   });
 
   app.addHook("onClose", async () => {
+    await spritecook.close();
     await pluginCapabilities.host.close();
     await cloudModels.setSession(null);
     await canvasStore.close();
